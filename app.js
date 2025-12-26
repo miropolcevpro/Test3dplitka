@@ -587,10 +587,11 @@ function pointInUI(target){
       shader.uniforms.uDepthSize = { value: new THREE.Vector2(depthTexW, depthTexH) };
       shader.uniforms.uViewportSize = { value: new THREE.Vector2(1, 1) };
       shader.uniforms.uRawToMeters = { value: depthRawToMeters };
-      shader.uniforms.uOcclEps = { value: 0.015 }; // meters (tune if you see edge "popping")
+      shader.uniforms.uOcclEps = { value: 0.03 }; // meters (tune if you see edge "popping")
+      shader.uniforms.uOcclBias = { value: (material.userData.__occlBias ?? 0.0) };
       // three.js ShaderChunk helpers expect these names for depth -> viewZ conversion.
-      shader.uniforms.cameraNear = { value: camera.near };
-      shader.uniforms.cameraFar  = { value: camera.far };
+      shader.uniforms.uCamNear = { value: camera.near };
+      shader.uniforms.uCamFar  = { value: camera.far };
 
       // Make sure packing helpers exist (for perspectiveDepthToViewZ)
       if(!shader.fragmentShader.includes('#include <packing>')){
@@ -608,8 +609,9 @@ function pointInUI(target){
         'uniform vec2 uViewportSize;\n' +
         'uniform float uRawToMeters;\n' +
         'uniform float uOcclEps;\n' +
-        'uniform float cameraNear;\n' +
-        'uniform float cameraFar;\n'
+        'uniform float uOcclBias;\n' +
+        'uniform float uCamNear;\n' +
+        'uniform float uCamFar;\n'
       );
 
       const occlChunk = `
@@ -623,8 +625,8 @@ if(uDepthSize.x > 1.0 && uDepthSize.y > 1.0){
   float rawDepth = lowB + highB * 256.0;        // 0..65535
   float realMeters = rawDepth * uRawToMeters;   // meters from camera
   if(realMeters > 0.0){
-    float viewZ = perspectiveDepthToViewZ(gl_FragCoord.z, cameraNear, cameraFar);
-    float virtMeters = -viewZ;
+    float viewZ = perspectiveDepthToViewZ(gl_FragCoord.z, uCamNear, uCamFar);
+    float virtMeters = -viewZ - uOcclBias;
     if(virtMeters > realMeters + uOcclEps) discard;
   }
 }
@@ -654,20 +656,44 @@ if(uDepthSize.x > 1.0 && uDepthSize.y > 1.0){
   function updateDepthOcclusionUniforms(){
     if(!renderer) return;
     const size = renderer.getSize(_tmpVec2);
+
+    // Active camera near/far: in WebXR we get an ArrayCamera.
+    let near = (camera && camera.near !== undefined) ? camera.near : 0.01;
+    let far  = (camera && camera.far  !== undefined) ? camera.far  : 20.0;
+
+    if(renderer.xr && renderer.xr.isPresenting){
+      const xrCam = renderer.xr.getCamera(camera);
+      const refCam = (xrCam && xrCam.cameras && xrCam.cameras.length) ? xrCam.cameras[0] : xrCam;
+      if(refCam){
+        if(refCam.near !== undefined) near = refCam.near;
+        if(refCam.far  !== undefined) far  = refCam.far;
+      }
+    }
+
     for(const mat of occlusionMaterials){
       if(!mat || !mat.userData || !mat.userData.__depthShader) continue;
       const u = mat.userData.__depthShader.uniforms;
       if(!u) continue;
+
       u.uDepthTex.value = depthTex;
       u.uDepthSize.value.set(depthTexW, depthTexH);
       u.uViewportSize.value.set(size.x, size.y);
       u.uRawToMeters.value = depthRawToMeters;
-	    // required by perspectiveDepthToViewZ(...) in our injected shader code
-	    if(u.cameraNear) u.cameraNear.value = camera.near;
-	    if(u.cameraFar)  u.cameraFar.value  = camera.far;
+
+      if(u.uCamNear) u.uCamNear.value = near;
+      if(u.uCamFar)  u.uCamFar.value  = far;
+
+      // allow per-material tuning
+      if(u.uOcclEps && mat.userData.__occlEps !== undefined && mat.userData.__occlEps !== null){
+        u.uOcclEps.value = mat.userData.__occlEps;
+      }
+      if(u.uOcclBias && mat.userData.__occlBias !== undefined && mat.userData.__occlBias !== null){
+        u.uOcclBias.value = mat.userData.__occlBias;
+      }
     }
   }
-  const HIT_NORMAL_DOT = 0.90;   // чем выше, тем «горизонтальнее» должна быть плоскость (пол)
+
+const HIT_NORMAL_DOT = 0.90;   // чем выше, тем «горизонтальнее» должна быть плоскость (пол)
   const CLOSE_SNAP_DIST = 0.12; // м — радиус «прилипания» к первой точке для замыкания контура
   // Floor lock & helpers
   let floorLocked = false;
@@ -813,7 +839,7 @@ let depthCPUW = 0, depthCPUH = 0;
   function applyHeightOffset(){
     if(!surfaceMesh) return;
     const offsetM = parseFloat(heightMmSlider.value)/1000;
-    surfaceMesh.position.y = surfaceBaseY + offsetM;
+    surfaceMesh.position.y = surfaceBaseY + offsetM + SURFACE_FLOAT_EPS;
   }
 
 
@@ -1318,6 +1344,12 @@ let depthCPUW = 0, depthCPUH = 0;
 
     if(surfaceMesh){
       surfaceMesh.material = currentMaterial;
+      // Depth-occlusion tuning for floor overlays (reduces "popping" on flat surfaces)
+      surfaceMesh.material.userData.__occlEps = 0.03;
+      surfaceMesh.material.userData.__occlBias = 0.01;
+      surfaceMesh.material.polygonOffset = true;
+      surfaceMesh.material.polygonOffsetFactor = -1;
+      surfaceMesh.material.polygonOffsetUnits = -1;
       // держим прозрачность включенной — так можно делать плавные появления/исчезновения
       surfaceMesh.material.transparent = true;
       surfaceMesh.material.opacity = 1;
