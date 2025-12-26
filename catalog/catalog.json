@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "updatedAt": "2025-12-23",
+  "notes": "Каталог для AR-визуализации мощения. Добавляйте позиции через admin.html или вручную в catalog/catalog.json и catalog/tiles/.",
+  "items": [
+    {
+      "id": "demo_antika_neapol",
+      "name": "Антика (демо) — Неаполь",
+      "collection": "Антика",
+      "technology": "Вибропресс",
+      "thickness_mm": 60,
+      "tile_size_mm": [
+        120,
+        120
+      ],
+      "seam_mm": 5,
+      "patternSize_m": [
+        0.24,
+        0.24
+      ],
+      "variants": [
+        {
+          "id": "stone_mix",
+          "name": "Стоунмикс",
+          "tint": "#ffffff",
+          "thumb": "./catalog/tiles/demo_antika_neapol/thumb.jpg",
+          "maps": {
+            "base": "./catalog/tiles/demo_antika_neapol/base.png",
+            "normal": "./catalog/tiles/demo_antika_neapol/normal.png",
+            "roughness": "./catalog/tiles/demo_antika_neapol/roughness.png"
+          }
+        },
+        {
+          "id": "warm",
+          "name": "Тёплый микс",
+          "tint": "#f5e6d3",
+          "thumb": "./catalog/tiles/demo_antika_neapol/thumb.jpg",
+          "maps": {
+            "base": "./catalog/tiles/demo_antika_neapol/base.png",
+            "normal": "./catalog/tiles/demo_antika_neapol/normal.png",
+            "roughness": "./catalog/tiles/demo_antika_neapol/roughness.png"
+          }
+        }
+      ],
+      "tags": [
+        "демо",
+        "60мм",
+        "антика"
+      ]
+    },
+    {
+      "id": "demo_khersones",
+      "name": "Брусчатка (демо) — Херсонес",
+      "collection": "Брусчатка",
+      "technology": "Вибропресс",
+      "thickness_mm": 60,
+      "tile_size_mm": [
+        200,
+        100
+      ],
+      "seam_mm": 4,
+      "patternSize_m": [
+        0.3,
+        0.3
+      ],
+      "variants": [
+        {
+          "id": "kolormix",
+          "name": "Колормикс",
+          "tint": "#ffffff",
+          "thumb": "./catalog/tiles/demo_khersones/thumb.jpg",
+          "maps": {
+            "base": "./catalog/tiles/demo_khersones/base.png",
+            "normal": "./catalog/tiles/demo_khersones/normal.png",
+            "roughness": "./catalog/tiles/demo_khersones/roughness.png"
+          }
+        },
+        {
+          "id": "dark",
+          "name": "Темнее",
+          "tint": "#d3d3d3",
+          "thumb": "./catalog/tiles/demo_khersones/thumb.jpg",
+          "maps": {
+            "base": "./catalog/tiles/demo_khersones/base.png",
+            "normal": "./catalog/tiles/demo_khersones/normal.png",
+            "roughness": "./catalog/tiles/demo_khersones/roughness.png"
+          }
+        }
+      ],
+      "tags": [
+        "демо",
+        "60мм",
+        "брусчатка"
+      ]
+    }
+  ]
+}

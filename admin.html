@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0c10" />
+  <title>Админка каталога плитки — Web MVP</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body class="adminBody">
+  <header class="adminTop">
+    <div class="adminTitle">Админка каталога плитки <span class="muted">Web MVP</span></div>
+    <div class="adminActions">
+      <a class="btn ghost" href="./index.html" target="_blank" rel="noopener">Открыть демо</a>
+      <button id="btnReload" class="btn">Перезагрузить</button>
+      <button id="btnAddItem" class="btn primary">+ Добавить позицию</button>
+      <button id="btnExportJson" class="btn">Скачать catalog.json</button>
+      <button id="btnExportZip" class="btn">Скачать ZIP (json + файлы)</button>
+    </div>
+  </header>
+
+  <main class="adminMain">
+    <section class="adminLeft card">
+      <div class="adminPanelHead">
+        <div class="adminPanelTitle">Позиции</div>
+        <div class="adminHint">Редактируйте и экспортируйте. На GitHub Pages серверной записи нет — загрузку делаем через ZIP/коммит.</div>
+      </div>
+      <div id="itemsList" class="itemsList"></div>
+    </section>
+
+    <section class="adminRight card">
+      <div class="adminPanelHead">
+        <div class="adminPanelTitle">Редактор</div>
+        <div class="adminHint" id="editHint">Выберите позицию слева.</div>
+      </div>
+
+      <div id="editor" class="editor" hidden>
+        <div class="grid2">
+          <label class="aField">
+            <span>ID (латиница/цифры)</span>
+            <input id="fId" type="text" placeholder="например: antika_b1_f6_neapol" />
+          </label>
+          <label class="aField">
+            <span>Название</span>
+            <input id="fName" type="text" placeholder="Антика B-1 F-6 — Неаполь" />
+          </label>
+        </div>
+
+        <div class="grid3">
+          <label class="aField">
+            <span>Коллекция</span>
+            <input id="fCollection" type="text" placeholder="Антика" />
+          </label>
+          <label class="aField">
+            <span>Технология</span>
+            <input id="fTech" type="text" placeholder="Вибропресс" />
+          </label>
+          <label class="aField">
+            <span>Толщина (мм)</span>
+            <input id="fTh" type="number" min="10" step="1" />
+          </label>
+        </div>
+
+        <div class="grid3">
+          <label class="aField">
+            <span>Размер плитки X (мм)</span>
+            <input id="fSizeX" type="number" min="10" step="1" />
+          </label>
+          <label class="aField">
+            <span>Размер плитки Y (мм)</span>
+            <input id="fSizeY" type="number" min="10" step="1" />
+          </label>
+          <label class="aField">
+            <span>Шов (мм)</span>
+            <input id="fSeam" type="number" min="0" step="1" />
+          </label>
+        </div>
+
+        <div class="grid2">
+          <label class="aField">
+            <span>Pattern size X (м) — сколько метров покрывает 1 повтор текстуры</span>
+            <input id="fPatX" type="number" min="0.01" step="0.01" />
+          </label>
+          <label class="aField">
+            <span>Pattern size Y (м)</span>
+            <input id="fPatY" type="number" min="0.01" step="0.01" />
+          </label>
+        </div>
+
+        <label class="aField">
+          <span>Теги (через запятую)</span>
+          <input id="fTags" type="text" placeholder="60мм, антика, колормикс" />
+        </label>
+
+        <div class="row">
+          <button id="btnDelItem" class="btn danger">Удалить позицию</button>
+          <div class="spacer"></div>
+          <button id="btnAddVar" class="btn">+ Вариант цвета</button>
+          <button id="btnSaveItem" class="btn primary">Сохранить</button>
+        </div>
+
+        <hr class="sep"/>
+
+        <div class="adminPanelTitle">Варианты</div>
+        <div id="varsList" class="varsList"></div>
+      </div>
+
+      <pre id="adminDbg" class="adminDbg" hidden></pre>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script type="module" src="admin.js"></script>
+</body>
+</html>
