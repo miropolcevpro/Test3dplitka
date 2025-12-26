@@ -484,7 +484,8 @@ function pointInUI(target){
   gridHelper.material.transparent = true;
   gridHelper.material.opacity = 0.35;
   gridHelper.renderOrder = 5;
-  try{ gridHelper.material.depthTest = false; }catch(_){}
+  try{ gridHelper.material.depthTest = true; gridHelper.material.depthWrite = false; }catch(_){}
+  enableDepthOcclusionOnMaterial(gridHelper.material);
   lockedRoot.add(gridHelper);
 
   function updateGridUI(){
@@ -567,6 +568,18 @@ function pointInUI(target){
   let lastBestHit = null;
   let depthSensingAvailable = false;
 
+
+// Depth occlusion state (WebXR Depth Sensing)
+// We upload XR depth data into a small DataTexture each frame and use it in fragment shaders to discard
+// pixels that should be hidden behind real-world geometry.
+let depthOcclusionEnabled = true;
+let depthTex = null;          // THREE.DataTexture (LuminanceAlpha packed 16-bit depth)
+let depthTexW = 0, depthTexH = 0;
+let depthRawToMeters = 0.001; // updated from XRDepthInformation
+let hasDepthThisFrame = false;
+const occlusionMaterials = new Set();
+
+
   const HIT_SMOOTHING = 0.25;    // сглаживание позиции/ориентации ретикла (меньше дрожание)
   const DRAW_SNAP_M = 0.12;      // «магнит» к первой точке при замыкании контура
   const FLOOR_Y_TOL = 0.06;      // допуск по высоте после калибровки (м)
@@ -635,6 +648,8 @@ function pointInUI(target){
       roughness: 1.0,
       metalness: 0.0
     });
+
+    enableDepthOcclusionOnMaterial(mat);
 
     // Tint (multiply)
     const tint = variant?.tint ? hexToInt(variant.tint) : 0xffffff;
@@ -962,6 +977,7 @@ function pointInUI(target){
 
     const geom = new THREE.BufferGeometry().setFromPoints(pts);
     const mat = new THREE.LineBasicMaterial({ color: 0x93c5fd });
+    enableDepthOcclusionOnMaterial(mat);
     drawLine = new THREE.Line(geom, mat);
     drawLine.renderOrder = 10;
     drawLine.material.depthTest = false;
@@ -1173,6 +1189,7 @@ function pointInUI(target){
     }
     const geom = new THREE.BufferGeometry().setFromPoints([measureA, measureB]);
     const mat = new THREE.LineBasicMaterial({ color: 0xf59e0b });
+    enableDepthOcclusionOnMaterial(mat);
     measureLine = new THREE.Line(geom, mat);
     lockedRoot.add(measureLine);
   }
@@ -1451,6 +1468,44 @@ function pointInUI(target){
 
   // Main render loop (works for both preview and XR)
   renderer.setAnimationLoop((t, frame)=>{
+
+// Update depth texture for occlusion (if available)
+hasDepthThisFrame = false;
+if(depthOcclusionEnabled && depthSensingEnabled && frame && typeof frame.getDepthInformation === 'function'){
+  try{
+    const pose = frame.getViewerPose(refSpace);
+    if(pose && pose.views && pose.views.length){
+      const depthInfo = frame.getDepthInformation(pose.views[0]);
+      if(depthInfo && depthInfo.data && depthInfo.width && depthInfo.height){
+        const w = depthInfo.width, h = depthInfo.height;
+        const buf = depthInfo.data.buffer ? depthInfo.data.buffer : depthInfo.data;
+        const byteOffset = depthInfo.data.byteOffset || 0;
+        const byteLength = depthInfo.data.byteLength || buf.byteLength;
+        const src = new Uint8Array(buf, byteOffset, byteLength);
+
+        if(!depthTex || w !== depthTexW || h !== depthTexH){
+          depthTexW = w; depthTexH = h;
+          const data = new Uint8Array(w * h * 2);
+          data.set(src.subarray(0, data.length));
+
+          depthTex = new THREE.DataTexture(data, w, h, THREE.LuminanceAlphaFormat, THREE.UnsignedByteType);
+          depthTex.minFilter = THREE.NearestFilter;
+          depthTex.magFilter = THREE.NearestFilter;
+          depthTex.generateMipmaps = false;
+          depthTex.flipY = false;
+          depthTex.needsUpdate = true;
+        } else {
+          depthTex.image.data.set(src.subarray(0, depthTex.image.data.length));
+          depthTex.needsUpdate = true;
+        }
+
+        depthRawToMeters = depthInfo.rawValueToMeters || depthRawToMeters;
+        hasDepthThisFrame = true;
+      }
+    }
+  }catch(_){}
+}
+updateDepthOcclusionUniforms();
     // Update locked root from anchor (reduces drift) if available
     if(frame && floorAnchor && floorAnchor.anchorSpace){
       try{
