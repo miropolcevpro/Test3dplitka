@@ -4,27 +4,24 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#0a0c10" />
-  <title>Устройство не поддерживает WebXR AR</title>
+  <title>AR недоступен</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body class="unsupportedBody">
-  <main class="unsupportedMain card">
-    <img class="unsupportedLogo" src="./assets/logo.png" alt="Логотип" />
-    <h1 class="unsupportedTitle">WebXR AR не поддерживается</h1>
-    <p class="unsupportedText">
-      Этот демо‑сайт использует <b>WebXR immersive‑ar</b>.
-      Обычно он работает в <b>Chrome на Android</b> с установленным <b>Google Play Services for AR (ARCore)</b>.
+  <div class="unsupportedCard">
+    <img class="unsupportedLogo" src="assets/logo.png" alt="Логотип" />
+    <h1>Устройство не поддерживает WebXR AR</h1>
+    <p>
+      Для AR‑режима нужен браузер с поддержкой <b>WebXR immersive‑ar</b>.
+      Обычно это <b>Chrome на Android</b> с установленным <b>Google Play Services for AR (ARCore)</b>.
     </p>
-    <ul class="unsupportedList">
-      <li>Проверьте, что вы открываете страницу в <b>Chrome</b> (не в Telegram/Instagram встроенном браузере).</li>
-      <li>Установите/обновите <b>Google Play Services for AR</b>.</li>
+    <ul>
+      <li>Откройте эту страницу в Chrome на Android.</li>
+      <li>Проверьте, что ARCore установлен и обновлён.</li>
       <li>Разрешите доступ к камере.</li>
     </ul>
-    <div class="unsupportedActions">
-      <a class="btn primary" href="./index.html">Попробовать снова</a>
-      <a class="btn" href="./admin.html">Админка каталога</a>
-    </div>
-    <p class="unsupportedNote muted">Если вы на iPhone/iPad: Safari обычно не поддерживает WebXR AR. Для iOS нужен нативный AR‑клиент.</p>
-  </main>
+    <p class="muted">Если вы на iPhone/iPad: Safari обычно не поддерживает WebXR immersive‑ar.</p>
+    <a class="btn primary" href="./index.html">Вернуться</a>
+  </div>
 </body>
 </html>

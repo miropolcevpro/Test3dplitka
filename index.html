@@ -4,42 +4,41 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#0a0c10" />
-  <title>AR мощение тротуарной плитки — Web</title>
+  <title>AR мощение тротуарной плитки — Web MVP</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="manifest" href="manifest.webmanifest" />
 </head>
 <body>
-  <canvas id="c"></canvas>
 
-  <!-- Splash (каждый запуск) -->
-  <div id="splash" class="splash" aria-hidden="false">
-    <div class="splashCard">
-      <img class="splashLogo" src="./assets/logo.png" alt="Логотип" />
-      <div id="splashText" class="splashText">Загрузка…</div>
-      <div id="splashSub" class="splashSub">Проверяем AR и подготавливаем материалы</div>
-      <div class="splashBar"><div id="splashBar" class="splashBarFill"></div></div>
+  <div id="splash" class="splash">
+    <div class="splashInner">
+      <img class="splashLogo" src="assets/logo.png" alt="Логотип" />
+      <div class="splashSpinner" aria-hidden="true"></div>
+      <div class="splashText">Загрузка…</div>
     </div>
   </div>
 
+  <canvas id="c"></canvas>
+
   <header class="topbar">
-    <div class="title">AR мощение <span class="ver">Web</span></div>
+    <div class="title">AR мощение <span class="ver">Web MVP</span></div>
     <div id="status" class="status">инициализация…</div>
   </header>
 
-  <section id="help" class="card help" role="dialog" aria-label="Подсказки" hidden>
+  <section id="help" class="card help" role="dialog" aria-label="Подсказки">
     <div class="cardHead">
-      <div class="cardTitle">Контур: как пользоваться</div>
+      <div class="cardTitle">Как пользоваться</div>
       <button id="closeHelp" class="iconBtn" aria-label="Скрыть подсказки">×</button>
     </div>
     <ol class="helpList">
       <li>Откройте сайт в <b>Chrome на Android</b> (нужен ARCore).</li>
-      <li>Нажмите <b>Включить AR</b> и наведите камеру на пол.</li>
-      <li>Нажмите <b>Калибр. пол</b>, когда маркер точно на полу.</li>
-      <li>Тапайте по углам области — ставятся точки контура.</li>
-      <li>Замкните контур: поставьте последнюю точку рядом с первой.</li>
-      <li>Нажмите <b>Визуализировать</b> → плитка заполнит контур.</li>
+      <li>Выберите плитку в каталоге → нажмите <b>Включить AR</b>.</li>
+      <li>Наведите камеру на пол — появится маркер.</li>
+            <li><b>Контур:</b> сначала нажмите <b>Калибр. пол</b>, затем тапайте по углам → <b>Замкнуть</b> → <b>Визуализировать</b>.</li>
+      <li><b>Замер:</b> 2 тапа = расстояние, контур = площадь.</li>
     </ol>
     <div class="helpNote">
+      iPhone/iPad: в Safari обычно нет WebXR «immersive-ar», поэтому будет только 3D‑превью (без привязки к полу).<br/>
       Админка каталога: <a href="./admin.html" target="_blank" rel="noopener">admin.html</a>
     </div>
   </section>
@@ -55,40 +54,55 @@
       <button id="enterArBtn" class="btn primary">Включить AR</button>
       <button id="exitArBtn" class="btn" disabled>Выход</button>
       <button id="clearBtn" class="btn">Очистить</button>
+      <button id="calibBtn" class="btn">Калибр. пол</button>
+      <button id="gridBtn" class="btn">Сетка</button>
       <button id="hidePanelBtn" class="btn ghost">Скрыть</button>
     </div>
 
     <div class="card compact">
-      <div class="cardTitle">Трекинг пола</div>
-      <div class="panelRow small">
-        <button id="calibrateBtn" class="btn primary">Калибр. пол</button>
-        <button id="recalibrateBtn" class="btn">Перекалибр.</button>
-        <label class="chk">
-          <input id="gridToggle" type="checkbox" checked />
-          <span>Сетка</span>
-        </label>
+      <div class="cardTitle">Режим</div>
+      <div class="seg">        <button id="modeDraw" class="segBtn segOn">Контур</button>
+        <button id="modeMeasure" class="segBtn">Замер</button>
       </div>
-      <div class="note" id="calibHint">Сначала наведите маркер на пол и нажмите «Калибр. пол».</div>
+      <div class="note" id="modeHint">Контур: калибруйте пол, затем ставьте точки.</div>
     </div>
 
-    <div class="card compact">
-      <div class="cardTitle">Контур</div>
-      <div class="note" id="drawStatus">Нажмите «Калибр. пол», затем ставьте точки.</div>
+    <div class="card compact" id="drawCard" hidden>
+      <div class="cardTitle">Разметка контура</div>
+      <div class="note">1) Нажмите «Калибр. пол» (маркер должен быть на полу). 2) Тапайте точки (4–10). 3) Замкните контур — появится кнопка «Визуализировать».</div>
       <div class="panelRow small">
         <button id="undoBtn" class="btn">↶ Отмена</button>
-        <button id="resetPolyBtn" class="btn">Сброс</button>
+        <button id="closePolyBtn" class="btn primary">Замкнуть контур</button>
+        <button id="resetPolyBtn" class="btn">Очистить</button>
       </div>
       <div class="note" id="areaOut">—</div>
+      <div class="note" id="drawStatus"></div>
+    </div>
+
+    <div class="card compact" id="measureCard" hidden>
+      <div class="cardTitle">Замер</div>
+      <div class="note">Тапните 2 точки на полу — покажем расстояние. В режиме «Контур» показываем площадь.</div>
+      <div class="panelRow small">
+        <button id="clearMeasureBtn" class="btn">Сбросить замер</button>
+      </div>
+      <div class="note" id="measureOut">—</div>
     </div>
 
     <div class="card compact">
       <div class="cardTitle">Плитка</div>
       <div class="note"><b id="tileName">—</b></div>
       <div id="variantRow" class="variantRow"></div>
+
       <label class="field">
         <span>Масштаб текстуры: <b id="texVal">1.00</b>x</span>
         <input id="texScale" type="range" min="0.25" max="3" step="0.05" value="1.00" />
       </label>
+
+      <label class="field">
+        <span>Высота (мм): <b id="hVal">-5</b></span>
+        <input id="heightMm" type="range" min="-20" max="10" step="1" value="-5" />
+      </label>
+
       <label class="field">
         <span>Раскладка</span>
         <select id="layout">
@@ -98,21 +112,17 @@
           <option value="running">Смещение рядов</option>
         </select>
       </label>
+
       <div class="panelRow small">
         <button id="openCatalogBtn" class="btn">Открыть каталог</button>
+        <button id="shotBtn" class="btn">Скриншот</button>
       </div>
     </div>
 
     <div class="note small muted">
-      Важно: после «Перекалибр.» контур сбрасывается.
+      WebXR AR работает в Chrome на Android. Для iPhone нужна нативная версия (Unity/ARKit) или специальный WebXR Viewer.
     </div>
   </section>
-
-  <!-- Bottom CTA (не закрывает обзор) -->
-  <div id="cta" class="cta" hidden>
-    <button id="visualizeBtn" class="btn primary">Визуализировать</button>
-    <button id="shotBtn" class="btn">Скриншот</button>
-  </div>
 
   <div id="catalogOverlay" class="catalogOverlay hidden" aria-hidden="true">
     <div class="catalogModal">
@@ -133,6 +143,12 @@
 
       <div id="catalogGrid" class="catalogGrid"></div>
     </div>
+  </div>
+
+
+  <div id="actionBar" class="actionBar hidden" aria-live="polite">
+    <button id="actionBtn" class="actionBtn">Визуализировать</button>
+    <button id="actionClose" class="actionClose" aria-label="Скрыть">×</button>
   </div>
 
   <pre id="dbg" class="dbg" hidden></pre>
