@@ -695,6 +695,10 @@ if(uDepthSize.x > 1.0 && uDepthSize.y > 1.0){
 
 const HIT_NORMAL_DOT = 0.90;   // чем выше, тем «горизонтальнее» должна быть плоскость (пол)
   const CLOSE_SNAP_DIST = 0.12; // м — радиус «прилипания» к первой точке для замыкания контура
+
+  // Small vertical offset (meters) to avoid z-fighting and depth-edge artifacts.
+  // Keep it tiny; larger values will make the surface visibly "float" above the floor.
+  const SURFACE_FLOAT_EPS = 0.001; // 1mm
   // Floor lock & helpers
   let floorLocked = false;
   let lockedFloorY = 0;
