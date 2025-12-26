@@ -660,6 +660,7 @@ if(uDepthSize.x > 1.0 && uDepthSize.y > 1.0){
     }
   }
   const HIT_NORMAL_DOT = 0.90;   // чем выше, тем «горизонтальнее» должна быть плоскость (пол)
+  const CLOSE_SNAP_DIST = 0.12; // м — радиус «прилипания» к первой точке для замыкания контура
   // Floor lock & helpers
   let floorLocked = false;
   let lockedFloorY = 0;
