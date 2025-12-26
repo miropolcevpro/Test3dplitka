@@ -541,6 +541,7 @@ function pointInUI(target){
   const _tmpCamPos = new THREE.Vector3();
   const _tmpDir = new THREE.Vector3();
   const _tmpWorldHit = new THREE.Vector3();
+  const _tmpVec2 = new THREE.Vector2();
   const _flatEuler = new THREE.Euler(0,0,0,'YXZ');
   const _flatQuat = new THREE.Quaternion();
   const _yawFwd = new THREE.Vector3();
@@ -559,11 +560,104 @@ function pointInUI(target){
     out.setFromAxisAngle(_worldUp, yaw);
     return out;
   }
+
+
+  // -------- Depth-occlusion (WebXR Depth API, CPU -> RGBA8 texture) --------
+  // We keep this lightweight:
+  // - depth is read ONLY when there is something to occlude (occlusionMaterials.size > 0)
+  // - depth is packed into an RGBA8 DataTexture to avoid WebGL2-only formats
+  // - materials get a small shader patch that discards fragments behind real-world depth
+
+  function enableDepthOcclusionOnMaterial(material){
+    if(!material) return;
+    if(material.userData && material.userData.__depthOcclusion) return;
+    material.userData = material.userData || {};
+    material.userData.__depthOcclusion = true;
+    occlusionMaterials.add(material);
+
+    material.onBeforeCompile = (shader) => {
+      material.userData.__depthShader = shader;
+      shader.uniforms.uDepthTex = { value: depthTex };
+      shader.uniforms.uDepthSize = { value: new THREE.Vector2(depthTexW, depthTexH) };
+      shader.uniforms.uViewportSize = { value: new THREE.Vector2(1, 1) };
+      shader.uniforms.uRawToMeters = { value: depthRawToMeters };
+      shader.uniforms.uOcclEps = { value: 0.015 }; // meters (tune if you see edge "popping")
+
+      // Make sure packing helpers exist (for perspectiveDepthToViewZ)
+      if(!shader.fragmentShader.includes('#include <packing>')){
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          '#include <common>\n#include <packing>'
+        );
+      }
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        '#include <common>\n' +
+        'uniform sampler2D uDepthTex;\n' +
+        'uniform vec2 uDepthSize;\n' +
+        'uniform vec2 uViewportSize;\n' +
+        'uniform float uRawToMeters;\n' +
+        'uniform float uOcclEps;\n'
+      );
+
+      const occlChunk = `
+// --- Depth occlusion (discard fragments behind real geometry) ---
+if(uDepthSize.x > 1.0 && uDepthSize.y > 1.0){
+  vec2 uv = gl_FragCoord.xy / uViewportSize;
+  // Depth API buffer is packed into RGBA8: R=low byte, G=high byte
+  vec4 dd = texture2D(uDepthTex, uv);
+  float lowB  = dd.r * 255.0;
+  float highB = dd.g * 255.0;
+  float rawDepth = lowB + highB * 256.0;        // 0..65535
+  float realMeters = rawDepth * uRawToMeters;   // meters from camera
+  if(realMeters > 0.0){
+    float viewZ = perspectiveDepthToViewZ(gl_FragCoord.z, cameraNear, cameraFar);
+    float virtMeters = -viewZ;
+    if(virtMeters > realMeters + uOcclEps) discard;
+  }
+}
+`;
+
+      // Insert occlusion check late in the fragment shader (before dithering)
+      if(shader.fragmentShader.includes('#include <dithering_fragment>')){
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          occlChunk + '\n#include <dithering_fragment>'
+        );
+      }else if(shader.fragmentShader.includes('gl_FragColor')){
+        shader.fragmentShader = shader.fragmentShader.replace(
+          /gl_FragColor\s*=\s*vec4\(/,
+          occlChunk + '\n  gl_FragColor = vec4('
+        );
+      }else{
+        // Fallback: append at end
+        shader.fragmentShader += '\n' + occlChunk;
+      }
+    };
+
+    // Ensure recompilation with the patch
+    material.needsUpdate = true;
+  }
+
+  function updateDepthOcclusionUniforms(){
+    if(!renderer) return;
+    const size = renderer.getSize(_tmpVec2);
+    for(const mat of occlusionMaterials){
+      if(!mat || !mat.userData || !mat.userData.__depthShader) continue;
+      const u = mat.userData.__depthShader.uniforms;
+      if(!u) continue;
+      u.uDepthTex.value = depthTex;
+      u.uDepthSize.value.set(depthTexW, depthTexH);
+      u.uViewportSize.value.set(size.x, size.y);
+      u.uRawToMeters.value = depthRawToMeters;
+    }
+  }
   const HIT_NORMAL_DOT = 0.90;   // чем выше, тем «горизонтальнее» должна быть плоскость (пол)
   // Floor lock & helpers
   let floorLocked = false;
   let lockedFloorY = 0;
-  let gridEnabled = true; // default ON
+  let gridEnabled = false; // default OFF (grid was confusing / often misleads users)
   let floorAnchor = null;
   let lastBestHit = null;
   let depthSensingAvailable = false;
@@ -572,12 +666,14 @@ function pointInUI(target){
 // Depth occlusion state (WebXR Depth Sensing)
 // We upload XR depth data into a small DataTexture each frame and use it in fragment shaders to discard
 // pixels that should be hidden behind real-world geometry.
-let depthOcclusionEnabled = true;
+let depthOcclusionEnabled = true; // default ON (auto-falls back if Depth API not available)
 let depthTex = null;          // THREE.DataTexture (LuminanceAlpha packed 16-bit depth)
 let depthTexW = 0, depthTexH = 0;
 let depthRawToMeters = 0.001; // updated from XRDepthInformation
 let hasDepthThisFrame = false;
 const occlusionMaterials = new Set();
+let depthCPUBufferRGBA = null; // Uint8Array RGBA packed depth
+let depthCPUW = 0, depthCPUH = 0;
 
 
   const HIT_SMOOTHING = 0.25;    // сглаживание позиции/ориентации ретикла (меньше дрожание)
@@ -822,7 +918,7 @@ const occlusionMaterials = new Set();
     // Lock root to current hit pose (fallback if anchors unavailable)
     lockedRoot.matrixAutoUpdate = false;
     // Keep it perfectly horizontal: yaw-only rotation + unit scale
-    yawOnlyQuatFrom(lastHitQuat, _flatQuat);
+    yawOnlyQuatFrom(camera.quaternion, _flatQuat); // yaw from camera, not plane pose
 
     lockedRoot.matrix.compose(lastHitPos, _flatQuat, _oneScale);
     lockedRoot.matrix.decompose(lockedRoot.position, lockedRoot.quaternion, lockedRoot.scale);
@@ -1469,43 +1565,60 @@ const occlusionMaterials = new Set();
   // Main render loop (works for both preview and XR)
   renderer.setAnimationLoop((t, frame)=>{
 
-// Update depth texture for occlusion (if available)
-hasDepthThisFrame = false;
-if(depthOcclusionEnabled && depthSensingEnabled && frame && typeof frame.getDepthInformation === 'function'){
+// Update depth texture for occlusion (WebXR Depth API)
+// NOTE: depth read + upload can be expensive, so we only do it when something actually needs occlusion.
+if(depthOcclusionEnabled && occlusionMaterials.size > 0 && frame && typeof frame.getDepthInformation === 'function'){
+  hasDepthThisFrame = false;
   try{
-    const pose = frame.getViewerPose(refSpace);
-    if(pose && pose.views && pose.views.length){
-      const depthInfo = frame.getDepthInformation(pose.views[0]);
-      if(depthInfo && depthInfo.data && depthInfo.width && depthInfo.height){
-        const w = depthInfo.width, h = depthInfo.height;
-        const buf = depthInfo.data.buffer ? depthInfo.data.buffer : depthInfo.data;
-        const byteOffset = depthInfo.data.byteOffset || 0;
-        const byteLength = depthInfo.data.byteLength || buf.byteLength;
-        const src = new Uint8Array(buf, byteOffset, byteLength);
+    const ref = renderer.xr.getReferenceSpace();
+    const viewerPose = frame.getViewerPose(ref);
+    if(viewerPose && viewerPose.views && viewerPose.views[0]){
+      const view = viewerPose.views[0];
+      const depthInfo = frame.getDepthInformation(view);
+      if(depthInfo && depthInfo.data){
+        hasDepthThisFrame = true;
+        depthSensingAvailable = true;
+        depthRawToMeters = depthInfo.rawValueToMeters || depthRawToMeters;
 
-        if(!depthTex || w !== depthTexW || h !== depthTexH){
+        const w = depthInfo.width|0;
+        const h = depthInfo.height|0;
+
+        // Allocate / resize buffers & texture if needed
+        if(!depthCPUBufferRGBA || w !== depthCPUW || h !== depthCPUH || !depthTex){
+          depthCPUW = w; depthCPUH = h;
+          depthCPUBufferRGBA = new Uint8Array(w * h * 4);
           depthTexW = w; depthTexH = h;
-          const data = new Uint8Array(w * h * 2);
-          data.set(src.subarray(0, data.length));
 
-          depthTex = new THREE.DataTexture(data, w, h, THREE.LuminanceAlphaFormat, THREE.UnsignedByteType);
+          depthTex = new THREE.DataTexture(depthCPUBufferRGBA, w, h, THREE.RGBAFormat, THREE.UnsignedByteType);
+          depthTex.flipY = false;
+          depthTex.generateMipmaps = false;
           depthTex.minFilter = THREE.NearestFilter;
           depthTex.magFilter = THREE.NearestFilter;
-          depthTex.generateMipmaps = false;
-          depthTex.flipY = false;
           depthTex.needsUpdate = true;
-        } else {
-          depthTex.image.data.set(src.subarray(0, depthTex.image.data.length));
-          depthTex.needsUpdate = true;
+        }else{
+          depthTexW = w; depthTexH = h;
         }
 
-        depthRawToMeters = depthInfo.rawValueToMeters || depthRawToMeters;
-        hasDepthThisFrame = true;
+        // Pack Uint16 depth into RGBA8 (R=low byte, G=high byte)
+        const u16 = new Uint16Array(depthInfo.data);
+        const rgba = depthCPUBufferRGBA;
+        const n = Math.min(u16.length, w * h);
+        for(let i=0, j=0; i<n; i++, j+=4){
+          const v = u16[i];
+          rgba[j]   = v & 255;
+          rgba[j+1] = (v >> 8) & 255;
+          rgba[j+2] = 0;
+          rgba[j+3] = 255;
+        }
+        depthTex.needsUpdate = true;
+
+        if(typeof updateDepthOcclusionUniforms === 'function') updateDepthOcclusionUniforms();
       }
     }
-  }catch(_){}
+  }catch(e){
+    // depth not available this frame on this device/session
+  }
 }
-updateDepthOcclusionUniforms();
     // Update locked root from anchor (reduces drift) if available
     if(frame && floorAnchor && floorAnchor.anchorSpace){
       try{
