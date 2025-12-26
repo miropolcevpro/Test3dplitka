@@ -568,6 +568,9 @@ function pointInUI(target){
   // - depth is packed into an RGBA8 DataTexture to avoid WebGL2-only formats
   // - materials get a small shader patch that discards fragments behind real-world depth
 
+  // IMPORTANT: initialize BEFORE any function touches it to avoid TDZ ReferenceError.
+  let occlusionMaterials = new Set();
+
   function enableDepthOcclusionOnMaterial(material){
     if(!material) return;
     if(material.userData && material.userData.__depthOcclusion) return;
@@ -671,7 +674,7 @@ let depthTex = null;          // THREE.DataTexture (LuminanceAlpha packed 16-bit
 let depthTexW = 0, depthTexH = 0;
 let depthRawToMeters = 0.001; // updated from XRDepthInformation
 let hasDepthThisFrame = false;
-const occlusionMaterials = new Set();
+	// occlusionMaterials is initialized earlier (above enableDepthOcclusionOnMaterial)
 let depthCPUBufferRGBA = null; // Uint8Array RGBA packed depth
 let depthCPUW = 0, depthCPUH = 0;
 
