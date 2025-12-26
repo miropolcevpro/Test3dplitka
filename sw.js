@@ -1,6 +1,6 @@
 // Simple service worker for GitHub Pages (offline after first visit)
 // Bump this version when you deploy updates so clients don't keep stale cached JS/CSS.
-const CACHE = "paver-ar-cache-v5f4-fix6";
+const CACHE = "paver-ar-cache-v5f4-fix7";
 const CORE = [
   "./",
   "./index.html",

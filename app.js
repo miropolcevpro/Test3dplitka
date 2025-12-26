@@ -479,6 +479,9 @@ function pointInUI(target){
   }
 
   // Grid helper (visual floor aid) — shown after calibration
+  // Depth-occlusion registry (MUST be initialized before any enableDepthOcclusionOnMaterial() calls)
+  let occlusionMaterials = new Set();
+
   const gridHelper = new THREE.GridHelper(8, 16);
   gridHelper.visible = false;
   gridHelper.material.transparent = true;
@@ -569,7 +572,7 @@ function pointInUI(target){
   // - materials get a small shader patch that discards fragments behind real-world depth
 
   // IMPORTANT: initialize BEFORE any function touches it to avoid TDZ ReferenceError.
-  let occlusionMaterials = new Set();
+  // occlusionMaterials initialized above
 
   function enableDepthOcclusionOnMaterial(material){
     if(!material) return;
