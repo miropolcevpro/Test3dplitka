@@ -542,6 +542,22 @@ function pointInUI(target){
   const _tmpWorldHit = new THREE.Vector3();
   const _flatEuler = new THREE.Euler(0,0,0,'YXZ');
   const _flatQuat = new THREE.Quaternion();
+  const _yawFwd = new THREE.Vector3();
+  const _oneScale = new THREE.Vector3(1,1,1);
+  function yawOnlyQuatFrom(q, out){
+    // Extract yaw (rotation around Y) only. Keeps content perfectly horizontal.
+    _yawFwd.set(0,0,-1).applyQuaternion(q);
+    _yawFwd.y = 0;
+    if(_yawFwd.lengthSq() < 1e-8){
+      out.identity();
+      return out;
+    }
+    _yawFwd.normalize();
+    // yaw=0 should correspond to looking towards -Z
+    const yaw = Math.atan2(_yawFwd.x, -_yawFwd.z);
+    out.setFromAxisAngle(_worldUp, yaw);
+    return out;
+  }
   const HIT_NORMAL_DOT = 0.90;   // чем выше, тем «горизонтальнее» должна быть плоскость (пол)
   // Floor lock & helpers
   let floorLocked = false;
@@ -556,8 +572,8 @@ function pointInUI(target){
   const FLOOR_Y_TOL = 0.06;      // допуск по высоте после калибровки (м)
   const LOCK_RAY_MIN_DIR_Y = -0.06; // нужно смотреть вниз
   const LOCK_RAY_MAX_DIST = 20.0;      // макс дистанция пересечения (м)
-  const FLOOR_MIN_BELOW_CAM = 0.20; // пол должен быть заметно ниже камеры при калибровке (м)
-  const HIT_NORMAL_DOT_STRICT = Math.max(HIT_NORMAL_DOT, 0.90); // более строгий порог для калибровки
+  const FLOOR_MIN_BELOW_CAM = 0.45; // пол должен быть заметно ниже камеры при калибровке (м)
+  const HIT_NORMAL_DOT_STRICT = Math.max(HIT_NORMAL_DOT, 0.97); // более строгий порог для калибровки
   let lastHitIsFloor = false;
 
   // Material/texture cache
@@ -790,14 +806,12 @@ function pointInUI(target){
 
     // Lock root to current hit pose (fallback if anchors unavailable)
     lockedRoot.matrixAutoUpdate = false;
-    // Use hit pose (without reticle scale)
-    // Убираем наклон (pitch/roll) — оставляем только yaw, чтобы сетка/контур не "висели" под углом
-    _flatEuler.setFromQuaternion(lastHitQuat, "YXZ");
-    _flatEuler.x = 0; _flatEuler.z = 0;
-    _flatQuat.setFromEuler(_flatEuler);
+    // Keep it perfectly horizontal: yaw-only rotation + unit scale
+    yawOnlyQuatFrom(lastHitQuat, _flatQuat);
 
-    lockedRoot.matrix.compose(lastHitPos, _flatQuat, _hitScale);
+    lockedRoot.matrix.compose(lastHitPos, _flatQuat, _oneScale);
     lockedRoot.matrix.decompose(lockedRoot.position, lockedRoot.quaternion, lockedRoot.scale);
+    lockedRoot.scale.copy(_oneScale);
     lockedFloorY = lockedRoot.position.y;
     floorLocked = true;
     lockedRoot.updateMatrixWorld(true);
@@ -1448,12 +1462,11 @@ function pointInUI(target){
           lockedRoot.matrix.copy(_tmpMat);
           lockedRoot.matrix.decompose(lockedRoot.position, lockedRoot.quaternion, lockedRoot.scale);
 
-          // Убираем pitch/roll, чтобы «пол» оставался горизонтальным даже при шуме ориентации якоря
-          _flatEuler.setFromQuaternion(lockedRoot.quaternion, "YXZ");
-          _flatEuler.x = 0; _flatEuler.z = 0;
-          lockedRoot.quaternion.setFromEuler(_flatEuler);
+          // Remove pitch/roll from anchor orientation: keep only yaw so the floor stays perfectly horizontal
+          yawOnlyQuatFrom(lockedRoot.quaternion, _flatQuat);
+          lockedRoot.quaternion.copy(_flatQuat);
 
-          lockedRoot.scale.set(1,1,1);
+          lockedRoot.scale.copy(_oneScale);
           lockedRoot.matrix.compose(lockedRoot.position, lockedRoot.quaternion, lockedRoot.scale);
 
           lockedRoot.updateMatrixWorld(true);
