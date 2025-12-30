@@ -20,17 +20,16 @@
         11,
         12
       ],
-      "tech": {
-        "Толщина": "60мм",
-        "Размер, мм": "118х98х95х60 / 108х88х95х60 / 97х77х95х60 / 87х67х95х60 / 76х56х95х60",
-        "Количество м² на поддоне": "10.2",
-        "Вес поддона, кг": "1400"
-      },
+    "tech": {
+      "Толщина": "60мм",
+      "Размер, мм": "118х98х95х60 / 108х88х95х60 / 97х77х95х60 / 87х67х95х60 / 76х56х95х60",
+      "Количество м² на поддоне": "10.2",
+      "Вес поддона, кг": "1400"
+    },
       "gallery": [
         "assets/gallery/antika/1.webp",
         "assets/gallery/antika/2.webp",
-        "assets/gallery/antika/3.webp",
-        "assets/gallery/antika/4.webp"
+        "assets/gallery/antika/3.webp"
       ]
     },
     {
@@ -57,13 +56,7 @@
         "Серия": "Брусчатка",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/bruschatka/1.webp",
-        "assets/gallery/bruschatka/2.webp",
-        "assets/gallery/bruschatka/3.webp",
-        "assets/gallery/bruschatka/4.webp"
-      ]
+      }
     },
     {
       "id": "klassika",
@@ -89,14 +82,7 @@
         "Серия": "Классика",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/klassika/1.webp",
-        "assets/gallery/klassika/2.webp",
-        "assets/gallery/klassika/3.webp",
-        "assets/gallery/klassika/4.webp"
-      ],
-      "surfacePalette": "https://storage.yandexcloud.net/webar3dtexture/palettes/klassika.json"
+      }
     },
     {
       "id": "poligonal",
@@ -122,13 +108,7 @@
         "Серия": "Полигональ",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/poligonal/1.webp",
-        "assets/gallery/poligonal/2.webp",
-        "assets/gallery/poligonal/3.webp",
-        "assets/gallery/poligonal/4.webp"
-      ]
+      }
     },
     {
       "id": "promenad2",
@@ -154,13 +134,7 @@
         "Серия": "Променад II",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/promenad2/1.webp",
-        "assets/gallery/promenad2/2.webp",
-        "assets/gallery/promenad2/3.webp",
-        "assets/gallery/promenad2/4.webp"
-      ]
+      }
     },
     {
       "id": "new_gorod",
@@ -186,13 +160,7 @@
         "Серия": "Новый город",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/new_gorod/1.webp",
-        "assets/gallery/new_gorod/2.webp",
-        "assets/gallery/new_gorod/3.webp",
-        "assets/gallery/new_gorod/4.webp"
-      ]
+      }
     },
     {
       "id": "old_gorod",
@@ -218,13 +186,7 @@
         "Серия": "Старый город",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/old_gorod/1.webp",
-        "assets/gallery/old_gorod/2.webp",
-        "assets/gallery/old_gorod/3.webp",
-        "assets/gallery/old_gorod/4.webp"
-      ]
+      }
     },
     {
       "id": "rigel",
@@ -250,13 +212,7 @@
         "Серия": "Ригель",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/rigel/1.webp",
-        "assets/gallery/rigel/2.webp",
-        "assets/gallery/rigel/3.webp",
-        "assets/gallery/rigel/4.webp"
-      ]
+      }
     },
     {
       "id": "paladio",
@@ -282,13 +238,7 @@
         "Серия": "Паладио",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/paladio/1.webp",
-        "assets/gallery/paladio/2.webp",
-        "assets/gallery/paladio/3.webp",
-        "assets/gallery/paladio/4.webp"
-      ]
+      }
     },
     {
       "id": "gazonnaya_reshetka",
@@ -314,13 +264,7 @@
         "Серия": "Газонная решетка",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/gazonnaya_reshetka/1.webp",
-        "assets/gallery/gazonnaya_reshetka/2.webp",
-        "assets/gallery/gazonnaya_reshetka/3.webp",
-        "assets/gallery/gazonnaya_reshetka/4.webp"
-      ]
+      }
     },
     {
       "id": "megapolis",
@@ -346,13 +290,7 @@
         "Серия": "Мегаполис",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/megapolis/1.webp",
-        "assets/gallery/megapolis/2.webp",
-        "assets/gallery/megapolis/3.webp",
-        "assets/gallery/megapolis/4.webp"
-      ]
+      }
     },
     {
       "id": "promenad1",
@@ -378,13 +316,7 @@
         "Серия": "Променад I",
         "Толщина": "—",
         "Назначение": "—"
-      },
-      "gallery": [
-        "assets/gallery/promenad1/1.webp",
-        "assets/gallery/promenad1/2.webp",
-        "assets/gallery/promenad1/3.webp",
-        "assets/gallery/promenad1/4.webp"
-      ]
+      }
     }
   ]
 }
