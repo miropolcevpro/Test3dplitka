@@ -514,6 +514,8 @@ async function selectTile(tileOrId) {
   const bs = typeof params.bumpScale === 'number' ? params.bumpScale : (typeof t.bumpScale === 'number' ? t.bumpScale : 0.0);
 
   const loader = new THREE.TextureLoader();
+  // External textures (e.g., Object Storage) require CORS; keep crossOrigin anonymous.
+  try { loader.setCrossOrigin?.('anonymous'); } catch (_) {}
 
   const [albedoTex, normalTex, roughTex, aoTex, heightTex] = await Promise.all([
     loader.loadAsync(albedoUrl),
@@ -624,6 +626,46 @@ async function loadSurfacePalette(url) {
   }
   const data = await res.json();
   const items = Array.isArray(data.items) ? data.items : [];
+
+  // Resolve relative URLs inside palette items.
+  // Supports:
+  //  - absolute URLs (kept as-is)
+  //  - palettes providing `baseUrl`
+  //  - bucket-style URLs (https://storage.yandexcloud.net/<bucket>/palettes/..)
+  const paletteUrl = new URL(url, window.location.href);
+  const paletteDir = new URL('.', paletteUrl).toString();
+  const pathSegs = paletteUrl.pathname.split('/').filter(Boolean);
+  const bucketRoot = pathSegs.length > 0
+    ? `${paletteUrl.origin}/${pathSegs[0]}/`
+    : `${paletteUrl.origin}/`;
+  const baseUrl = (typeof data.baseUrl === 'string' && data.baseUrl.trim())
+    ? data.baseUrl.trim()
+    : null;
+
+  const isAbs = (p) => /^https?:\/\//i.test(String(p || ''));
+  const resolvePath = (p) => {
+    if (!p) return p;
+    const s = String(p);
+    if (isAbs(s)) return s;
+    // If palette explicitly provides baseUrl, prefer it.
+    if (baseUrl) return new URL(s.replace(/^\/+/, ''), baseUrl).toString();
+    // Heuristic: paths starting with ./ or ../ should resolve relative to palette file.
+    if (s.startsWith('./') || s.startsWith('../')) return new URL(s, paletteDir).toString();
+    // Otherwise resolve from bucket root (works for paths like assets/... or surfaces/...)
+    return new URL(s.replace(/^\/+/, ''), bucketRoot).toString();
+  };
+
+  items.forEach((it) => {
+    if (!it || typeof it !== 'object') return;
+    if (it.preview) it.preview = resolvePath(it.preview);
+    if (it.texture) it.texture = resolvePath(it.texture);
+    if (it.maps && typeof it.maps === 'object') {
+      Object.keys(it.maps).forEach((k) => {
+        it.maps[k] = resolvePath(it.maps[k]);
+      });
+    }
+  });
+
   state._paletteCache.set(url, items);
   return items;
 }
