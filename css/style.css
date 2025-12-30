@@ -28,7 +28,7 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
 .screen--active{display:flex;}
 
 /* Main (catalog) screen background */
-#screenCatalog{background: rgb(41,60,93);}
+#screenCatalog{background: rgb(118,152,255);} /* #7698FF */
 
 /* Header */
 .appHeader{
@@ -38,7 +38,22 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
 }
 .headerTitle{flex:1;text-align:center;font-weight:900;letter-spacing:1px;font-size:24px;color:var(--white);}
 .headerTitle--withLogo{display:flex;align-items:center;justify-content:center;gap:10px;}
-.headerTitleLogo{height:22px;width:auto;display:block;}
+.headerTitleLogo{height:34px;width:auto;display:block;}
+
+/* Minimal back button (requested) */
+.backText{
+  appearance:none;
+  -webkit-appearance:none;
+  border:0;
+  background:transparent;
+  color: rgb(118,152,255);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 6px 10px;
+  border-radius: 12px;
+}
+.backText:active{background: rgba(255,255,255,0.18);}
 
 .iconCircle{
   width:44px;height:44px;border-radius:22px;
@@ -50,7 +65,7 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
 }
 .iconCircle.backBlue{
   border:0;
-  background: var(--blue2);
+  background: rgb(118,152,255); /* #7698FF */
   box-shadow: 0 10px 24px rgba(0,0,0,0.35);
 }
 .iconCircle.ghost{background:transparent;border-color:transparent;color:rgba(255,255,255,0.6);}
@@ -226,7 +241,7 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
   padding: 0 18px;
   border: none;
   border-radius: 14px;
-  background: var(--blue2);
+  background: rgb(118,152,255); /* #7698FF */
   color: #fff;
   font-size: 16px;
   font-weight: 700;
