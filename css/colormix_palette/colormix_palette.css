@@ -40,8 +40,11 @@
   aspect-ratio: 3 / 4;
   border-radius: 5px;
   border: 1px solid rgba(0,0,0,0.10);
-  background-size: cover;
+  /* Show full image (no cropping) so captions on the image remain visible */
+  background-size: contain;
   background-position: center;
+  background-repeat: no-repeat;
+  background-color: #fff;
   box-shadow: 0 6px 18px rgba(0,0,0,0.12);
   scroll-snap-align: start;
 }
