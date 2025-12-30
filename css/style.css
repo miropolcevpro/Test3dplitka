@@ -260,6 +260,9 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
   cursor: pointer;
 }
 
+
+/* Override only the AR button color */
+#btnViewAR.btnPrimary{background:rgb(158,226,255);}
 .btnPrimaryText{white-space:nowrap;}
 .btnPrimaryLogo{height:100%;width:auto;flex:0 0 auto;display:block;}
 
