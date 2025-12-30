@@ -2,6 +2,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { loadTiles, loadShapes, clamp } from './utils.js';
 
+// Remote surface palettes (Object Storage).
+// Override by setting window.__SURFACE_PALETTE_BASE_URL__ before loading app.js
+const SURFACE_PALETTE_BASE_URL = (typeof window !== 'undefined' && window.__SURFACE_PALETTE_BASE_URL__)
+  ? String(window.__SURFACE_PALETTE_BASE_URL__).replace(/\/+$/, '') + '/'
+  : 'https://storage.yandexcloud.net/webar3dtexture/palettes/';
+
 // ------------------------
 // UI
 // ------------------------
@@ -630,29 +636,56 @@ async function loadSurfacePalette(url) {
   // Resolve relative URLs inside palette items.
   // Supports:
   //  - absolute URLs (kept as-is)
-  //  - palettes providing `baseUrl`
-  //  - bucket-style URLs (https://storage.yandexcloud.net/<bucket>/palettes/..)
-  const paletteUrl = new URL(url, window.location.href);
-  const paletteDir = new URL('.', paletteUrl).toString();
-  const pathSegs = paletteUrl.pathname.split('/').filter(Boolean);
-  const bucketRoot = pathSegs.length > 0
-    ? `${paletteUrl.origin}/${pathSegs[0]}/`
-    : `${paletteUrl.origin}/`;
-  const baseUrl = (typeof data.baseUrl === 'string' && data.baseUrl.trim())
-    ? data.baseUrl.trim()
-    : null;
+  //  - palettes providing `baseUrl` (absolute or relative)
+  //  - bucket-style URLs (Object Storage)
+  //  - site-relative asset paths like `assets/...`
+  const paletteURL = new URL(url, window.location.href);
+  const paletteDir = new URL('.', paletteURL).toString();
+  const siteRoot = `${window.location.origin}/`;
+
+  // Detect bucket root for Object Storage.
+  //  - path-style: https://storage.yandexcloud.net/<bucket>/...
+  //  - host-style: https://<bucket>.storage.yandexcloud.net/...
+  let bucketRoot = `${paletteURL.origin}/`;
+  if (paletteURL.hostname === 'storage.yandexcloud.net') {
+    const segs = paletteURL.pathname.split('/').filter(Boolean);
+    if (segs.length > 0) bucketRoot = `${paletteURL.origin}/${segs[0]}/`;
+  }
+
+  const rawBaseUrl = (typeof data.baseUrl === 'string' && data.baseUrl.trim()) ? data.baseUrl.trim() : '';
+  const baseAbs = rawBaseUrl
+    ? (/^https?:\/\//i.test(rawBaseUrl)
+        ? rawBaseUrl.replace(/\/+$/, '') + '/'
+        : new URL(rawBaseUrl, paletteDir).toString())
+    : '';
 
   const isAbs = (p) => /^https?:\/\//i.test(String(p || ''));
+  const isSpecial = (p) => /^(data:|blob:)/i.test(String(p || ''));
+
   const resolvePath = (p) => {
     if (!p) return p;
     const s = String(p);
-    if (isAbs(s)) return s;
-    // If palette explicitly provides baseUrl, prefer it.
-    if (baseUrl) return new URL(s.replace(/^\/+/, ''), baseUrl).toString();
-    // Heuristic: paths starting with ./ or ../ should resolve relative to palette file.
+
+    if (isAbs(s) || isSpecial(s)) return s;
+
+    // If palette provides baseUrl, prefer it.
+    if (baseAbs) return new URL(s.replace(/^\/+/, ''), baseAbs).toString();
+
+    // Explicit relative paths resolve against the palette file location.
     if (s.startsWith('./') || s.startsWith('../')) return new URL(s, paletteDir).toString();
-    // Otherwise resolve from bucket root (works for paths like assets/... or surfaces/...)
-    return new URL(s.replace(/^\/+/, ''), bucketRoot).toString();
+
+    // Site assets (local build): keep rooted at the site origin.
+    if (s.startsWith('assets/') || s.startsWith('css/') || s.startsWith('js/')) {
+      return new URL(s, siteRoot).toString();
+    }
+
+    // If palette is hosted on Object Storage, assume remaining paths are bucket-relative.
+    if (paletteURL.hostname.endsWith('storage.yandexcloud.net')) {
+      return new URL(s.replace(/^\/+/, ''), bucketRoot).toString();
+    }
+
+    // Fallback: treat as site-root relative.
+    return new URL(s.replace(/^\/+/, ''), siteRoot).toString();
   };
 
   items.forEach((it) => {
@@ -761,10 +794,22 @@ async function openDetail(shapeId) {
 
   // --- Colors & Surfaces (per-shape palette support) ---
   let allowed = null;
+  let paletteActive = false;
 
-  if (s.surfacePalette) {
-    const items = await loadSurfacePalette(s.surfacePalette);
-    allowed = paletteItemsToTiles(items);
+  // If a shape defines an explicit surfacePalette URL, use it.
+  // Otherwise, try the default Object Storage convention:
+  //   <SURFACE_PALETTE_BASE_URL>/<shapeId>.json
+  let paletteUrl = s.surfacePalette || '';
+  if (!paletteUrl && SURFACE_PALETTE_BASE_URL) {
+    paletteUrl = `${SURFACE_PALETTE_BASE_URL}${encodeURIComponent(s.id)}.json`;
+  }
+
+  if (paletteUrl) {
+    const items = await loadSurfacePalette(paletteUrl);
+    if (Array.isArray(items) && items.length) {
+      allowed = paletteItemsToTiles(items);
+      paletteActive = true;
+    }
   }
 
   // fallback: old behavior
@@ -777,7 +822,7 @@ async function openDetail(shapeId) {
   state.currentAllowedTiles = allowed;
 
   // Swatches. For per-shape palette: click -> apply + start AR.
-  renderColorRow(UI.colorRow, allowed, { startArOnClick: Boolean(s.surfacePalette) });
+  renderColorRow(UI.colorRow, allowed, { startArOnClick: paletteActive });
 
   // Choose default surface/tile for this shape
   const defaultTile = allowed[0] || state.tiles[0];
