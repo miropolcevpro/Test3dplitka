@@ -28,7 +28,7 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
 .screen--active{display:flex;}
 
 /* Main (catalog) screen background */
-#screenCatalog{background: rgb(118,152,255);} /* #7698FF */
+#screenCatalog{background: rgb(51,51,51);} /* #333333 */
 
 /* Header */
 .appHeader{
