@@ -1,23 +1,25 @@
 {
-  "version": 1,
-  "shapeId": "klassika",
-  "items": [
-    {
-      "id": "klassika:paver_115x115_multitone_01",
-      "name": "Классика — Коктебель (Colormix B.1.K.6)",
-      "tileSizeM": { "w": 0.23, "h": 0.23 },
-      "maps": {
-        "albedo": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_albedo.webp",
-        "normal": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_normal.png",
-        "roughness": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_roughness.webp",
-        "ao": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_ao.webp",
-        "height": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_height.webp"
-      },
-      "params": {
-        "normalScale": 0.6,
-        "bumpScale": 0.006
-      },
-      "preview": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_albedo.webp"
-    }
-  ]
+  "id": "paver_115x115_multitone_01",
+  "title": "Коктебель (тест)",
+  "preview": "assets/pavers/klassika/paver_115x115_multitone_01/preview.webp",
+
+  "tileSizeM": { "w": 0.33, "h": 0.33 },
+
+  "normalScale": 0.6,
+  "bumpScale": 0.006,
+
+  "albedoBoost": 1.18,
+  "aoIntensity": 0.55,
+  "envIntensity": 1.35,
+  "roughnessMul": 0.85,
+  "roughnessBias": -0.05,
+  "shadowLift": 0.06,
+
+  "maps": {
+    "albedo": "...",
+    "normal": "...",
+    "roughness": "...",
+    "ao": "...",
+    "height": "..."
+  }
 }
