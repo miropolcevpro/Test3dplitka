@@ -514,3 +514,38 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
   box-shadow: 0 6px 18px rgba(0,0,0,0.12);
   scroll-snap-align: start;
 }
+
+/* ===== Splash screen (2.5s) ===== */
+body.splash-active { overflow: hidden; }
+body.splash-active #app { opacity: 0; pointer-events: none; }
+#app { transition: opacity 0.35s ease; }
+
+#splashScreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: url('../assets/ui/splash.webp') center / cover no-repeat;
+  transform-origin: center;
+  animation: splashZoom 2.5s ease-in-out forwards;
+}
+
+#splashScreen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.12);
+}
+
+#splashScreen.fadeout {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+@keyframes splashZoom {
+  from { transform: scale(1.05); }
+  to   { transform: scale(1.12); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #splashScreen { animation: none; }
+}

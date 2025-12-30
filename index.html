@@ -19,7 +19,8 @@
     }
   </script>
 </head>
-<body>
+<body class="splash-active">
+  <div id="splashScreen" aria-hidden="true"></div>
   <canvas id="xrCanvas"></canvas>
 
   <!-- DOM Overlay root (используется в WebXR immersive-ar) -->
@@ -241,6 +242,21 @@
 
   </div>
 
-  <script type="module" src="js/app.js"></script>
+  <script>
+  (function () {
+    const splash = document.getElementById('splashScreen');
+    if (!splash) return;
+
+    const hide = () => {
+      splash.classList.add('fadeout');
+      document.body.classList.remove('splash-active');
+      window.setTimeout(() => splash.remove(), 400);
+    };
+
+    // Show for 2.5 seconds, then reveal the app
+    window.setTimeout(hide, 2500);
+  })();
+</script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>
