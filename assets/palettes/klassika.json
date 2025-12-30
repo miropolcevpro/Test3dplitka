@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "shapeId": "klassika",
+  "items": [
+    {
+      "id": "klassika:paver_115x115_multitone_01",
+      "name": "Классика — Коктебель (Colormix B.1.K.6)",
+      "tileSizeM": { "w": 0.115, "h": 0.115 },
+      "maps": {
+        "albedo": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_albedo.webp",
+        "normal": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_normal.png",
+        "roughness": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_roughness.webp",
+        "ao": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_ao.webp",
+        "height": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_height.webp"
+      },
+      "params": {
+        "normalScale": 0.6,
+        "bumpScale": 0.006
+      },
+      "preview": "assets/surfaces/klassika/paver_115x115_multitone_01/1k/paver_115x115_multitone_01_albedo.webp"
+    }
+  ]
+}

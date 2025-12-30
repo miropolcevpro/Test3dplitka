@@ -27,6 +27,9 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
 .screen[hidden]{display:none !important;}
 .screen--active{display:flex;}
 
+/* Main (catalog) screen background */
+#screenCatalog{background: rgb(41,60,93);}
+
 /* Header */
 .appHeader{
   padding:calc(10px + var(--safe-top)) 14px 10px;
@@ -34,6 +37,8 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
   background:linear-gradient(to bottom, rgba(0,0,0,0.65), rgba(0,0,0,0));
 }
 .headerTitle{flex:1;text-align:center;font-weight:900;letter-spacing:1px;font-size:24px;color:var(--white);}
+.headerTitle--withLogo{display:flex;align-items:center;justify-content:center;gap:10px;}
+.headerTitleLogo{height:22px;width:auto;display:block;}
 
 .iconCircle{
   width:44px;height:44px;border-radius:22px;
@@ -42,6 +47,11 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
   color:var(--white);
   font-size:20px;
   display:grid;place-items:center;
+}
+.iconCircle.backBlue{
+  border:0;
+  background: var(--blue2);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.35);
 }
 .iconCircle.ghost{background:transparent;border-color:transparent;color:rgba(255,255,255,0.6);}
 .hidden{display:none !important;}
@@ -144,9 +154,61 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
 .layoutLbl{margin-top:8px;font-weight:800;color:#0a0c10;}
 .layoutCard.active .layoutThumb{outline:3px solid var(--blue);}
 
-.swatchRow{display:flex;gap:10px;flex-wrap:wrap;}
-.swatch{width:62px;height:62px;border-radius:14px;border:1px solid rgba(0,0,0,0.10);background-size:cover;background-position:center;position:relative;}
-.swatch.active{outline:3px solid var(--blue);}
+/*
+  "Цвета и поверхности" — превью текстур.
+  Делаем отображение и поведение как у галереи "Однотонная":
+  горизонтальный скролл + 3 карточки в видимой области.
+*/
+.swatchRow{
+  display:flex;
+  gap:10px;
+  overflow-x:auto;
+  overflow-y:hidden;
+  padding:2px 2px 10px;
+  scroll-snap-type:x mandatory;
+  -webkit-overflow-scrolling:touch;
+}
+.swatchRow::-webkit-scrollbar{height:6px;}
+.swatchRow::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.18);border-radius:6px;}
+
+/* Default swatch style (used elsewhere, e.g. in AR final bar) */
+.swatch{
+  width:62px;
+  height:62px;
+  padding:0;
+  border-radius:14px;
+  border:1px solid rgba(0,0,0,0.10);
+  background-color:transparent;
+  background-size:cover;
+  background-position:center;
+  position:relative;
+  cursor:pointer;
+  -webkit-appearance:none;
+  appearance:none;
+}
+
+/* Card look inside the "Цвета и поверхности" horizontal scroller */
+.swatchRow .swatch{
+  flex: 0 0 calc((100% - 20px) / 3); /* 3 cards per viewport */
+  width: auto;
+  height: auto;
+  aspect-ratio: 3 / 4;
+  border-radius: 5px;
+  border: 1px solid rgba(0,0,0,0.10);
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-color: transparent;
+  background-position: center;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+  scroll-snap-align: start;
+}
+
+/* Active state (JS uses .swatch--active) */
+.swatchRow .swatch.swatch--active,
+.swatchRow .swatch.active{
+  outline: 3px solid var(--blue);
+}
+
 
 .detailCta{
   position:fixed;left:0;right:0;bottom:0;
@@ -154,16 +216,25 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
   background:rgba(255,255,255,0.92);
   border-top:1px solid rgba(0,0,0,0.06);
 }
-.btnPrimary{
-  width:100%;
-  border:2px solid rgba(90,167,255,0.85);
-  background:rgba(90,167,255,0.95);
-  color:#fff;
-  font-size:18px;
-  font-weight:900;
-  padding:14px 16px;
-  border-radius:16px;
+.btnPrimary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 14px;
+  background: var(--blue2);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
 }
+
+.btnPrimaryText{white-space:nowrap;}
+.btnPrimaryLogo{height:100%;width:auto;flex:0 0 auto;display:block;}
 
 /* AR */
 .arTop{
@@ -423,11 +494,8 @@ html,body{margin:0;padding:0;background:#000;color:var(--fg);font-family:system-
   aspect-ratio: 3 / 4;
   border-radius: 5px;
   border: 1px solid rgba(0,0,0,0.10);
-  /* Show full image (no cropping) so captions on the image remain visible */
-  background-size: contain;
+  background-size: cover;
   background-position: center;
-  background-repeat: no-repeat;
-  background-color: #fff;
   box-shadow: 0 6px 18px rgba(0,0,0,0.12);
   scroll-snap-align: start;
 }

@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { loadTiles, loadShapes, clamp, initAutoTechPalettes, discoverShapeHeroGallery, withBust } from './utils.js';
+import { loadTiles, loadShapes, clamp } from './utils.js';
+
+// Remote surface palettes (Object Storage).
+// Override by setting window.__SURFACE_PALETTE_BASE_URL__ before loading app.js
+const SURFACE_PALETTE_BASE_URL = (typeof window !== 'undefined' && window.__SURFACE_PALETTE_BASE_URL__)
+  ? String(window.__SURFACE_PALETTE_BASE_URL__).replace(/\/+$/, '') + '/'
+  : 'https://storage.yandexcloud.net/webar3dtexture/palettes/';
 
 // ------------------------
 // UI
@@ -233,19 +239,60 @@ const maskMaterial = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-function makeTileMaterial(texture) {
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
+function prepMapTex(tex, isColor = false) {
+  if (!tex) return null;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+  else tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+
+function makeTileMaterial(arg = {}) {
+  // Support both: makeTileMaterial({ ... }) and makeTileMaterial(texture)
+  if (arg && arg.isTexture) arg = { albedoTex: arg };
+  const {
+    albedoTex,
+    normalTex = null,
+    roughnessTex = null,
+    aoTex = null,
+    heightTex = null,
+    normalScale = 0.0,
+    bumpScale = 0.0,
+  } = arg || {};
+
+  prepMapTex(albedoTex, true);
+
+  prepMapTex(normalTex, false);
+  prepMapTex(roughnessTex, false);
+  prepMapTex(aoTex, false);
+  prepMapTex(heightTex, false);
 
   const mat = new THREE.ShaderMaterial({
     transparent: true,
     uniforms: {
-      uTex: { value: texture },
+      // maps
+      uTex: { value: albedoTex },
+      uNormalTex: { value: normalTex },
+      uRoughTex: { value: roughnessTex },
+      uAoTex: { value: aoTex },
+      uHeightTex: { value: heightTex },
+      uHasNormal: { value: normalTex ? 1 : 0 },
+      uHasRough: { value: roughnessTex ? 1 : 0 },
+      uHasAo: { value: aoTex ? 1 : 0 },
+      uHasHeight: { value: heightTex ? 1 : 0 },
+      uNormalScale: { value: normalScale || 0.0 },
+      uBumpScale: { value: bumpScale || 0.0 },
+
+      // tiling + layout
       uTileSize: { value: new THREE.Vector2(0.2, 0.2) },
       uLayoutMode: { value: 0 }, // 0 straight, 1 diagonal, 2 stagger
+
+      // lighting
       uLightDir: { value: new THREE.Vector3(1, 2, 1).normalize() },
       uAmbient: { value: 0.35 },
+
+      // occlusion via depth
       uUseOcclusion: { value: 0 },
       uDepthTex: { value: null },
       uDepthValid: { value: 0 },
@@ -294,6 +341,18 @@ function makeTileMaterial(texture) {
       varying vec4 vClipPos;
 
       uniform sampler2D uTex;
+      uniform sampler2D uNormalTex;
+      uniform sampler2D uRoughTex;
+      uniform sampler2D uAoTex;
+      uniform sampler2D uHeightTex;
+
+      uniform int uHasNormal;
+      uniform int uHasRough;
+      uniform int uHasAo;
+      uniform int uHasHeight;
+      uniform float uNormalScale;
+      uniform float uBumpScale;
+
       uniform vec3 uLightDir;
       uniform float uAmbient;
 
@@ -304,7 +363,18 @@ function makeTileMaterial(texture) {
 
       vec2 safeFract(vec2 v){ return v - floor(v); }
 
+      // Tangent basis for a horizontal XZ plane:
+      // T = +X, B = +Z, N = +Y in model space. In our app the fill mesh stays horizontal,
+      // so this approximation is stable and fast.
+      vec3 tangentSpaceToWorld(vec3 nTS, vec3 nW){
+        vec3 T = normalize(vec3(1.0, 0.0, 0.0));
+        vec3 B = normalize(vec3(0.0, 0.0, 1.0));
+        vec3 N = normalize(nW);
+        return normalize(T * nTS.x + B * nTS.y + N * nTS.z);
+      }
+
       void main(){
+        // occlusion (depth)
         if (uUseOcclusion == 1 && uDepthValid == 1) {
           vec3 ndc = (vClipPos.xyz / vClipPos.w);
           vec2 suv = ndc.xy * 0.5 + 0.5;
@@ -317,14 +387,61 @@ function makeTileMaterial(texture) {
           }
         }
 
-        vec3 albedo = texture2D(uTex, safeFract(vUv)).rgb;
+        vec2 uv = safeFract(vUv);
 
-        vec3 N = normalize(vNormalW);
+        // base color
+        vec3 albedo = texture2D(uTex, uv).rgb;
+
+        // AO (optional)
+        float ao = 1.0;
+        if (uHasAo == 1) {
+          ao = texture2D(uAoTex, uv).r;
+          ao = mix(1.0, ao, 0.8);
+        }
+
+        // normal + bump (optional)
+        vec3 Nw = normalize(vNormalW);
+
+        vec3 nTS = vec3(0.0, 0.0, 1.0);
+        if (uHasNormal == 1) {
+          vec3 nm = texture2D(uNormalTex, uv).xyz * 2.0 - 1.0;
+          nm.xy *= max(0.0, uNormalScale);
+          nTS = normalize(nm);
+        }
+
+        if (uHasHeight == 1 && uBumpScale > 0.0) {
+          // cheap bump from height gradient (in UV space)
+          float h0 = texture2D(uHeightTex, uv).r;
+          float hx = texture2D(uHeightTex, uv + vec2(0.002, 0.0)).r;
+          float hy = texture2D(uHeightTex, uv + vec2(0.0, 0.002)).r;
+          vec2 grad = vec2(hx - h0, hy - h0);
+          vec3 bumpTS = normalize(vec3(-grad.x * uBumpScale, -grad.y * uBumpScale, 1.0));
+          nTS = normalize(vec3(nTS.xy + bumpTS.xy, nTS.z));
+        }
+
+        Nw = tangentSpaceToWorld(nTS, Nw);
+
+        // roughness (optional, affects specular tightness)
+        float rough = 0.85;
+        if (uHasRough == 1) {
+          rough = texture2D(uRoughTex, uv).r;
+        }
+        rough = clamp(rough, 0.04, 1.0);
+
         vec3 L = normalize(uLightDir);
-        float diff = max(dot(N, L), 0.0);
-        float light = uAmbient + (1.0 - uAmbient) * diff;
+        vec3 V = normalize(-vViewPos);
+        vec3 H = normalize(L + V);
 
-        vec3 color = albedo * light;
+        float diff = max(dot(Nw, L), 0.0);
+
+        // Simple specular: roughness -> shininess
+        float shininess = mix(120.0, 8.0, rough);
+        float spec = pow(max(dot(Nw, H), 0.0), shininess) * (1.0 - rough);
+        spec *= 0.18;
+
+        float light = uAmbient + (1.0 - uAmbient) * diff;
+        vec3 color = (albedo * light * ao) + vec3(spec);
+
         gl_FragColor = vec4(color, 0.98);
       }
     `,
@@ -377,40 +494,112 @@ function setLayout(layout) {
   });
 }
 
-async function selectTile(tileId) {
-  const t = state.tiles.find(x => x.id === tileId);
+async function selectTile(tileOrId) {
+  // Accept either an ID (number/string) or an in-memory tile object (for per-shape palettes)
+  let t = null;
+  if (tileOrId && typeof tileOrId === 'object') {
+    t = tileOrId;
+  } else {
+    const id = tileOrId;
+    t = state.tiles.find(x => x.id === id)
+      || (Array.isArray(state.currentAllowedTiles) ? state.currentAllowedTiles.find(x => x.id === id) : null)
+      || null;
+  }
   if (!t) return;
+
   state.selectedTile = t;
 
-  const tex = await new THREE.TextureLoader().loadAsync(t.texture);
-  tileMaterial = makeTileMaterial(tex);
-  tileMaterial.uniforms.uTileSize.value.set(t.tileSizeM.w, t.tileSizeM.h);
+  const albedoUrl = (t.maps && t.maps.albedo) ? t.maps.albedo : t.texture;
+  const normalUrl = (t.maps && t.maps.normal) ? t.maps.normal : null;
+  const roughUrl  = (t.maps && t.maps.roughness) ? t.maps.roughness : null;
+  const aoUrl     = (t.maps && t.maps.ao) ? t.maps.ao : null;
+  const heightUrl = (t.maps && t.maps.height) ? t.maps.height : null;
+
+  const params = t.params || {};
+  const ns = typeof params.normalScale === 'number' ? params.normalScale : (typeof t.normalScale === 'number' ? t.normalScale : 0.0);
+  const bs = typeof params.bumpScale === 'number' ? params.bumpScale : (typeof t.bumpScale === 'number' ? t.bumpScale : 0.0);
+
+  const loader = new THREE.TextureLoader();
+  // External textures (e.g., Object Storage) require CORS; keep crossOrigin anonymous.
+  try { loader.setCrossOrigin?.('anonymous'); } catch (_) {}
+
+  const [albedoTex, normalTex, roughTex, aoTex, heightTex] = await Promise.all([
+    loader.loadAsync(albedoUrl),
+    normalUrl ? loader.loadAsync(normalUrl) : Promise.resolve(null),
+    roughUrl ? loader.loadAsync(roughUrl) : Promise.resolve(null),
+    aoUrl ? loader.loadAsync(aoUrl) : Promise.resolve(null),
+    heightUrl ? loader.loadAsync(heightUrl) : Promise.resolve(null),
+  ]);
+
+  tileMaterial = makeTileMaterial({
+    albedoTex,
+    normalTex,
+    roughnessTex: roughTex,
+    aoTex,
+    heightTex,
+    normalScale: ns,
+    bumpScale: bs,
+  });
+
+  const size = t.tileSizeM || { w: 0.2, h: 0.2 };
+  tileMaterial.uniforms.uTileSize.value.set(size.w, size.h);
   setLayout(state.layout);
 
-  // desktop preview
-  previewPlane.material.map = tex;
-  previewPlane.material.needsUpdate = true;
-  previewPlane.material.map.repeat.set(3 / t.tileSizeM.w, 3 / t.tileSizeM.h);
+  // desktop preview (used on non-XR)
+  if (previewPlane && previewPlane.material) {
+    const pm = previewPlane.material;
 
-  // update detail hero
+    // ensure uv2 exists once for aoMap (safe even if already set)
+    try {
+      const g = previewPlane.geometry;
+      if (g && g.attributes && g.attributes.uv && !g.attributes.uv2) {
+        g.setAttribute('uv2', new THREE.BufferAttribute(g.attributes.uv.array, 2));
+      }
+    } catch (_) {}
+
+    if (pm.map) pm.map.dispose?.();
+    pm.map = albedoTex;
+    pm.map.repeat.set(3 / size.w, 3 / size.h);
+
+    if (pm.isMeshStandardMaterial) {
+      pm.normalMap = normalTex;
+      pm.roughnessMap = roughTex;
+      pm.aoMap = aoTex;
+      pm.bumpMap = heightTex;
+      pm.normalScale.set(ns || 0.0, ns || 0.0);
+      pm.bumpScale = bs || 0.0;
+      pm.needsUpdate = true;
+    } else {
+      pm.needsUpdate = true;
+    }
+  }
+
+  // If we are already in final AR visualization — apply new material to the filled mesh
+  if (fillMesh && state.phase === 'ar_final') {
+    fillMesh.material = tileMaterial;
+    fillMesh.material.needsUpdate = true;
+  }
+
+  // update detail hero (fallback only when a shape gallery is not set)
   if (UI.detailHero) {
-    const hasHeroGallery = !!(state.selectedShape && Array.isArray(state.selectedShape.gallery) && state.selectedShape.gallery.length);
-    if (!hasHeroGallery) {
-      UI.detailHero.style.backgroundImage = `url(${withBust(t.preview)})`;
+    if (!(state.selectedShape && Array.isArray(state.selectedShape.gallery) && state.selectedShape.gallery.length)) {
+      const hero = t.preview || (t.maps && t.maps.albedo) || t.texture || '';
+      UI.detailHero.style.backgroundImage = hero ? `url(${hero})` : 'none';
     }
   }
 
   // update selected in color rows
+  const tileKey = String(t.id);
   const updateSwatches = (wrap) => {
     wrap?.querySelectorAll('[data-tile-id]').forEach(el => {
-      el.classList.toggle('swatch--active', String(tileId) === el.dataset.tileId);
+      el.classList.toggle('swatch--active', tileKey === el.dataset.tileId);
     });
   };
   updateSwatches(UI.colorRow);
   updateSwatches(UI.finalColors);
 
   // update AR title
-  if (UI.arProductTitle) UI.arProductTitle.textContent = t.name;
+  if (UI.arProductTitle) UI.arProductTitle.textContent = t.name || '—';
 }
 
 // ------------------------
@@ -430,6 +619,106 @@ function renderCatalog(list) {
   });
 }
 
+async function loadSurfacePalette(url) {
+  if (!url) return null;
+  state._paletteCache = state._paletteCache || new Map();
+  if (state._paletteCache.has(url)) return state._paletteCache.get(url);
+
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) {
+    console.warn('Не удалось загрузить палитру поверхностей:', url);
+    state._paletteCache.set(url, null);
+    return null;
+  }
+  const data = await res.json();
+  const items = Array.isArray(data.items) ? data.items : [];
+
+  // Resolve relative URLs inside palette items.
+  // Supports:
+  //  - absolute URLs (kept as-is)
+  //  - palettes providing `baseUrl` (absolute or relative)
+  //  - bucket-style URLs (Object Storage)
+  //  - site-relative asset paths like `assets/...`
+  const paletteURL = new URL(url, window.location.href);
+  const paletteDir = new URL('.', paletteURL).toString();
+  const siteRoot = `${window.location.origin}/`;
+
+  // Detect bucket root for Object Storage.
+  //  - path-style: https://storage.yandexcloud.net/<bucket>/...
+  //  - host-style: https://<bucket>.storage.yandexcloud.net/...
+  let bucketRoot = `${paletteURL.origin}/`;
+  if (paletteURL.hostname === 'storage.yandexcloud.net') {
+    const segs = paletteURL.pathname.split('/').filter(Boolean);
+    if (segs.length > 0) bucketRoot = `${paletteURL.origin}/${segs[0]}/`;
+  }
+
+  const rawBaseUrl = (typeof data.baseUrl === 'string' && data.baseUrl.trim()) ? data.baseUrl.trim() : '';
+  const baseAbs = rawBaseUrl
+    ? (/^https?:\/\//i.test(rawBaseUrl)
+        ? rawBaseUrl.replace(/\/+$/, '') + '/'
+        : new URL(rawBaseUrl, paletteDir).toString())
+    : '';
+
+  const isAbs = (p) => /^https?:\/\//i.test(String(p || ''));
+  const isSpecial = (p) => /^(data:|blob:)/i.test(String(p || ''));
+
+  const resolvePath = (p) => {
+    if (!p) return p;
+    const s = String(p);
+
+    if (isAbs(s) || isSpecial(s)) return s;
+
+    // If palette provides baseUrl, prefer it.
+    if (baseAbs) return new URL(s.replace(/^\/+/, ''), baseAbs).toString();
+
+    // Explicit relative paths resolve against the palette file location.
+    if (s.startsWith('./') || s.startsWith('../')) return new URL(s, paletteDir).toString();
+
+    // Site assets (local build): keep rooted at the site origin.
+    if (s.startsWith('assets/') || s.startsWith('css/') || s.startsWith('js/')) {
+      return new URL(s, siteRoot).toString();
+    }
+
+    // If palette is hosted on Object Storage, assume remaining paths are bucket-relative.
+    if (paletteURL.hostname.endsWith('storage.yandexcloud.net')) {
+      return new URL(s.replace(/^\/+/, ''), bucketRoot).toString();
+    }
+
+    // Fallback: treat as site-root relative.
+    return new URL(s.replace(/^\/+/, ''), siteRoot).toString();
+  };
+
+  items.forEach((it) => {
+    if (!it || typeof it !== 'object') return;
+    if (it.preview) it.preview = resolvePath(it.preview);
+    if (it.texture) it.texture = resolvePath(it.texture);
+    if (it.maps && typeof it.maps === 'object') {
+      Object.keys(it.maps).forEach((k) => {
+        it.maps[k] = resolvePath(it.maps[k]);
+      });
+    }
+  });
+
+  state._paletteCache.set(url, items);
+  return items;
+}
+
+function paletteItemsToTiles(items) {
+  return (items || []).map((it) => {
+    const tileSizeM = it.tileSizeM || { w: 0.2, h: 0.2 };
+    return {
+      id: it.id,
+      name: it.name || it.id,
+      tileSizeM,
+      maps: it.maps || null,
+      params: it.params || null,
+      preview: it.preview || (it.maps && it.maps.albedo) || null,
+      // keep compatibility with existing UI expectations
+      texture: (it.maps && it.maps.albedo) ? it.maps.albedo : it.texture,
+    };
+  });
+}
+
 async function openDetail(shapeId) {
   const s = state.shapes.find(x => x.id === shapeId);
   if (!s) return;
@@ -439,17 +728,8 @@ async function openDetail(shapeId) {
   UI.detailTitle.textContent = s.name;
   UI.detailName.textContent = s.name;
   UI.detailSub.textContent = s.subtitle || 'Тротуарная плитка';
-  // Шапка: предпочитаем авто-подхват из папки assets/gallery/<shapeId>/
-  // (чтобы новые файлы появлялись без правки shapes.json)
-  let gallery = await discoverShapeHeroGallery(s.id);
-  if (!gallery.length) {
-    gallery = Array.isArray(s.gallery) ? s.gallery.filter(Boolean) : [];
-  }
-  // cache-busting for replaced files
-  gallery = gallery.map((src) => withBust(src));
-  // keep in-memory for subsequent logic (e.g. selectTile)
-  s.gallery = gallery;
-
+  // Шапка: либо карусель из фото (если задано), либо одиночное изображение
+  const gallery = Array.isArray(s.gallery) ? s.gallery.filter(Boolean) : [];
   if (gallery.length > 0) {
     UI.detailHero.style.backgroundImage = 'none';
     UI.detailHero.innerHTML = `
@@ -475,7 +755,7 @@ async function openDetail(shapeId) {
     }, { passive: true });
   } else {
     UI.detailHero.innerHTML = '';
-    UI.detailHero.style.backgroundImage = `url(${withBust(s.hero || s.icon || '')})`;
+    UI.detailHero.style.backgroundImage = `url(${s.hero || s.icon || ''})`;
   }
 
   // tech
@@ -512,31 +792,66 @@ async function openDetail(shapeId) {
   });
   setLayout(state.layout);
 
-  // Colors for this shape (fallback: all tiles)
-  const allowed = Array.isArray(s.tileIds) && s.tileIds.length
-    ? s.tileIds.map(id => state.tiles.find(t => t.id === id)).filter(Boolean)
-    : state.tiles;
-  renderColorRow(UI.colorRow, allowed);
+  // --- Colors & Surfaces (per-shape palette support) ---
+  let allowed = null;
+  let paletteActive = false;
 
-  // Choose default tile for this shape
+  // If a shape defines an explicit surfacePalette URL, use it.
+  // Otherwise, try the default Object Storage convention:
+  //   <SURFACE_PALETTE_BASE_URL>/<shapeId>.json
+  let paletteUrl = s.surfacePalette || '';
+  if (!paletteUrl && SURFACE_PALETTE_BASE_URL) {
+    paletteUrl = `${SURFACE_PALETTE_BASE_URL}${encodeURIComponent(s.id)}.json`;
+  }
+
+  if (paletteUrl) {
+    const items = await loadSurfacePalette(paletteUrl);
+    if (Array.isArray(items) && items.length) {
+      allowed = paletteItemsToTiles(items);
+      paletteActive = true;
+    }
+  }
+
+  // fallback: old behavior
+  if (!Array.isArray(allowed) || !allowed.length) {
+    allowed = (Array.isArray(s.tileIds) && s.tileIds.length
+      ? s.tileIds.map(id => state.tiles.find(t => t.id === id)).filter(Boolean)
+      : state.tiles.slice(0, 8));
+  }
+
+  state.currentAllowedTiles = allowed;
+
+  // Swatches. For per-shape palette: click -> apply + start AR.
+  renderColorRow(UI.colorRow, allowed, { startArOnClick: paletteActive });
+
+  // Choose default surface/tile for this shape
   const defaultTile = allowed[0] || state.tiles[0];
-  if (defaultTile) selectTile(defaultTile.id);
+  if (defaultTile) await selectTile(defaultTile);
 
   setActiveScreen('detail');
   state.phase = 'detail';
 }
 
-function renderColorRow(container, tiles) {
+function renderColorRow(container, tiles, opts = {}) {
   if (!container) return;
   container.innerHTML = '';
+  const startArOnClick = Boolean(opts.startArOnClick);
+
   tiles.forEach(t => {
     const sw = document.createElement('button');
     sw.type = 'button';
     sw.className = 'swatch';
     sw.dataset.tileId = String(t.id);
-    sw.style.backgroundImage = `url(${t.preview})`;
-    sw.title = t.name;
-    sw.addEventListener('click', () => selectTile(t.id));
+    sw.style.backgroundImage = `url(${t.preview || (t.maps && t.maps.albedo) || t.texture || ''})`;
+    sw.title = t.name || 'Текстура';
+    sw.addEventListener('click', async () => {
+      await selectTile(t);
+
+      // For per-shape palettes: one tap launches AR with the chosen texture.
+      if (startArOnClick && !state.xrSession) {
+        await startAR();
+      }
+    });
     container.appendChild(sw);
   });
 }
@@ -1576,7 +1891,7 @@ UI.btnDone?.addEventListener('click', () => {
   });
   setLayout(state.layout);
 
-  renderColorRow(UI.finalColors, state.tiles);
+  renderColorRow(UI.finalColors, (Array.isArray(state.currentAllowedTiles) && state.currentAllowedTiles.length ? state.currentAllowedTiles : state.tiles.slice(0, 8)));
 
   // hide hint
   show(UI.scanHint, false);
@@ -1620,10 +1935,6 @@ async function init() {
   renderCatalog(state.shapes);
   setActiveScreen('catalog');
   state.phase = 'catalog';
-
-  // Auto-fill "Доступно в технологиях" palettes by probing files in folders.
-  // Runs asynchronously and does not block app start.
-  initAutoTechPalettes().catch((e) => console.warn('auto palettes failed', e));
 
   // choose default tile
   const defaultId = state.tiles[0]?.id;
