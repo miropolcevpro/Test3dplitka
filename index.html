@@ -19,7 +19,8 @@
     }
   </script>
 </head>
-<body>
+<body class="splash-active">
+  <div id="splashScreen" aria-hidden="true"></div>
   <canvas id="xrCanvas"></canvas>
 
   <!-- DOM Overlay root (используется в WebXR immersive-ar) -->
@@ -29,8 +30,8 @@
     <section id="screenCatalog" class="screen screen--active" aria-label="Каталог">
       <header class="appHeader">
         <button id="btnCatalogBack" class="iconCircle hidden" aria-label="Назад">←</button>
-        <div class="headerTitle">ФОРМЫ ПЛИТКИ</div>
-        <button id="btnFilter" class="iconCircle ghost" aria-label="Фильтр">⛭</button>
+        <div class="headerTitle headerTitle--withLogo">ФОРМЫ АКТИВ ГРУПП <img class="headerTitleLogo" src="assets/ui/active_group_logo.png" alt="" /></div>
+        <!-- removed: non-functional UI icon (requested) -->
       </header>
 
       <div class="catalogWrap">
@@ -58,7 +59,7 @@
     <section id="screenDetail" class="screen" aria-label="Детали" hidden>
       <div class="detailScroll">
       <header class="detailTop">
-        <button id="btnDetailBack" class="iconCircle" aria-label="Назад">←</button>
+        <button id="btnDetailBack" class="backText" aria-label="Назад">«</button>
         <div class="detailTopTitle" id="detailTitle">—</div>
       </header>
 
@@ -133,12 +134,20 @@
         <div class="monotonePaletteBlock">
           <div class="monotonePaletteTitle">Цветовая гамма Однотонная</div>
           <div class="monotonePaletteScroll" aria-label="Цветовая гамма Однотонная (листайте)">
-          <div class="monotonePaletteItem" role="img" aria-label="Белый" style="background-image:url('assets/monotone_palette/monotone_palette_01.webp')"></div>
-          <div class="monotonePaletteItem" role="img" aria-label="Серые оттенки" style="background-image:url('assets/monotone_palette/monotone_palette_02.webp')"></div>
-          <div class="monotonePaletteItem" role="img" aria-label="Жёлтый-яркий" style="background-image:url('assets/monotone_palette/monotone_palette_03.webp')"></div>
-          <div class="monotonePaletteItem" role="img" aria-label="Терракот" style="background-image:url('assets/monotone_palette/monotone_palette_04.webp')"></div>
-          <div class="monotonePaletteItem" role="img" aria-label="Красный" style="background-image:url('assets/monotone_palette/monotone_palette_05.webp')"></div>
-          <div class="monotonePaletteItem" role="img" aria-label="Коричневый" style="background-image:url('assets/monotone_palette/monotone_palette_06.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Терракот" style="background-image:url('assets/monotone_palette/monotone_palette_01.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Красный" style="background-image:url('assets/monotone_palette/monotone_palette_02.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Коричневый" style="background-image:url('assets/monotone_palette/monotone_palette_03.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Жёлтый-яркий" style="background-image:url('assets/monotone_palette/monotone_palette_04.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Светло-коричневый" style="background-image:url('assets/monotone_palette/monotone_palette_05.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Белый" style="background-image:url('assets/monotone_palette/monotone_palette_06.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Светло-серый" style="background-image:url('assets/monotone_palette/monotone_palette_07.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Графит" style="background-image:url('assets/monotone_palette/monotone_palette_08.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Жёлтый (горчичный)" style="background-image:url('assets/monotone_palette/monotone_palette_09.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Черный" style="background-image:url('assets/monotone_palette/monotone_palette_10.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Серые оттенки" style="background-image:url('assets/monotone_palette/monotone_palette_11.webp')"></div>
+          <div class="monotonePaletteItem" role="img" aria-label="Красный яркий" style="background-image:url('assets/monotone_palette/monotone_palette_12.webp')"></div>
+
+
           </div>
         </div>
 
@@ -160,20 +169,20 @@
           </button>
         </div>
 
-        <div class="sectionTitle">Цвета и поверхности</div>
+        <div class="sectionTitle">Выберите цвет и жмите на кнопку</div>
         <div class="swatchRow" id="colorRow"></div>
       </div>
       </div>
 
       <footer class="detailCta">
-        <button id="btnViewAR" class="btnPrimary" type="button">Посмотреть в AR</button>
+        <button id="btnViewAR" class="btnPrimary" type="button"><span class="btnPrimaryText">Магия Актив Групп</span><img class="btnPrimaryLogo" src="assets/ui/active_group_logo.png" alt="Актив Групп" /></button>
       </footer>
     </section>
 
     <!-- Экран 3: AR -->
     <section id="screenAR" class="screen" aria-label="AR" hidden>
       <header class="arTop">
-        <button id="btnArBack" class="iconCircle" aria-label="Назад">←</button>
+        <button id="btnArBack" class="backText" aria-label="Назад">«</button>
         <div class="arTopText">
           <div id="arProductTitle" class="arTitle">—</div>
           <div id="arArea" class="arArea">—</div>
@@ -233,6 +242,21 @@
 
   </div>
 
-  <script type="module" src="js/app.js"></script>
+  <script>
+  (function () {
+    const splash = document.getElementById('splashScreen');
+    if (!splash) return;
+
+    const hide = () => {
+      splash.classList.add('fadeout');
+      document.body.classList.remove('splash-active');
+      window.setTimeout(() => splash.remove(), 400);
+    };
+
+    // Show for 3 seconds, then reveal the app
+    window.setTimeout(hide, 3000);
+  })();
+</script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>
