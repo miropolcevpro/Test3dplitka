@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Админка каталога плитки</title>
+  <link rel="stylesheet" href="css/admin.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="title">Админка каталога</div>
+    <div class="actions">
+      <a class="link" href="index.html">← В приложение</a>
+      <button id="btnDownload" class="btn btn-primary">Скачать tiles.json</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card">
+      <div class="card__title">Добавить / Редактировать плитку</div>
+      <form id="tileForm" class="form">
+        <input type="hidden" id="editId" />
+        <div class="row">
+          <label>Название
+            <input id="name" required placeholder="Например: Плитка «Серый квадрат»" />
+          </label>
+          <label>Файл текстуры
+            <input id="texture" required placeholder="assets/textures/имя.png" />
+          </label>
+          <label>Файл превью
+            <input id="preview" required placeholder="assets/previews/имя.png" />
+          </label>
+        </div>
+        <div class="row">
+          <label>Размер плитки, м (W)
+            <input id="w" type="number" min="0.01" step="0.01" required />
+          </label>
+          <label>Размер плитки, м (H)
+            <input id="h" type="number" min="0.01" step="0.01" required />
+          </label>
+          <label>Рекоменд. раскладки (через запятую)
+            <input id="layouts" placeholder="Прямая, Диагональ 45°, Вразбежку" />
+          </label>
+        </div>
+
+        <div class="form__actions">
+          <button type="submit" class="btn btn-primary" id="btnSave">Сохранить</button>
+          <button type="button" class="btn" id="btnReset">Сброс</button>
+        </div>
+        <div class="hint">Важно: GitHub Pages — статический хостинг. Чтобы обновить каталог, скачайте tiles.json и замените файл в репозитории.</div>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card__title">Список плитки</div>
+      <div id="list" class="list"></div>
+    </section>
+  </main>
+
+  <script type="module" src="js/admin.js"></script>
+</body>
+</html>

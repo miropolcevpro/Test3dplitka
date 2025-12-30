@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "tiles": [
+    {
+      "id": 1,
+      "name": "Плитка «Серый квадрат»",
+      "texture": "assets/textures/paver_grey.png",
+      "preview": "assets/previews/paver_grey.png",
+      "tileSizeM": {
+        "w": 0.2,
+        "h": 0.2
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Плитка «Красный квадрат»",
+      "texture": "assets/textures/paver_red.png",
+      "preview": "assets/previews/paver_red.png",
+      "tileSizeM": {
+        "w": 0.3,
+        "h": 0.15
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Плитка «Песочный квадрат»",
+      "texture": "assets/textures/paver_sand.png",
+      "preview": "assets/previews/paver_sand.png",
+      "tileSizeM": {
+        "w": 0.2,
+        "h": 0.1
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Кирпич «Коричневый»",
+      "texture": "assets/textures/brick_brown.png",
+      "preview": "assets/previews/brick_brown.png",
+      "tileSizeM": {
+        "w": 0.4,
+        "h": 0.4
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Кирпич «Серый»",
+      "texture": "assets/textures/brick_grey.png",
+      "preview": "assets/previews/brick_grey.png",
+      "tileSizeM": {
+        "w": 0.2,
+        "h": 0.2
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Ёлочка «Светло-серая»",
+      "texture": "assets/textures/herringbone_grey.png",
+      "preview": "assets/previews/herringbone_grey.png",
+      "tileSizeM": {
+        "w": 0.4,
+        "h": 0.4
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Камень «Голубой»",
+      "texture": "assets/textures/stone_blue.png",
+      "preview": "assets/previews/stone_blue.png",
+      "tileSizeM": {
+        "w": 0.2,
+        "h": 0.1
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "Камень «Тёмный»",
+      "texture": "assets/textures/stone_dark.png",
+      "preview": "assets/previews/stone_dark.png",
+      "tileSizeM": {
+        "w": 0.4,
+        "h": 0.4
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "Микс «Тёплый»",
+      "texture": "assets/textures/paver_mix.png",
+      "preview": "assets/previews/paver_mix.png",
+      "tileSizeM": {
+        "w": 0.25,
+        "h": 0.12
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "Графит «Квадрат»",
+      "texture": "assets/textures/paver_graphite.png",
+      "preview": "assets/previews/paver_graphite.png",
+      "tileSizeM": {
+        "w": 0.3,
+        "h": 0.3
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "Кирпич «Красный»",
+      "texture": "assets/textures/brick_red.png",
+      "preview": "assets/previews/brick_red.png",
+      "tileSizeM": {
+        "w": 0.25,
+        "h": 0.12
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    },
+    {
+      "id": 12,
+      "name": "Зелёный «Квадрат»",
+      "texture": "assets/textures/paver_green.png",
+      "preview": "assets/previews/paver_green.png",
+      "tileSizeM": {
+        "w": 0.2,
+        "h": 0.2
+      },
+      "recommendedLayouts": [
+        "Прямая",
+        "Диагональ 45°",
+        "Вразбежку"
+      ]
+    }
+  ]
+}
