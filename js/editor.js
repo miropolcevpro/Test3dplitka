@@ -5,6 +5,16 @@ window.PhotoPaveEditor=(function(){
   let canvas,ctx,dpr=1;
   const setHint=(t)=>{const el=document.getElementById("hintText");if(el)el.textContent=t||"";};
 
+  // Interaction tuning in CSS pixels (converted to canvas pixels via boundingClientRect scale)
+  const HIT_RADIUS_CSS = 14;      // point pick radius
+  const SNAP_CLOSE_CSS = 18;      // close-to-first snap radius
+  const DRAG_AUTOCLOSE_CSS = 14;  // if dragging last point near first and release -> auto close
+  const DASH_PREVIEW = true;
+
+  // Hover/preview state (canvas pixel coords)
+  let hoverCanvas = null;
+  let hoverCloseCandidate = false;
+
   function init(c){
     canvas=c;ctx=canvas.getContext("2d");dpr=Math.max(1,window.devicePixelRatio||1);
     window.addEventListener("resize",resize);resize();
@@ -61,6 +71,18 @@ function eventToCanvasPx(ev){
   const cy = (ev.clientY - r.top) * sy;
   return {cx,cy};
 }
+
+function getRectScale(){
+  const r=canvas.getBoundingClientRect();
+  const sx = canvas.width / Math.max(1, r.width);
+  const sy = canvas.height / Math.max(1, r.height);
+  return {sx,sy,r};
+}
+function cssToCanvasPx(css){
+  const {sx,sy}=getRectScale();
+  // Use min scale to keep interaction generous even if aspect differs slightly
+  return css * Math.min(sx,sy);
+}
 function eventToImgPt(ev){
   const p = eventToCanvasPx(ev);
   return canvasToImgPt(p.cx,p.cy);
@@ -69,18 +91,23 @@ function distCanvasFromImg(a,b){
   const pa=imgToCanvasPt(a), pb=imgToCanvasPt(b);
   return Math.hypot(pa.x-pb.x, pa.y-pb.y);
 }
-  function findNearest(points,imgPt,maxDist=26){
+  function findNearest(points,imgPt,maxDistCss=HIT_RADIUS_CSS){
     if(!points||!points.length)return null;
     const rect=getImageRectInCanvas();
     const tx=rect.x+(imgPt.x/state.assets.photoW)*rect.w;
     const ty=rect.y+(imgPt.y/state.assets.photoH)*rect.h;
-    const md=maxDist*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width));let best=null,bd=1e9;
+    const md=cssToCanvasPx(maxDistCss);let best=null,bd=1e9;
     for(let i=0;i<points.length;i++){
       const p=imgToCanvasPt(points[i]);
       const d=Math.hypot(p.x-tx,p.y-ty);
       if(d<bd){bd=d;best=i;}
     }
     return (best!==null&&bd<=md)?best:null;
+  }
+
+  function isCloseToFirst(points, imgPt, snapCss=SNAP_CLOSE_CSS){
+    if(!points||points.length<3) return false;
+    return distCanvasFromImg(points[0], imgPt) <= cssToCanvasPx(snapCss);
   }
 
   async function drawZoneFill(zone){
@@ -90,27 +117,75 @@ function distCanvasFromImg(a,b){
       const img=await loadImage(mat.textureUrl);
       const rect=getImageRectInCanvas();
 
-      ctx.save();
-      ctx.beginPath();
-      polyPath(zone.contour);
-      for(const c of (zone.cutouts||[])){ if(c.closed && c.polygon&&c.polygon.length>=3) polyPath(c.polygon); }
-      ctx.clip("evenodd");
+      // Build a lightweight cache key so that after closing a contour we treat the fill as a separate "layer"
+      // and only re-render it when geometry/material changes.
+      const keyParts=[
+        mat.textureUrl,
+        String(mat.params.scale??1),
+        String(mat.params.rotation??0),
+        String(mat.params.opacity??1),
+        String(mat.params.blendMode??"multiply"),
+        String(zone.contour.length)
+      ];
+      const rp=(p)=>`${Math.round(p.x*10)/10},${Math.round(p.y*10)/10}`;
+      keyParts.push(zone.contour.map(rp).join(";"));
+      for(const c of (zone.cutouts||[])){
+        if(c.closed&&c.polygon&&c.polygon.length>=3){
+          keyParts.push("cut:"+c.polygon.map(rp).join(";"));
+        }
+      }
+      const key=keyParts.join("|");
 
-      ctx.globalAlpha=mat.params.opacity??0.85;
-      ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
+      if(zone._fillCache && zone._fillCache.key===key && zone._fillCache.w===canvas.width && zone._fillCache.h===canvas.height){
+        ctx.save();
+        ctx.globalAlpha=1;
+        ctx.globalCompositeOperation="source-over";
+        ctx.drawImage(zone._fillCache.layer,0,0);
+        ctx.restore();
+        return;
+      }
 
-      const pattern=ctx.createPattern(img,"repeat");
+      // Render fill into an offscreen canvas layer
+      const layer=document.createElement("canvas");
+      layer.width=canvas.width;
+      layer.height=canvas.height;
+      const lctx=layer.getContext("2d");
+
+      lctx.save();
+      lctx.beginPath();
+      polyPathTo(lctx, zone.contour);
+      for(const c of (zone.cutouts||[])){
+        if(c.closed && c.polygon && c.polygon.length>=3) polyPathTo(lctx, c.polygon);
+      }
+      lctx.clip("evenodd");
+
+      lctx.globalAlpha=mat.params.opacity??0.85;
+      lctx.globalCompositeOperation=mat.params.blendMode??"multiply";
+
+      const pattern=lctx.createPattern(img,"repeat");
       if(pattern){
         const scale=mat.params.scale??1.0;
         const rot=((mat.params.rotation??0)*Math.PI)/180;
         const cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
-        ctx.translate(cx,cy);ctx.rotate(rot);ctx.scale(scale,scale);ctx.translate(-cx,-cy);
-        ctx.fillStyle=pattern;
-        ctx.fillRect(rect.x-rect.w,rect.y-rect.h,rect.w*3,rect.h*3);
+        lctx.translate(cx,cy);
+        lctx.rotate(rot);
+        lctx.scale(scale,scale);
+        lctx.translate(-cx,-cy);
+        lctx.fillStyle=pattern;
+        lctx.fillRect(rect.x-rect.w,rect.y-rect.h,rect.w*3,rect.h*3);
       }
+
+      lctx.restore();
+
+      // Cache and composite
+      zone._fillCache={key,layer,w:canvas.width,h:canvas.height};
+      ctx.save();
+      ctx.globalAlpha=1;
+      ctx.globalCompositeOperation="source-over";
+      ctx.drawImage(layer,0,0);
       ctx.restore();
     }catch(e){
-      try{ctx.restore();}catch(_){}
+      // ignore
     }finally{
       ctx.globalCompositeOperation="source-over";ctx.globalAlpha=1;
     }
@@ -120,6 +195,13 @@ function distCanvasFromImg(a,b){
     ctx.moveTo(p0.x,p0.y);
     for(let i=1;i<points.length;i++){const p=imgToCanvasPt(points[i]);ctx.lineTo(p.x,p.y);}
     ctx.closePath();
+  }
+
+  function polyPathTo(tctx, points){
+    const p0=imgToCanvasPt(points[0]);
+    tctx.moveTo(p0.x,p0.y);
+    for(let i=1;i<points.length;i++){const p=imgToCanvasPt(points[i]);tctx.lineTo(p.x,p.y);}
+    tctx.closePath();
   }
 
   function drawPoint(imgPt,idx,showIdx=false,color="rgba(0,229,255,1)"){
@@ -173,6 +255,62 @@ function distCanvasFromImg(a,b){
     ctx.restore();
   }
 
+  function getOpenPolyForMode(){
+    if(state.ui.mode==="plane"){
+      return {kind:"plane", points:state.floorPlane.points, closed:state.floorPlane.closed};
+    }
+    const zone=getActiveZone();
+    if(!zone) return null;
+    if(state.ui.mode==="contour"){
+      return {kind:"contour", points:zone.contour, closed:zone.closed, zone};
+    }
+    if(state.ui.mode==="cutout"){
+      const cut=getActiveCutout(zone);
+      if(!cut) return null;
+      return {kind:"cutout", points:cut.polygon, closed:cut.closed, zone, cutout:cut};
+    }
+    return null;
+  }
+
+  function drawLivePreview(){
+    if(!DASH_PREVIEW) return;
+    if(state.ui.isPointerDown) return;
+    if(!hoverCanvas) return;
+    const poly=getOpenPolyForMode();
+    if(!poly || poly.closed) return;
+    const pts=poly.points;
+    if(!pts || pts.length===0) return;
+
+    const last=imgToCanvasPt(pts[pts.length-1]);
+    let end={x:hoverCanvas.cx,y:hoverCanvas.cy};
+    if(hoverCloseCandidate && pts.length>=3){
+      const first=imgToCanvasPt(pts[0]);
+      end={x:first.x,y:first.y};
+    }
+
+    ctx.save();
+    ctx.setLineDash([6*dpr,6*dpr]);
+    ctx.strokeStyle="rgba(0,229,255,0.65)";
+    ctx.lineWidth=2*dpr;
+    ctx.beginPath();
+    ctx.moveTo(last.x,last.y);
+    ctx.lineTo(end.x,end.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if(hoverCloseCandidate && pts.length>=3){
+      const first=imgToCanvasPt(pts[0]);
+      // highlight first point
+      drawPoint(pts[0],0,false,"rgba(255,215,0,1)");
+      // label
+      ctx.fillStyle="rgba(0,0,0,0.65)";
+      ctx.font=`${12*dpr}px sans-serif`;
+      const tx=first.x+12*dpr, ty=first.y-12*dpr;
+      ctx.fillText("Кликните, чтобы замкнуть", tx, ty);
+    }
+    ctx.restore();
+  }
+
   async function render(){
     if(!ctx)return;
     const ov=document.getElementById("uploadOverlay");
@@ -193,6 +331,7 @@ function distCanvasFromImg(a,b){
 
     drawPlaneOverlay();
     drawZonesOverlay();
+    drawLivePreview();
     ctx.restore();
   }
 
@@ -226,7 +365,7 @@ function distCanvasFromImg(a,b){
   // Add points / close polygons
   if(state.ui.mode==="plane"){
     if(state.floorPlane.closed) return;
-    if(state.floorPlane.points.length>=3 && distCanvasFromImg(state.floorPlane.points[0],pt) <= 20*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width))){
+    if(isCloseToFirst(state.floorPlane.points,pt)){
       pushHistory();
       state.floorPlane.closed=true;
       render();
@@ -241,7 +380,7 @@ function distCanvasFromImg(a,b){
 
   if(state.ui.mode==="contour"&&zone){
     if(zone.closed) return;
-    if(zone.contour.length>=3 && distCanvasFromImg(zone.contour[0],pt) <= 20*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width))){
+    if(isCloseToFirst(zone.contour,pt)){
       pushHistory();
       zone.closed=true;
       render();
@@ -256,7 +395,7 @@ function distCanvasFromImg(a,b){
 
   if(state.ui.mode==="cutout"&&zone&&cut){
     if(cut.closed) return;
-    if(cut.polygon.length>=3 && distCanvasFromImg(cut.polygon[0],pt) <= 20*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width))){
+    if(isCloseToFirst(cut.polygon,pt)){
       pushHistory();
       cut.closed=true;
       render();
@@ -270,25 +409,87 @@ function distCanvasFromImg(a,b){
   }
 }
   let rafMove=0, lastMoveEv=null;
-function onPointerMove(ev){
-  if(!state.ui.isPointerDown||!state.ui.draggingPoint)return;
-  lastMoveEv=ev;
-  if(rafMove) return;
-  rafMove=requestAnimationFrame(()=>{
-    rafMove=0;
-    const ev2=lastMoveEv; if(!ev2) return;
-    const pt=eventToImgPt(ev2);
-    const drag=state.ui.draggingPoint;
-    if(drag.kind==="plane"){state.floorPlane.points[drag.idx]=pt;}
-    else{
-      const zone=getActiveZone();if(!zone)return;
-      if(drag.kind==="contour"){zone.contour[drag.idx]=pt;}
-      else if(drag.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return;cut.polygon[drag.idx]=pt;}
+  function onPointerMove(ev){
+    // Hover preview (when not dragging)
+    if(!state.ui.isPointerDown || !state.ui.draggingPoint){
+      hoverCanvas = eventToCanvasPx(ev);
+      const imgPt = canvasToImgPt(hoverCanvas.cx, hoverCanvas.cy);
+      const poly = getOpenPolyForMode();
+      if(poly && !poly.closed && poly.points && poly.points.length>=3){
+        hoverCloseCandidate = isCloseToFirst(poly.points, imgPt);
+      }else{
+        hoverCloseCandidate = false;
+      }
+      render();
+      return;
     }
+
+    // Drag point (throttled)
+    lastMoveEv=ev;
+    if(rafMove) return;
+    rafMove=requestAnimationFrame(()=>{
+      rafMove=0;
+      const ev2=lastMoveEv; if(!ev2) return;
+      const pt=eventToImgPt(ev2);
+      const drag=state.ui.draggingPoint;
+      if(drag.kind==="plane"){state.floorPlane.points[drag.idx]=pt;}
+      else{
+        const zone=getActiveZone();if(!zone)return;
+        if(drag.kind==="contour"){zone.contour[drag.idx]=pt;}
+        else if(drag.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return;cut.polygon[drag.idx]=pt;}
+      }
+      // update hover for magnet/label while dragging last point
+      hoverCanvas = eventToCanvasPx(ev2);
+      const poly = getOpenPolyForMode();
+      if(poly && !poly.closed && poly.points && poly.points.length>=3){
+        const imgPt2 = canvasToImgPt(hoverCanvas.cx, hoverCanvas.cy);
+        hoverCloseCandidate = isCloseToFirst(poly.points, imgPt2);
+      }else{
+        hoverCloseCandidate = false;
+      }
+      render();
+    });
+  }
+
+  function maybeAutoCloseOnDragRelease(){
+    const sel=state.ui.selectedPoint;
+    if(!sel) return;
+    if(sel.kind==="plane"){
+      const pts=state.floorPlane.points;
+      if(!state.floorPlane.closed && pts.length>=3 && sel.idx===pts.length-1){
+        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)) state.floorPlane.closed=true;
+      }
+      return;
+    }
+    const zone=getActiveZone();
+    if(!zone) return;
+    if(sel.kind==="contour"){
+      const pts=zone.contour;
+      if(!zone.closed && pts.length>=3 && sel.idx===pts.length-1){
+        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)) zone.closed=true;
+      }
+      return;
+    }
+    if(sel.kind==="cutout"){
+      const cut=getActiveCutout(zone);
+      if(!cut) return;
+      const pts=cut.polygon;
+      if(!cut.closed && pts.length>=3 && sel.idx===pts.length-1){
+        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)) cut.closed=true;
+      }
+    }
+  }
+
+  function onPointerUp(ev){
+    state.ui.isPointerDown=false;
+    // If user dragged the last point near the first point, auto-close.
+    if(state.ui.draggingPoint){
+      maybeAutoCloseOnDragRelease();
+    }
+    state.ui.draggingPoint=null;
+    try{canvas.releasePointerCapture(ev && ev.pointerId);}catch(_){}
     render();
-  });
-}
-  function onPointerUp(ev){state.ui.isPointerDown=false;state.ui.draggingPoint=null;try{canvas.releasePointerCapture(ev?.pointerId);}catch(_){}}
+  }
   function deleteSelectedPoint(){
     const sel=state.ui.selectedPoint;if(!sel)return false;
     pushHistory();
@@ -309,6 +510,8 @@ function onPointerMove(ev){
   }
   function setMode(mode){
     state.ui.mode=mode;
+    hoverCanvas=null;
+    hoverCloseCandidate=false;
     const map={photo:"Загрузите фото или замените его.",plane:"Плоскость (опционально): обведите участок пола и замкните, кликнув рядом с первой точкой.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
     setHint(map[mode]||"");render();
   }
