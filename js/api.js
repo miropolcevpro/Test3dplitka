@@ -168,7 +168,14 @@ function absFromStorageMaybe(p){
         await tryLoad(alt);
         url = alt;
       }else{
-        throw e;
+        // Last resort: try loading without CORS so the fill can still render.
+        // NOTE: canvas export (toDataURL) may be blocked for such textures.
+        const img2=new Image();
+        const tryLoad2=(u)=>new Promise((resolve,reject)=>{img2.onload=()=>resolve();img2.onerror=()=>reject(new Error("Image load failed (no CORS): "+u));img2.src=u;});
+        await tryLoad2(url);
+        console.warn("[images] Loaded texture without CORS; export may be blocked:", url);
+        cache.set(url,{img:img2,ts:Date.now()});
+        return img2;
       }
     }
 

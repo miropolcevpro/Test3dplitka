@@ -391,8 +391,8 @@ function distCanvasFromImg(a,b){
 
       if(zone._fillCache && zone._fillCache.key===key && zone._fillCache.w===canvas.width && zone._fillCache.h===canvas.height){
         ctx.save();
-        ctx.globalAlpha=mat.params.opacity??0.85;
-        ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
+        ctx.globalAlpha=1;
+        ctx.globalCompositeOperation="source-over";
         ctx.drawImage(zone._fillCache.layer,0,0);
         ctx.restore();
         return;
@@ -413,8 +413,8 @@ function distCanvasFromImg(a,b){
       }
       lctx.clip("evenodd");
 
-      lctx.globalAlpha=1;
-      lctx.globalCompositeOperation="source-over";
+      lctx.globalAlpha=mat.params.opacity??0.85;
+      lctx.globalCompositeOperation=mat.params.blendMode??"multiply";
 
       if(usePerspective){
         // Project tiled pattern through homography (AR-like "floor going into distance")
@@ -442,12 +442,12 @@ function distCanvasFromImg(a,b){
       // Cache and composite
       zone._fillCache={key,layer,w:canvas.width,h:canvas.height};
       ctx.save();
-      ctx.globalAlpha=mat.params.opacity??0.85;
-      ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
+      ctx.globalAlpha=1;
+      ctx.globalCompositeOperation="source-over";
       ctx.drawImage(layer,0,0);
       ctx.restore();
     }catch(e){
-      // ignore
+      console.warn("[fill] failed to render texture. Most common cause: image failed to load with CORS, so it cannot be used for canvas rendering.", e);
     }finally{
       ctx.globalCompositeOperation="source-over";ctx.globalAlpha=1;
     }
@@ -472,8 +472,6 @@ function polyPath(points){
     ctx.strokeStyle="rgba(0,0,0,0.5)";ctx.lineWidth=2*dpr;ctx.stroke();
     if(showIdx){ctx.fillStyle="rgba(0,0,0,0.65)";ctx.font=`${10*dpr}px sans-serif`;ctx.fillText(String(idx+1),p.x+8*dpr,p.y-8*dpr);}
   }
-
-  function drawPlaneOverlay(){ return; }
 
   function drawZonesOverlay(){
     ctx.save();
@@ -503,12 +501,8 @@ function polyPath(points){
     }
     ctx.restore();
   }
-
   function getOpenPolyForMode(){
-    if(state.ui.mode==="plane"){
-      return {kind:"plane", points:state.floorPlane.points, closed:state.floorPlane.closed};
-    }
-    const zone=getActiveZone();
+const zone=getActiveZone();
     if(!zone) return null;
     if(state.ui.mode==="contour"){
       return {kind:"contour", points:zone.contour, closed:zone.closed, zone};
@@ -578,7 +572,6 @@ function polyPath(points){
 
     for(const zone of state.zones){ if(zone.enabled) await drawZoneFill(zone); }
 
-    drawPlaneOverlay();
     drawZonesOverlay();
     drawLivePreview();
     ctx.restore();
@@ -594,8 +587,35 @@ function polyPath(points){
   pendingClose = null;
 
   let target=null;
+  // Editing focuses on zones/holes only. Perspective is inferred automatically from the closed contour.
+  if(state.ui.mode==="contour"&&zone){
+    const idx=findNearest(zone.contour,pt);
+    if(idx===0 && !zone.closed && zone.contour.length>=3 && isCloseToFirst(zone.contour, pt)){
+      pendingClose={kind:"contour", start:eventToCanvasPx(ev)};
+      state.ui.selectedPoint={kind:"contour", idx:0};
+      render();
+      return;
+    }
+    if(idx!==null)target={kind:"contour",idx};
+  }else if(state.ui.mode==="cutout"&&zone&&cut){
+    const idx=findNearest(cut.polygon,pt);
+    if(idx===0 && !cut.closed && cut.polygon.length>=3 && isCloseToFirst(cut.polygon, pt)){
+      pendingClose={kind:"cutout", start:eventToCanvasPx(ev)};
+      state.ui.selectedPoint={kind:"cutout", idx:0};
+      render();
+      return;
+    }
+    if(idx!==null)target={kind:"cutout",idx};
+  }
 
-  // Unified editing: no explicit floor-plane handles; perspective is inferred from the closed contour.
+  if(target){
+    // start drag (single history snapshot)
+    pushHistory();
+    state.ui.draggingPoint=target;
+    state.ui.selectedPoint=target;
+    render();
+    return;
+  }
 
   // Add points / close polygons
 if(state.ui.mode==="contour"&&zone){
@@ -680,12 +700,9 @@ if(state.ui.mode==="contour"&&zone){
       const ev2=lastMoveEv; if(!ev2) return;
       const pt=eventToImgPt(ev2);
       const drag=state.ui.draggingPoint;
-      if(drag.kind==="plane"){state.floorPlane.points[drag.idx]=pt;}
-      else{
         const zone=getActiveZone();if(!zone)return;
         if(drag.kind==="contour"){zone.contour[drag.idx]=pt;}
         else if(drag.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return;cut.polygon[drag.idx]=pt;}
-      }
       // update hover for magnet/label while dragging last point
       hoverCanvas = eventToCanvasPx(ev2);
       const poly = getOpenPolyForMode();
@@ -702,11 +719,6 @@ if(state.ui.mode==="contour"&&zone){
   function maybeAutoCloseOnDragRelease(){
     const sel=state.ui.selectedPoint;
     if(!sel) return;
-    if(sel.kind==="plane"){
-      const pts=state.floorPlane.points;
-      if(!state.floorPlane.closed && pts.length>=3 && sel.idx===pts.length-1){
-        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)) state.floorPlane.closed=true;
-      }
       return;
     }
     const zone=getActiveZone();
@@ -748,12 +760,6 @@ if(state.ui.mode==="contour"&&zone){
   function deleteSelectedPoint(){
     const sel=state.ui.selectedPoint;if(!sel)return false;
     pushHistory();
-    if(sel.kind==="plane"){ state.floorPlane.points.splice(sel.idx,1); if(state.floorPlane.points.length<4) state.floorPlane.closed=false; }
-    else{
-      const zone=getActiveZone();if(!zone)return false;
-      if(sel.kind==="contour"){ zone.contour.splice(sel.idx,1); if(zone.contour.length<3) zone.closed=false; }
-      else if(sel.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return false;cut.polygon.splice(sel.idx,1); if(cut.polygon.length<3) cut.closed=false;}
-    }
     state.ui.selectedPoint=null;render();return true;
   }
   function bindInput(){
@@ -764,11 +770,10 @@ if(state.ui.mode==="contour"&&zone){
     window.addEventListener("keydown",(e)=>{if(e.key==="Delete"||e.key==="Backspace"){if(deleteSelectedPoint())e.preventDefault();}});
   }
   function setMode(mode){
-    if(mode==="plane") mode="contour";
-    state.ui.mode=mode;
+        state.ui.mode=mode;
     hoverCanvas=null;
     hoverCloseCandidate=false;
-    const map={photo:"Загрузите фото или замените его.",plane:"Контур: ставьте точки по краю зоны и замкните к первой точке (магнит). Плоскость определяется автоматически. Точки можно двигать.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
+    const map={photo:"Загрузите фото или замените его.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
     setHint(map[mode]||"");render();
   }
   function exportPNG(){
