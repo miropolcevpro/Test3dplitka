@@ -137,7 +137,8 @@
     API.setStatus(`Фото загружено (${nw}×${nh})`);
     setActiveStep("zones");
     ED.setMode("contour");
-    ED.render();
+    // Resize canvas to the new photo size to avoid any aspect distortion
+    if(ED.resize) ED.resize(); else ED.render();
   }
 
   function syncSettingsUI(){

@@ -11,15 +11,36 @@ window.PhotoPaveEditor=(function(){
     setHint("Загрузите фото. Затем в режиме «Контур» обведите зону мощения точками и замкните, кликнув рядом с первой точкой. При необходимости добавьте «Вырез» и также замкните его.");
   }
   function resize(){
-    const r=canvas.getBoundingClientRect();
-    canvas.width=Math.floor(r.width*dpr);canvas.height=Math.floor(r.height*dpr);
+    const wrap = canvas.parentElement;
+    const aw = wrap ? Math.max(1, wrap.clientWidth) : Math.max(1, canvas.getBoundingClientRect().width);
+    const ah = wrap ? Math.max(1, wrap.clientHeight) : Math.max(1, canvas.getBoundingClientRect().height);
+    const {photoW,photoH} = state.assets;
+
+    if(photoW && photoH){
+      // Tie canvas buffer to the photo to avoid aspect distortion and maximize quality
+      canvas.width = Math.round(photoW * dpr);
+      canvas.height = Math.round(photoH * dpr);
+
+      // Fit the displayed canvas inside available area while preserving aspect
+      const sc = Math.min(aw / photoW, ah / photoH);
+      canvas.style.width = Math.floor(photoW * sc) + "px";
+      canvas.style.height = Math.floor(photoH * sc) + "px";
+    }else{
+      // No photo: fill available area
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
+      canvas.width = Math.floor(aw * dpr);
+      canvas.height = Math.floor(ah * dpr);
+    }
+
     render();
   }
+
   function getImageRectInCanvas(){
     const w=canvas.width,h=canvas.height,{photoW,photoH}=state.assets;
     if(!photoW||!photoH)return {x:0,y:0,w:w,h:h,scale:1};
-    const sc=Math.min(w/photoW,h/photoH),iw=photoW*sc,ih=photoH*sc;
-    return {x:(w-iw)/2,y:(h-ih)/2,w:iw,h:ih,scale:sc};
+    // With photo loaded we draw it to full canvas (canvas itself is already aspect-correct)
+    return {x:0,y:0,w:w,h:h,scale:(w/Math.max(1,photoW))};
   }
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
   function imgToCanvasPt(p){

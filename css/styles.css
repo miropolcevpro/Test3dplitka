@@ -1,6 +1,6 @@
 
 :root{--bg:#0f1218;--panel:#151a22;--panel2:#10141b;--text:#e7eefc;--muted:#9db0d3;--accent:#00e5ff;--danger:#ff4d4f;--border:rgba(255,255,255,0.08);--shadow:0 8px 30px rgba(0,0,0,0.35);--radius:14px;--font:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
-*{box-sizing:border-box}html,body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,#0f1218);color:var(--text);height:100%;overflow:hidden};overflow:hidden
+*{box-sizing:border-box}html,body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,#0f1218);color:var(--text);height:100%;overflow:hidden}
 body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,#0f1218);color:var(--text)}
 .app{height:100vh;display:flex;flex-direction:column;min-height:0}
 .topbar{display:flex;gap:16px;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(15,18,24,0.88);backdrop-filter:blur(10px);z-index:10}
@@ -15,8 +15,9 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .canvasToolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
 .toolGroup{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .hint{color:var(--muted);font-size:12px;padding:6px 10px;border:1px dashed rgba(255,255,255,0.14);border-radius:10px;flex:1;min-width:260px}
-.canvasWrap{position:relative;flex:1;min-height:0;background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06)}
-#editorCanvas{width:100%;height:100%;display:block;touch-action:none;}
+.canvasWrap{position:relative;flex:1;min-height:0;background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
+/* Canvas display size is controlled in JS to preserve photo aspect ratio */
+#editorCanvas{display:block;touch-action:none;max-width:100%;max-height:100%;}
 .kbdHelp{display:none}
 .sidePane{background:transparent;display:flex;flex-direction:column;gap:10px;min-height:0;flex:0 0 360px;max-width:420px;min-width:300px;overflow:auto;}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
@@ -70,18 +71,20 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .hscroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.18);border-radius:999px}
 .hscroll .card{flex:0 0 auto}
 
-/* Shapes row: do not show captions/badges, thumbnails must fit fully */
-.hscroll--shapes .card{width:128px;height:84px;padding:6px}
+/* Shapes row: larger cards, no empty padding, thumbnails must fit fully */
+.hscroll--shapes .card{width:180px;height:126px;padding:0}
+.hscroll--shapes .card__label{display:none !important}
 .hscroll--shapes .title,.hscroll--shapes .badge{display:none !important}
-.hscroll--shapes .thumb{height:100% !important}
+.hscroll--shapes .thumb{height:100% !important;aspect-ratio:auto}
 .hscroll--shapes .thumb img{object-fit:contain}
 
-/* Textures row: keep caption */
-.hscroll--textures .card{width:180px;height:110px;padding:8px}
-.hscroll--textures .thumb{height:62px}
-.hscroll--textures .thumb img{object-fit:cover}
-.hscroll--textures .title{font-size:12px;line-height:1.2;max-height:2.4em;overflow:hidden}
-.hscroll--textures .badge{display:none}
+/* Textures row: larger preview, no cropping (object-fit: contain), caption stays */
+.hscroll--textures .card{width:240px;height:170px;padding:0}
+.hscroll--textures .thumb{flex:1;height:auto;aspect-ratio:auto}
+.hscroll--textures .thumb img{object-fit:contain}
+.hscroll--textures .card__label{padding:8px 10px}
+.hscroll--textures .card__label span:first-child{font-size:12px;line-height:1.2;display:block;max-height:2.4em;overflow:hidden}
+.hscroll--textures .card__label span:last-child{display:none}
 
 @media (max-width: 1100px){
   .main{flex-direction:column}
@@ -91,8 +94,8 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
   .topbar{position:sticky;top:0}
   .sidePane{order:2}
   .canvasPane{order:1}
-  .hscroll--shapes .card{width:110px;height:74px}
-  .hscroll--textures .card{width:150px;height:98px}
+  .hscroll--shapes .card{width:150px;height:104px}
+  .hscroll--textures .card{width:200px;height:150px}
 }
 
 /* Upload overlay */
