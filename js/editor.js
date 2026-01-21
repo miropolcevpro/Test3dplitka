@@ -7,13 +7,17 @@ window.PhotoPaveEditor=(function(){
 
   // Interaction tuning in CSS pixels (converted to canvas pixels via boundingClientRect scale)
   const HIT_RADIUS_CSS = 14;      // point pick radius
-  const SNAP_CLOSE_CSS = 18;      // close-to-first snap radius
+  // Slightly larger snap radius makes closure far more predictable on large photos / iframe scaling.
+  const SNAP_CLOSE_CSS = 24;      // close-to-first snap radius
   const DRAG_AUTOCLOSE_CSS = 14;  // if dragging last point near first and release -> auto close
+  const DRAG_THRESHOLD_CSS = 6;   // pointer movement threshold to start drag instead of closing
   const DASH_PREVIEW = true;
 
   // Hover/preview state (canvas pixel coords)
   let hoverCanvas = null;
   let hoverCloseCandidate = false;
+  // If user clicks the first point on an open polygon, we treat it as a "tap to close" unless they start dragging.
+  let pendingClose = null;
 
   function init(c){
     canvas=c;ctx=canvas.getContext("2d");dpr=Math.max(1,window.devicePixelRatio||1);
@@ -214,7 +218,7 @@ function distCanvasFromImg(a,b){
   function drawPlaneOverlay(){
     const pts=state.floorPlane.points;if(!pts.length)return;
     ctx.save();
-    ctx.strokeStyle="rgba(0,229,255,0.85)";ctx.lineWidth=2*dpr;ctx.fillStyle="rgba(0,229,255,0.08)";
+    ctx.strokeStyle="rgba(0,229,255,0.85)";ctx.lineWidth=3.5*dpr;ctx.fillStyle="rgba(0,229,255,0.08)";
     if(pts.length>=2){
       ctx.beginPath();
       const p0=imgToCanvasPt(pts[0]);ctx.moveTo(p0.x,p0.y);
@@ -232,7 +236,7 @@ function distCanvasFromImg(a,b){
       if(!zone.contour||zone.contour.length<2)continue;
       const isActive=zone.id===state.ui.activeZoneId;
       ctx.strokeStyle=isActive?"rgba(0,229,255,0.95)":"rgba(255,255,255,0.35)";
-      ctx.lineWidth=(isActive?2.5:1.5)*dpr;
+      ctx.lineWidth=(isActive?3.8:2.2)*dpr;
       ctx.beginPath();
       const p0=imgToCanvasPt(zone.contour[0]);ctx.moveTo(p0.x,p0.y);
       for(let i=1;i<zone.contour.length;i++){const p=imgToCanvasPt(zone.contour[i]);ctx.lineTo(p.x,p.y);} 
@@ -243,7 +247,7 @@ function distCanvasFromImg(a,b){
         if(!c.polygon||c.polygon.length<2)continue;
         const isCut=isActive&&(c.id===state.ui.activeCutoutId);
         ctx.strokeStyle=isCut?"rgba(255,77,79,0.95)":"rgba(255,77,79,0.45)";
-        ctx.lineWidth=(isCut?2.2:1.2)*dpr;
+        ctx.lineWidth=(isCut?3.2:2.0)*dpr;
         ctx.beginPath();
         const q0=imgToCanvasPt(c.polygon[0]);ctx.moveTo(q0.x,q0.y);
         for(let i=1;i<c.polygon.length;i++){const q=imgToCanvasPt(c.polygon[i]);ctx.lineTo(q.x,q.y);} 
@@ -291,7 +295,7 @@ function distCanvasFromImg(a,b){
     ctx.save();
     ctx.setLineDash([6*dpr,6*dpr]);
     ctx.strokeStyle="rgba(0,229,255,0.65)";
-    ctx.lineWidth=2*dpr;
+    ctx.lineWidth=3*dpr;
     ctx.beginPath();
     ctx.moveTo(last.x,last.y);
     ctx.lineTo(end.x,end.y);
@@ -341,15 +345,37 @@ function distCanvasFromImg(a,b){
   const pt=eventToImgPt(ev);
   const zone=getActiveZone();const cut=getActiveCutout(zone);
 
+  // Reset pending close candidate each pointerdown
+  pendingClose = null;
+
   let target=null;
   if(state.ui.mode==="plane"){
     const idx=findNearest(state.floorPlane.points,pt);
+    // If user clicks the first point and polygon is ready to close, treat as "tap to close".
+    if(idx===0 && !state.floorPlane.closed && state.floorPlane.points.length>=3 && isCloseToFirst(state.floorPlane.points, pt)){
+      pendingClose={kind:"plane", start:eventToCanvasPx(ev)};
+      state.ui.selectedPoint={kind:"plane", idx:0};
+      render();
+      return;
+    }
     if(idx!==null)target={kind:"plane",idx};
   }else if(state.ui.mode==="contour"&&zone){
     const idx=findNearest(zone.contour,pt);
+    if(idx===0 && !zone.closed && zone.contour.length>=3 && isCloseToFirst(zone.contour, pt)){
+      pendingClose={kind:"contour", start:eventToCanvasPx(ev)};
+      state.ui.selectedPoint={kind:"contour", idx:0};
+      render();
+      return;
+    }
     if(idx!==null)target={kind:"contour",idx};
   }else if(state.ui.mode==="cutout"&&zone&&cut){
     const idx=findNearest(cut.polygon,pt);
+    if(idx===0 && !cut.closed && cut.polygon.length>=3 && isCloseToFirst(cut.polygon, pt)){
+      pendingClose={kind:"cutout", start:eventToCanvasPx(ev)};
+      state.ui.selectedPoint={kind:"cutout", idx:0};
+      render();
+      return;
+    }
     if(idx!==null)target={kind:"cutout",idx};
   }
 
@@ -410,6 +436,34 @@ function distCanvasFromImg(a,b){
 }
   let rafMove=0, lastMoveEv=null;
   function onPointerMove(ev){
+    // If pointerdown happened on the first point, we delay the decision: tap closes, drag edits.
+    if(state.ui.isPointerDown && pendingClose && !state.ui.draggingPoint){
+      const now = eventToCanvasPx(ev);
+      const st = (pendingClose && pendingClose.start) ? pendingClose.start : now;
+      const dx = now.cx - st.cx;
+      const dy = now.cy - st.cy;
+      const moved = Math.hypot(dx,dy) > cssToCanvasPx(DRAG_THRESHOLD_CSS);
+      if(moved){
+        // Convert to drag of the first point
+        pushHistory();
+        state.ui.draggingPoint = {kind: pendingClose.kind, idx:0};
+        state.ui.selectedPoint = {kind: pendingClose.kind, idx:0};
+        pendingClose = null;
+        // fall through to drag logic below (this move will update point)
+      }else{
+        // Just update hover preview for magnetic label
+        hoverCanvas = now;
+        const imgPt = canvasToImgPt(hoverCanvas.cx, hoverCanvas.cy);
+        const poly = getOpenPolyForMode();
+        if(poly && !poly.closed && poly.points && poly.points.length>=3){
+          hoverCloseCandidate = isCloseToFirst(poly.points, imgPt);
+        }else{
+          hoverCloseCandidate = false;
+        }
+        render();
+        return;
+      }
+    }
     // Hover preview (when not dragging)
     if(!state.ui.isPointerDown || !state.ui.draggingPoint){
       hoverCanvas = eventToCanvasPx(ev);
@@ -482,6 +536,14 @@ function distCanvasFromImg(a,b){
 
   function onPointerUp(ev){
     state.ui.isPointerDown=false;
+    // If user tapped the first point (without dragging), close the current polygon.
+    if(pendingClose && !state.ui.draggingPoint){
+      pushHistory();
+      if(pendingClose.kind==="plane") state.floorPlane.closed=true;
+      else if(pendingClose.kind==="contour"){ const z=getActiveZone(); if(z) z.closed=true; }
+      else if(pendingClose.kind==="cutout"){ const z=getActiveZone(); if(z){ const c=getActiveCutout(z); if(c) c.closed=true; } }
+      pendingClose=null;
+    }
     // If user dragged the last point near the first point, auto-close.
     if(state.ui.draggingPoint){
       maybeAutoCloseOnDragRelease();
