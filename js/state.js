@@ -2,7 +2,7 @@
 window.PhotoPaveState=(function(){
   const DEFAULT_GATEWAY="https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const state={
-    build:{version:"mvp-iter1.13-fillmask-fix",ts:new Date().toISOString()},
+    build:{version:"mvp-iter1.13-fix02-unified-contour-no-plane-corsfallback",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",config:null},
     ui:{activeStep:"photo",mode:"photo",activeZoneId:null,activeCutoutId:null,draggingPoint:null,selectedPoint:null,isPointerDown:false},
     catalog:{shapes:[],palettesByShape:{},texturesByShape:{},activeShapeId:null},

@@ -116,21 +116,6 @@
   }
 
   
-  function defaultFloorPlanePoints(w,h){
-    // Heuristic trapezoid: near edge at bottom, far edge mid-height.
-    // User can always drag the 4 handles to match the real floor.
-    const nearY = h*0.88;
-    const farY  = h*0.48;
-    const nearW = w*0.92;
-    const farW  = w*0.52;
-    const cx = w*0.50;
-    return [
-      {x: cx - nearW*0.50, y: nearY},
-      {x: cx + nearW*0.50, y: nearY},
-      {x: cx + farW*0.50,  y: farY},
-      {x: cx - farW*0.50,  y: farY},
-    ];
-  }
 async function handlePhotoFile(file){
     if(!file) return;
     API.setStatus("Загрузка фото…");
@@ -146,7 +131,6 @@ async function handlePhotoFile(file){
 
     pushHistory();
     state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;
-    state.floorPlane.points=defaultFloorPlanePoints(nw,nh);state.floorPlane.closed=true;
     state.zones.forEach(z=>{z.contour=[];z.closed=false;z.cutouts=[];});
     state.ui.activeCutoutId=null;
 
@@ -165,6 +149,13 @@ async function handlePhotoFile(file){
     el("blendSelect").value=z.material.params.blendMode??"multiply";
   }
 
+  function syncCloseButtonUI(){
+    const btn=el("closePolyBtn");
+    if(!btn) return;
+    if(state.ui.mode==="cutout") btn.textContent="Замкнуть вырез";
+    else btn.textContent="Замкнуть контур";
+  }
+
   function makeSummaryText(){
     const zones=state.zones.map((z,i)=>`${i+1}) ${z.name}: форма=${z.material.shapeId||"—"}, текстура=${z.material.textureId||"—"}, точки=${z.contour?.length||0}, вырезы=${z.cutouts?.length||0}`).join("\n");
     return ["Визуализация мощения (фото-конструктор):",zones,"","Приложите сохранённое изображение и напишите, нужна ли консультация."].join("\n");
@@ -181,10 +172,12 @@ async function handlePhotoFile(file){
   }
 
   function bindUI(){
-    el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");});
-        el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");});
-    el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");});
-    el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");});
+    el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
+    const btnPlane=el("modePlane");
+    if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});}
+    el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});
+    el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");syncCloseButtonUI();});
+    el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");syncCloseButtonUI();});
 
     el("undoBtn").addEventListener("click",()=>{if(undo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
     el("redoBtn").addEventListener("click",()=>{if(redo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
@@ -194,8 +187,28 @@ async function handlePhotoFile(file){
     });
 
     const btnResetPlane=el("resetPlaneBtn");
-    if(btnResetPlane){btnResetPlane.addEventListener("click",()=>{pushHistory();const w=state.assets.photoW||0,h=state.assets.photoH||0;state.floorPlane.points=(w&&h)?defaultFloorPlanePoints(w,h):[];state.floorPlane.closed=!!(w&&h);ED.render();});}
     el("resetZoneBtn").addEventListener("click",()=>{const z=S.getActiveZone();if(!z)return;pushHistory();z.contour=[];z.closed=false;z.cutouts=[];state.ui.activeCutoutId=null;renderZonesUI();ED.render();});
+
+    const closeBtn=el("closePolyBtn");
+    if(closeBtn){
+      closeBtn.addEventListener("click",()=>{
+        const z=S.getActiveZone();
+        if(!z) return;
+        // Explicit close helps on mobile, where tapping the first point may be finicky.
+        if(state.ui.mode==="cutout"){
+          const c=S.getActiveCutout(z);
+          if(!c || c.closed || (c.polygon||[]).length<3) return;
+          pushHistory();
+          c.closed=true;
+        }else{
+          if(z.closed || (z.contour||[]).length<3) return;
+          pushHistory();
+          z.closed=true;
+        }
+        renderZonesUI();
+        ED.render();
+      });
+    }
 
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
     el("replacePhotoBtn").addEventListener("click",()=>el("photoInput").click());
@@ -210,13 +223,13 @@ async function handlePhotoFile(file){
         el("resetProjectBtn").addEventListener("click",()=>{
       pushHistory();
       state.assets.photoBitmap=null;state.assets.photoW=0;state.assets.photoH=0;
-      state.floorPlane.points=[];state.floorPlane.closed=false;
       state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
       ensureActiveZone();renderZonesUI();ED.render();
       setActiveStep("photo");ED.setMode("photo");
+      syncCloseButtonUI();
     });
 
-    el("addZoneBtn").addEventListener("click",()=>{pushHistory();const z=makeZone();state.zones.push(z);state.ui.activeZoneId=z.id;state.ui.activeCutoutId=null;renderZonesUI();setActiveStep("zones");ED.setMode("contour");});
+    el("addZoneBtn").addEventListener("click",()=>{pushHistory();const z=makeZone();state.zones.push(z);state.ui.activeZoneId=z.id;state.ui.activeCutoutId=null;renderZonesUI();setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});
     el("dupZoneBtn").addEventListener("click",()=>{
       const z=S.getActiveZone();if(!z)return;pushHistory();
       const copy=JSON.parse(JSON.stringify(z));
@@ -238,6 +251,7 @@ async function handlePhotoFile(file){
       const z=S.getActiveZone();if(!z)return;pushHistory();
       const c=makeCutout((z.cutouts.length+1));z.cutouts.push(c);state.ui.activeCutoutId=c.id;
       renderZonesUI();setActiveStep("cutouts");ED.setMode("cutout");
+      syncCloseButtonUI();
     });
     el("delCutoutBtn").addEventListener("click",()=>{
       const z=S.getActiveZone();if(!z)return;const cid=state.ui.activeCutoutId;if(!cid)return;pushHistory();
@@ -264,6 +278,7 @@ async function handlePhotoFile(file){
     ED.init(el("editorCanvas"));
     ED.bindInput();
     bindUI();
+    syncCloseButtonUI();
     pushHistory();
 
     try{

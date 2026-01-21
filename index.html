@@ -20,7 +20,7 @@
 
     <div class="stepper" id="stepper">
       <div class="step step--active" data-step="photo">1 Фото</div>
-      <div class="step" data-step="zones">2 Зоны</div>
+            <div class="step" data-step="zones">2 Зоны</div>
       <div class="step" data-step="cutouts">3 Вырезы</div>
       <div class="step" data-step="export">4 Сохранить</div>
     </div>
@@ -95,6 +95,10 @@
               <button class="btn" id="addZoneBtn">Добавить зону</button>
               <button class="btn btn--ghost" id="dupZoneBtn">Дублировать</button>
               <button class="btn btn--danger" id="delZoneBtn">Удалить</button>
+            </div>
+
+            <div class="row">
+              <button class="btn btn--ghost" id="closePolyBtn" title="Закрыть текущий контур/вырез">Замкнуть контур</button>
             </div>
             <div id="zonesList" class="list"></div>
 
