@@ -82,6 +82,211 @@ function getRectScale(){
   const sy = canvas.height / Math.max(1, r.height);
   return {sx,sy,r};
 }
+
+// --- Perspective helpers (floor plane -> photo) ---
+// We approximate "AR-like" floor projection by asking user to mark 4 points of the floor plane.
+// Then we project a tiled texture through a homography and clip it by the zone polygon.
+//
+// Quad ordering: we accept any click order, then normalize to CCW and pick a stable start.
+function orderQuadCCW(pts){
+  const c = pts.reduce((a,p)=>({x:a.x+p.x,y:a.y+p.y}),{x:0,y:0});
+  c.x/=pts.length; c.y/=pts.length;
+  const withAng = pts.map(p=>({p, ang: Math.atan2(p.y-c.y, p.x-c.x)})).sort((a,b)=>a.ang-b.ang);
+  let ccw = withAng.map(o=>o.p);
+  // rotate so first is top-left-ish (min x+y)
+  let bestIdx=0, best=1e18;
+  for(let i=0;i<ccw.length;i++){
+    const v=ccw[i].x+ccw[i].y;
+    if(v<best){best=v;bestIdx=i;}
+  }
+  ccw = ccw.slice(bestIdx).concat(ccw.slice(0,bestIdx));
+  return ccw;
+}
+
+function invert3x3(m){
+  const a=m[0], b=m[1], c=m[2],
+        d=m[3], e=m[4], f=m[5],
+        g=m[6], h=m[7], i=m[8];
+  const A=e*i-f*h, B=-(d*i-f*g), C=d*h-e*g;
+  const D=-(b*i-c*h), E=a*i-c*g, F=-(a*h-b*g);
+  const G=b*f-c*e, H=-(a*f-c*d), I=a*e-b*d;
+  const det=a*A + b*B + c*C;
+  if(Math.abs(det) < 1e-12) return null;
+  const invDet=1/det;
+  return [A*invDet, D*invDet, G*invDet,
+          B*invDet, E*invDet, H*invDet,
+          C*invDet, F*invDet, I*invDet];
+}
+
+// Solve homography H that maps unit square (0,0),(1,0),(1,1),(0,1) to quad points (x,y) in canvas space.
+// H is 3x3, returned as flat array length 9.
+function homographyUnitSquareToQuad(q){
+  // Unknowns: h11 h12 h13 h21 h22 h23 h31 h32 (h33=1)
+  // For each correspondence: x = (h11*u + h12*v + h13) / (h31*u + h32*v + 1)
+  //                         y = (h21*u + h22*v + h23) / (h31*u + h32*v + 1)
+  const src = [
+    [0,0],[1,0],[1,1],[0,1]
+  ];
+  const A = []; // 8x8
+  const B = []; // 8
+  for(let k=0;k<4;k++){
+    const u=src[k][0], v=src[k][1];
+    const x=q[k].x, y=q[k].y;
+    // x row
+    A.push([u,v,1, 0,0,0, -u*x, -v*x]); B.push(x);
+    // y row
+    A.push([0,0,0, u,v,1, -u*y, -v*y]); B.push(y);
+  }
+  // Gaussian elimination
+  const n=8;
+  for(let col=0; col<n; col++){
+    // pivot
+    let pivot=col;
+    for(let r=col+1;r<n;r++) if(Math.abs(A[r][col])>Math.abs(A[pivot][col])) pivot=r;
+    if(Math.abs(A[pivot][col])<1e-12) return null;
+    if(pivot!==col){
+      A[col],A[pivot]=A[pivot],A[col];
+      B[col],B[pivot]=B[pivot],B[col];
+    }
+    const div=A[col][col];
+    for(let c2=col;c2<n;c2++) A[col][c2]/=div;
+    B[col]/=div;
+    for(let r=0;r<n;r++){
+      if(r===col) continue;
+      const factor=A[r][col];
+      if(Math.abs(factor)<1e-12) continue;
+      for(let c2=col;c2<n;c2++) A[r][c2]-=factor*A[col][c2];
+      B[r]-=factor*B[col];
+    }
+  }
+  const h=B; // solved
+  const H=[
+    h[0],h[1],h[2],
+    h[3],h[4],h[5],
+    h[6],h[7],1
+  ];
+  return H;
+}
+
+function applyHomography(H, u, v){
+  const x = H[0]*u + H[1]*v + H[2];
+  const y = H[3]*u + H[4]*v + H[5];
+  const w = H[6]*u + H[7]*v + H[8];
+  return {x: x/w, y: y/w};
+}
+
+const PATTERN_SIZE = 2048;
+const _patternCache = new Map(); // key -> canvas
+
+function buildPatternCanvas(img){
+  const key = img.src + "::" + PATTERN_SIZE;
+  if(_patternCache.has(key)) return _patternCache.get(key);
+  const pc = document.createElement("canvas");
+  pc.width = PATTERN_SIZE;
+  pc.height = PATTERN_SIZE;
+  const pctx = pc.getContext("2d");
+  // tile image
+  const w = img.width, h = img.height;
+  for(let y=0; y<PATTERN_SIZE; y+=h){
+    for(let x=0; x<PATTERN_SIZE; x+=w){
+      pctx.drawImage(img, x, y, w, h);
+    }
+  }
+  _patternCache.set(key, pc);
+  return pc;
+}
+
+// Draw an image into destination triangle using an affine mapping from source triangle.
+// Standard "textured triangle" approach; perspective correctness comes from subdividing into many small triangles.
+function drawTexturedTriangle(tctx, img, s0,t0,s1,t1,s2,t2, x0,y0,x1,y1,x2,y2){
+  const denom = (s0*(t1-t2) + s1*(t2-t0) + s2*(t0-t1));
+  if(Math.abs(denom) < 1e-12) return;
+  const a = (x0*(t1-t2) + x1*(t2-t0) + x2*(t0-t1)) / denom;
+  const c = (x0*(s2-s1) + x1*(s0-s2) + x2*(s1-s0)) / denom;
+  const e = (x0*(s1*t2 - s2*t1) + x1*(s2*t0 - s0*t2) + x2*(s0*t1 - s1*t0)) / denom;
+
+  const b = (y0*(t1-t2) + y1*(t2-t0) + y2*(t0-t1)) / denom;
+  const d = (y0*(s2-s1) + y1*(s0-s2) + y2*(s1-s0)) / denom;
+  const f = (y0*(s1*t2 - s2*t1) + y1*(s2*t0 - s0*t2) + y2*(s0*t1 - s1*t0)) / denom;
+
+  tctx.save();
+  tctx.beginPath();
+  tctx.moveTo(x0,y0); tctx.lineTo(x1,y1); tctx.lineTo(x2,y2);
+  tctx.closePath();
+  tctx.clip();
+  tctx.setTransform(a,b,c,d,e,f);
+  tctx.drawImage(img, 0,0);
+  tctx.restore();
+}
+
+function projectedUV(u,v, mat){
+  const scale = Math.max(0.1, mat.params.scale ?? 1.0);
+  const rot = ((mat.params.rotation ?? 0) * Math.PI) / 180;
+  const baseRepeat = 6; // tiles across plane at scale=1
+  const tileCount = baseRepeat / scale;
+
+  // rotate around center for nicer control
+  const cx=0.5, cy=0.5;
+  let x=u-cx, y=v-cy;
+  const xr = x*Math.cos(rot) - y*Math.sin(rot);
+  const yr = x*Math.sin(rot) + y*Math.cos(rot);
+  u = xr + cx; v = yr + cy;
+
+  const uu = u * tileCount;
+  const vv = v * tileCount;
+  return {uu, vv};
+}
+
+// Render the tiled texture projected by the floor plane homography.
+// We draw a subdivided grid in unit-square plane space, project via H to canvas, and map pattern coords per cell.
+function drawProjectedTiledPlane(tctx, H, mat, patternCanvas, gridN){
+  // Draw on full canvas (caller must clip to zone+holes)
+  const N = gridN;
+  for(let iy=0; iy<N; iy++){
+    const v0 = iy / N;
+    const v1 = (iy+1) / N;
+    for(let ix=0; ix<N; ix++){
+      const u0 = ix / N;
+      const u1 = (ix+1) / N;
+
+      // two triangles: (u0,v0)-(u1,v0)-(u1,v1) and (u0,v0)-(u1,v1)-(u0,v1)
+      const p00 = applyHomography(H,u0,v0);
+      const p10 = applyHomography(H,u1,v0);
+      const p11 = applyHomography(H,u1,v1);
+      const p01 = applyHomography(H,u0,v1);
+
+      const uv00 = projectedUV(u0,v0,mat);
+      const uv10 = projectedUV(u1,v0,mat);
+      const uv11 = projectedUV(u1,v1,mat);
+      const uv01 = projectedUV(u0,v1,mat);
+
+      // map to pattern canvas pixels
+      const wImg = mat._texW || 512;
+      const hImg = mat._texH || 512;
+
+      // Use image size to keep tile aspect correct. Pattern is tiled with that image.
+      const s00 = ((uv00.uu * wImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+      const t00 = ((uv00.vv * hImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+      const s10 = ((uv10.uu * wImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+      const t10 = ((uv10.vv * hImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+      const s11 = ((uv11.uu * wImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+      const t11 = ((uv11.vv * hImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+      const s01 = ((uv01.uu * wImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+      const t01 = ((uv01.vv * hImg) % PATTERN_SIZE + PATTERN_SIZE) % PATTERN_SIZE;
+
+      // triangle 1
+      drawTexturedTriangle(tctx, patternCanvas,
+        s00,t00, s10,t10, s11,t11,
+        p00.x,p00.y, p10.x,p10.y, p11.x,p11.y
+      );
+      // triangle 2
+      drawTexturedTriangle(tctx, patternCanvas,
+        s00,t00, s11,t11, s01,t01,
+        p00.x,p00.y, p11.x,p11.y, p01.x,p01.y
+      );
+    }
+  }
+}
 function cssToCanvasPx(css){
   const {sx,sy}=getRectScale();
   // Use min scale to keep interaction generous even if aspect differs slightly
@@ -121,14 +326,31 @@ function distCanvasFromImg(a,b){
       const img=await loadImage(mat.textureUrl);
       const rect=getImageRectInCanvas();
 
-      // Build a lightweight cache key so that after closing a contour we treat the fill as a separate "layer"
-      // and only re-render it when geometry/material changes.
+      // Determine if we can do AR-like floor projection
+      const plane=state.floorPlane;
+      let usePerspective=false;
+      let H=null, gridN=28;
+      if(plane && plane.closed && plane.points && plane.points.length===4){
+        const quad = orderQuadCCW(plane.points.map(imgToCanvasPt));
+        H = homographyUnitSquareToQuad(quad);
+        if(H){
+          usePerspective=true;
+          // grid density proportional to plane size (in CSS pixels)
+          const edge = (a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+          const maxEdge = Math.max(edge(quad[0],quad[1]),edge(quad[1],quad[2]),edge(quad[2],quad[3]),edge(quad[3],quad[0]))/Math.max(1,dpr);
+          gridN = Math.max(18, Math.min(64, Math.round(maxEdge/26)));
+        }
+      }
+
+      // Cache key: geometry + material + (optionally) plane definition
       const keyParts=[
         mat.textureUrl,
         String(mat.params.scale??1),
         String(mat.params.rotation??0),
         String(mat.params.opacity??1),
         String(mat.params.blendMode??"multiply"),
+        String(usePerspective?1:0),
+        String(gridN),
         String(zone.contour.length)
       ];
       const rp=(p)=>`${Math.round(p.x*10)/10},${Math.round(p.y*10)/10}`;
@@ -137,6 +359,9 @@ function distCanvasFromImg(a,b){
         if(c.closed&&c.polygon&&c.polygon.length>=3){
           keyParts.push("cut:"+c.polygon.map(rp).join(";"));
         }
+      }
+      if(usePerspective){
+        keyParts.push("plane:"+plane.points.map(rp).join(";"));
       }
       const key=keyParts.join("|");
 
@@ -149,12 +374,13 @@ function distCanvasFromImg(a,b){
         return;
       }
 
-      // Render fill into an offscreen canvas layer
+      // Render fill into an offscreen canvas layer (a dedicated "fill layer" after closing)
       const layer=document.createElement("canvas");
       layer.width=canvas.width;
       layer.height=canvas.height;
       const lctx=layer.getContext("2d");
 
+      // Clip to zone contour and holes
       lctx.save();
       lctx.beginPath();
       polyPathTo(lctx, zone.contour);
@@ -166,17 +392,25 @@ function distCanvasFromImg(a,b){
       lctx.globalAlpha=mat.params.opacity??0.85;
       lctx.globalCompositeOperation=mat.params.blendMode??"multiply";
 
-      const pattern=lctx.createPattern(img,"repeat");
-      if(pattern){
-        const scale=mat.params.scale??1.0;
-        const rot=((mat.params.rotation??0)*Math.PI)/180;
-        const cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
-        lctx.translate(cx,cy);
-        lctx.rotate(rot);
-        lctx.scale(scale,scale);
-        lctx.translate(-cx,-cy);
-        lctx.fillStyle=pattern;
-        lctx.fillRect(rect.x-rect.w,rect.y-rect.h,rect.w*3,rect.h*3);
+      if(usePerspective){
+        // Project tiled pattern through homography (AR-like "floor going into distance")
+        const patternCanvas = buildPatternCanvas(img);
+        const matTmp = {params: mat.params, _texW: img.width, _texH: img.height};
+        drawProjectedTiledPlane(lctx, H, matTmp, patternCanvas, gridN);
+      }else{
+        // Fallback: simple 2D tiling (no perspective plane)
+        const pattern=lctx.createPattern(img,"repeat");
+        if(pattern){
+          const scale=mat.params.scale??1.0;
+          const rot=((mat.params.rotation??0)*Math.PI)/180;
+          const cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
+          lctx.translate(cx,cy);
+          lctx.rotate(rot);
+          lctx.scale(scale,scale);
+          lctx.translate(-cx,-cy);
+          lctx.fillStyle=pattern;
+          lctx.fillRect(rect.x-rect.w,rect.y-rect.h,rect.w*3,rect.h*3);
+        }
       }
 
       lctx.restore();
@@ -194,7 +428,7 @@ function distCanvasFromImg(a,b){
       ctx.globalCompositeOperation="source-over";ctx.globalAlpha=1;
     }
   }
-  function polyPath(points){
+function polyPath(points){
     const p0=imgToCanvasPt(points[0]);
     ctx.moveTo(p0.x,p0.y);
     for(let i=1;i<points.length;i++){const p=imgToCanvasPt(points[i]);ctx.lineTo(p.x,p.y);}
@@ -351,13 +585,6 @@ function distCanvasFromImg(a,b){
   let target=null;
   if(state.ui.mode==="plane"){
     const idx=findNearest(state.floorPlane.points,pt);
-    // If user clicks the first point and polygon is ready to close, treat as "tap to close".
-    if(idx===0 && !state.floorPlane.closed && state.floorPlane.points.length>=3 && isCloseToFirst(state.floorPlane.points, pt)){
-      pendingClose={kind:"plane", start:eventToCanvasPx(ev)};
-      state.ui.selectedPoint={kind:"plane", idx:0};
-      render();
-      return;
-    }
     if(idx!==null)target={kind:"plane",idx};
   }else if(state.ui.mode==="contour"&&zone){
     const idx=findNearest(zone.contour,pt);
@@ -390,21 +617,26 @@ function distCanvasFromImg(a,b){
 
   // Add points / close polygons
   if(state.ui.mode==="plane"){
-    if(state.floorPlane.closed) return;
-    if(isCloseToFirst(state.floorPlane.points,pt)){
-      pushHistory();
+    // Plane is defined by 4 points (AR-like floor reference). After 4 points we auto-close.
+    if(state.floorPlane.points.length>=4){
       state.floorPlane.closed=true;
-      render();
-      return;
     }
+    if(state.floorPlane.closed) return;
+
     pushHistory();
     state.floorPlane.points.push(pt);
-    if(state.floorPlane.points.length>=3) state.floorPlane.closed=false;
+
+    if(state.floorPlane.points.length>=4){
+      state.floorPlane.points = state.floorPlane.points.slice(0,4);
+      state.floorPlane.closed=true;
+    }else{
+      state.floorPlane.closed=false;
+    }
     render();
     return;
   }
 
-  if(state.ui.mode==="contour"&&zone){
+if(state.ui.mode==="contour"&&zone){
     if(zone.closed) return;
     if(isCloseToFirst(zone.contour,pt)){
       pushHistory();
@@ -539,8 +771,7 @@ function distCanvasFromImg(a,b){
     // If user tapped the first point (without dragging), close the current polygon.
     if(pendingClose && !state.ui.draggingPoint){
       pushHistory();
-      if(pendingClose.kind==="plane") state.floorPlane.closed=true;
-      else if(pendingClose.kind==="contour"){ const z=getActiveZone(); if(z) z.closed=true; }
+      if(pendingClose.kind==="contour"){ const z=getActiveZone(); if(z) z.closed=true; }
       else if(pendingClose.kind==="cutout"){ const z=getActiveZone(); if(z){ const c=getActiveCutout(z); if(c) c.closed=true; } }
       pendingClose=null;
     }
@@ -555,7 +786,7 @@ function distCanvasFromImg(a,b){
   function deleteSelectedPoint(){
     const sel=state.ui.selectedPoint;if(!sel)return false;
     pushHistory();
-    if(sel.kind==="plane"){ state.floorPlane.points.splice(sel.idx,1); if(state.floorPlane.points.length<3) state.floorPlane.closed=false; }
+    if(sel.kind==="plane"){ state.floorPlane.points.splice(sel.idx,1); if(state.floorPlane.points.length<4) state.floorPlane.closed=false; }
     else{
       const zone=getActiveZone();if(!zone)return false;
       if(sel.kind==="contour"){ zone.contour.splice(sel.idx,1); if(zone.contour.length<3) zone.closed=false; }
@@ -574,7 +805,7 @@ function distCanvasFromImg(a,b){
     state.ui.mode=mode;
     hoverCanvas=null;
     hoverCloseCandidate=false;
-    const map={photo:"Загрузите фото или замените его.",plane:"Плоскость (опционально): обведите участок пола и замкните, кликнув рядом с первой точкой.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
+    const map={photo:"Загрузите фото или замените его.",plane:"Плоскость: отметьте 4 угла участка пола (1-2-3-4). Это нужно для перспективной укладки «как в AR». Точки можно двигать.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
     setHint(map[mode]||"");render();
   }
   function exportPNG(){
