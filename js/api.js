@@ -69,7 +69,44 @@ function absFromStorageMaybe(p){
 }
 
 
-  function normalizePaletteTextures(pal){
+
+  function resolveAssetUrl(u, shapeId, textureId){
+    if(!u || typeof u !== "string") return null;
+    const s = u.trim();
+    const storageBase = state.api.storageBase.replace(/\/$/,"");
+    // Relative paths -> Object Storage
+    if(!/^https?:\/\//i.test(s)){
+      const rel = s.replace(/^\//,"");
+      if(rel.startsWith("surfaces/") || rel.startsWith("palettes/")){
+        return storageBase + "/" + rel;
+      }
+      // sometimes palette stores just filename or subpath; try to map to surfaces
+      if(shapeId && textureId && rel){
+        // If looks like an albedo file name, attach to standard surfaces path
+        if(/\.(png|jpe?g|webp)$/i.test(rel) && !rel.includes("/")){
+          return storageBase + "/surfaces/" + encodeURIComponent(shapeId) + "/" + encodeURIComponent(textureId) + "/1k/" + rel;
+        }
+      }
+      return new URL(rel, window.location.href).toString();
+    }
+    // Absolute URLs
+    if(s.includes(".apigw.yandexcloud.net")){
+      // Common proxy patterns: .../webar3dtexture/<path> or .../surfaces/<path> or .../palettes/<path>
+      const m = s.match(/\/webar3dtexture\/(.+)$/);
+      if(m) return storageBase + "/" + m[1];
+      const m2 = s.match(/\/(surfaces\/.+)$/);
+      if(m2) return storageBase + "/" + m2[1];
+      const m3 = s.match(/\/(palettes\/.+)$/);
+      if(m3) return storageBase + "/" + m3[1];
+      // If still gateway, drop it (will likely 401) and try storage-based guess
+      if(shapeId && textureId){
+        return storageBase + "/surfaces/" + encodeURIComponent(shapeId) + "/" + encodeURIComponent(textureId) + "/1k/" + encodeURIComponent(textureId) + "_albedo.webp";
+      }
+    }
+    return s;
+  }
+
+  function normalizePaletteTextures(pal, shapeId){
     const out=[];const arr=pal?.textures||pal?.items||pal||[];if(!Array.isArray(arr))return out;
     for(const it of arr){
       const textureId=it.textureId||it.id||it.slug||it.key;
@@ -81,7 +118,9 @@ function absFromStorageMaybe(p){
       else if(it.maps&&typeof it.maps.albedo==="string")albedoUrl=it.maps.albedo;
       else if(it.maps&&typeof it.maps.baseColor==="string")albedoUrl=it.maps.baseColor;
       else if(typeof it.baseColor==="string")albedoUrl=it.baseColor;
-      out.push({textureId,title,previewUrl,albedoUrl,raw:it});
+      const pUrl = resolveAssetUrl(previewUrl, shapeId, textureId);
+      const aUrl = resolveAssetUrl(albedoUrl, shapeId, textureId) || resolveAssetUrl(previewUrl, shapeId, textureId);
+      out.push({textureId,title,previewUrl:pUrl,albedoUrl:aUrl,raw:it});
     }
     return out;
   }
@@ -113,8 +152,26 @@ function absFromStorageMaybe(p){
   async function loadImage(url){
     const cache=state.assets.textureCache;
     if(cache.has(url))return cache.get(url).img;
+    
     const img=new Image();img.crossOrigin="anonymous";
-    await new Promise((resolve,reject)=>{img.onload=()=>resolve();img.onerror=()=>reject(new Error("Image load failed: "+url));img.src=url;});
+    const tryLoad = (u)=>new Promise((resolve,reject)=>{
+      img.onload=()=>resolve();
+      img.onerror=()=>reject(new Error("Image load failed: "+u));
+      img.src=u;
+    });
+    try{
+      await tryLoad(url);
+    }catch(e){
+      // Retry once by rewriting gateway/proxy URLs to Object Storage
+      const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(url, null, null) : null;
+      if(alt && alt!==url){
+        await tryLoad(alt);
+        url = alt;
+      }else{
+        throw e;
+      }
+    }
+
     cache.set(url,{img,ts:Date.now()});
     if(cache.size>14){
       const entries=[...cache.entries()].sort((a,b)=>a[1].ts-b[1].ts);
