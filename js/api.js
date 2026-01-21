@@ -42,31 +42,32 @@ function absFromStorageMaybe(p){
   }
   async function loadShapes(){
   setStatus("Загрузка форм…");
-  // Prefer local/static shapes.json to avoid 401 on protected API Gateways
+  // In this photo-editor we treat shapes as PUBLIC static content.
+  // Many deployments protect /api/shapes with JWT, so we do NOT rely on it.
   const baseHref=window.location.href;
   const candidates=[
+    // current folder
     new URL("shapes.json", baseHref).toString(),
+    // common subfolders
     new URL("data/shapes.json", baseHref).toString(),
     new URL("frontend_github_pages/shapes.json", baseHref).toString(),
+    // explicit project pages (robust for iframe)
+    "https://miropolcevpro.github.io/Test3dplitka/shapes.json",
+    // legacy
     "https://miropolcevpro.github.io/test3d/shapes.json"
   ];
+
   try{
     const shapes=await tryJsonCandidates(candidates);
     state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
     return;
   }catch(eStatic){
-    // fall through to API
-  }
-
-  const apiUrl=state.api.apiBase+"/api/shapes";
-  try{
-    const shapes=await fetchJson(apiUrl);
-    state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
-  }catch(e){
-    console.warn("Shapes load failed from static and API", e);
+    console.warn("Shapes load failed (static). Ensure shapes.json is deployed next to the editor.", eStatic);
     state.catalog.shapes=[];
+    return;
   }
 }
+
 
   function normalizePaletteTextures(pal){
     const out=[];const arr=pal?.textures||pal?.items||pal||[];if(!Array.isArray(arr))return out;

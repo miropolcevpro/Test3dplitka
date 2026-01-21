@@ -583,9 +583,12 @@ function polyPath(points){
   pendingClose = null;
 
   let target=null;
-  if(state.ui.mode==="plane"){
-    const idx=findNearest(state.floorPlane.points,pt);
-    if(idx!==null)target={kind:"plane",idx};
+
+  // Unified editing: the "floor plane" is always present (4 draggable handles).
+  // This avoids a separate "plane placing" mode and reduces user steps.
+  const pIdx=findNearest(state.floorPlane.points,pt);
+  if(pIdx!==null){
+    target={kind:"plane",idx:pIdx};
   }else if(state.ui.mode==="contour"&&zone){
     const idx=findNearest(zone.contour,pt);
     if(idx===0 && !zone.closed && zone.contour.length>=3 && isCloseToFirst(zone.contour, pt)){
@@ -616,26 +619,6 @@ function polyPath(points){
   }
 
   // Add points / close polygons
-  if(state.ui.mode==="plane"){
-    // Plane is defined by 4 points (AR-like floor reference). After 4 points we auto-close.
-    if(state.floorPlane.points.length>=4){
-      state.floorPlane.closed=true;
-    }
-    if(state.floorPlane.closed) return;
-
-    pushHistory();
-    state.floorPlane.points.push(pt);
-
-    if(state.floorPlane.points.length>=4){
-      state.floorPlane.points = state.floorPlane.points.slice(0,4);
-      state.floorPlane.closed=true;
-    }else{
-      state.floorPlane.closed=false;
-    }
-    render();
-    return;
-  }
-
 if(state.ui.mode==="contour"&&zone){
     if(zone.closed) return;
     if(isCloseToFirst(zone.contour,pt)){
