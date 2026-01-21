@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Фото‑конструктор мощения — MVP</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__title">Фото‑конструктор мощения</div>
+        <div class="brand__subtitle">MVP (итерация 1): фото, плоскость, зоны, вырезы, каталог, базовая заливка</div>
+      </div>
+      <div class="topbar__right">
+        <div class="status" id="statusText">Инициализация…</div>
+      </div>
+    </header>
+
+    <div class="stepper" id="stepper">
+      <div class="step step--active" data-step="photo">1 Фото</div>
+      <div class="step" data-step="plane">2 Пол</div>
+      <div class="step" data-step="zones">3 Зоны</div>
+      <div class="step" data-step="cutouts">4 Вырезы</div>
+      <div class="step" data-step="export">5 Сохранить</div>
+    </div>
+
+    <main class="main">
+      <section class="canvasPane">
+        <div class="canvasToolbar">
+          <div class="toolGroup">
+            <button class="btn btn--ghost" id="modePhoto">Фото</button>
+            <button class="btn btn--ghost" id="modePlane">Плоскость</button>
+            <button class="btn btn--ghost" id="modeContour">Контур</button>
+            <button class="btn btn--ghost" id="modeCutout">Вырез</button>
+            <button class="btn btn--ghost" id="modeView">Просмотр</button>
+          </div>
+
+          <div class="toolGroup">
+            <button class="btn btn--ghost" id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
+            <button class="btn btn--ghost" id="redoBtn" title="Redo (Ctrl+Y)">Redo</button>
+            <button class="btn btn--ghost" id="resetPlaneBtn">Сброс плоскости</button>
+            <button class="btn btn--ghost" id="resetZoneBtn">Сброс зоны</button>
+          </div>
+
+          <div class="hint" id="hintText"></div>
+        </div>
+
+        <div class="canvasWrap">
+          <canvas id="editorCanvas"></canvas>
+        </div>
+
+        <div class="kbdHelp">
+          Подсказка: клик — поставить точку, перетащить — переместить, Del — удалить выделенную точку. Замыкание: подведите к первой точке.
+        </div>
+      </section>
+
+      <aside class="sidePane">
+        <div class="panel">
+          <div class="panel__title">Фото</div>
+          <div class="panel__body">
+            <input type="file" id="photoInput" accept="image/*" />
+            <div class="row">
+              <button class="btn" id="replacePhotoBtn">Заменить</button>
+              <button class="btn btn--danger" id="resetProjectBtn">Сброс проекта</button>
+            </div>
+            <div class="note">
+              Для стабильности фото приводится к размеру ≤ 3072px по длинной стороне (интерактивный режим).
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Зоны мощения</div>
+          <div class="panel__body">
+            <div class="row">
+              <button class="btn" id="addZoneBtn">Добавить зону</button>
+              <button class="btn btn--ghost" id="dupZoneBtn">Дублировать</button>
+              <button class="btn btn--danger" id="delZoneBtn">Удалить</button>
+            </div>
+            <div id="zonesList" class="list"></div>
+
+            <div class="hr"></div>
+
+            <div class="row">
+              <button class="btn" id="addCutoutBtn">Добавить вырез</button>
+              <button class="btn btn--danger" id="delCutoutBtn">Удалить вырез</button>
+            </div>
+            <div id="cutoutsList" class="list"></div>
+
+            <div class="note">
+              MVP: одна плоскость пола на проект; зон и вырезов может быть много.
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Форма плитки</div>
+          <div class="panel__body">
+            <div id="shapesList" class="grid grid--shapes"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Текстура</div>
+          <div class="panel__body">
+            <div id="texturesList" class="grid grid--textures"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Настройки наложения (активная зона)</div>
+          <div class="panel__body">
+            <label class="field">
+              <span>Размер плитки (scale)</span>
+              <input type="range" min="0.2" max="5" step="0.01" id="scaleRange" />
+            </label>
+            <label class="field">
+              <span>Поворот (rotation)</span>
+              <input type="range" min="0" max="360" step="1" id="rotRange" />
+            </label>
+            <label class="field">
+              <span>Интенсивность (opacity)</span>
+              <input type="range" min="0" max="1" step="0.01" id="opacityRange" />
+            </label>
+            <label class="field">
+              <span>Режим наложения</span>
+              <select id="blendSelect">
+                <option value="source-over">Normal</option>
+                <option value="multiply">Multiply</option>
+              </select>
+            </label>
+
+            <div class="note">
+              Итерация 1: текстура тайлится в координатах изображения и клипится по контуру+вырезам (без перспективы).
+              Следующая итерация: перспективная укладка по плоскости пола (homography/WebGL) без изменения UI/данных.
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Сохранить и отправить</div>
+          <div class="panel__body">
+            <div class="row">
+              <button class="btn" id="exportPngBtn">Скачать PNG</button>
+              <button class="btn btn--ghost" id="copySummaryBtn">Скопировать описание</button>
+            </div>
+            <div class="row">
+              <button class="btn btn--ghost" id="waBtn">WhatsApp</button>
+              <button class="btn btn--ghost" id="tgBtn">Telegram</button>
+              <button class="btn btn--ghost" id="shareBtn">Поделиться</button>
+            </div>
+            <div class="note">
+              MVP: отправка менеджеру — через deeplink с текстом; изображение прикрепляется пользователем из скачанного файла.
+            </div>
+          </div>
+        </div>
+
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <div>Photo Editor MVP • Iteration 1 • <span id="buildInfo"></span></div>
+      <div class="muted">Рекомендуется: ПК Chrome/Edge/Яндекс.Браузер. Мобильная адаптация заложена.</div>
+    </footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/editor.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
