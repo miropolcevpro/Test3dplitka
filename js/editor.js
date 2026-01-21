@@ -363,25 +363,95 @@ function distCanvasFromImg(a,b){
   // Infer a "floor" quadrilateral from a polygon contour.
   // This lets us project the texture with perspective *without* asking users to place 4 plane points.
   // Heuristic: split by centroid X into left/right; take minY (far) and maxY (near) on each side.
-  function inferQuadFromContour(imgPts){
+  function inferQuadFromContour(imgPts, opts){
+    // Robust quad inference from an arbitrary closed contour.
+    // Returns [nearL, nearR, farR, farL] in IMAGE coordinates (y grows downward), or null.
     if(!imgPts || imgPts.length < 4) return null;
-    let cx=0; for(const p of imgPts) cx+=p.x; cx/=imgPts.length;
-    let left=imgPts.filter(p=>p.x<=cx);
-    let right=imgPts.filter(p=>p.x>cx);
-    if(left.length<2 || right.length<2){
-      // fallback split by median X
-      const xs=imgPts.map(p=>p.x).sort((a,b)=>a-b);
-      const med=xs[Math.floor(xs.length/2)]||cx;
-      left=imgPts.filter(p=>p.x<=med);
-      right=imgPts.filter(p=>p.x>med);
+    const params = (opts && opts.params) ? opts.params : {};
+    const persp = Math.max(0, Math.min(1, (params.perspective ?? 0.75)));
+    const horizon = Math.max(-1, Math.min(1, (params.horizon ?? 0.0)));
+
+    // Convex hull for stability on concave contours
+    const pts = imgPts.map(p=>({x:p.x, y:p.y}));
+    pts.sort((a,b)=> a.x===b.x ? a.y-b.y : a.x-b.x);
+    const cross=(o,a,b)=> (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x);
+    const buildHull=(arr)=>{
+      const h=[];
+      for(const p of arr){
+        while(h.length>=2 && cross(h[h.length-2], h[h.length-1], p) <= 0) h.pop();
+        h.push(p);
+      }
+      return h;
+    };
+    const lower=buildHull(pts);
+    const upper=buildHull(pts.slice().reverse());
+    upper.pop(); lower.pop();
+    const hull = lower.concat(upper);
+    const base = (hull.length>=4) ? hull : pts;
+    if(base.length < 4) return null;
+
+    // Bounds
+    let minY=Infinity, maxY=-Infinity, minX=Infinity, maxX=-Infinity;
+    for(const p of base){ minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); }
+    const h = Math.max(1, maxY-minY);
+    const band = Math.max(10, h*0.12);
+
+    const pickBand = (isNear)=>{
+      const y0 = isNear ? (maxY-band) : (minY+band);
+      const candidates = base.filter(p=> isNear ? (p.y>=y0) : (p.y<=y0));
+      if(candidates.length>=2){
+        const left = candidates.reduce((a,b)=> (b.x<a.x?b:a));
+        const right = candidates.reduce((a,b)=> (b.x>a.x?b:a));
+        return [left,right];
+      }
+      return null;
+    };
+
+    let near = pickBand(true);
+    let far  = pickBand(false);
+
+    // Fallback: split by median X and pick near/far per side
+    if(!near || !far){
+      const xs = base.map(p=>p.x).slice().sort((a,b)=>a-b);
+      const med = xs[Math.floor(xs.length/2)] ?? ((minX+maxX)/2);
+      const leftPts = base.filter(p=>p.x<=med);
+      const rightPts = base.filter(p=>p.x>med);
+      if(leftPts.length>=2 && rightPts.length>=2){
+        const farL = leftPts.reduce((a,b)=> (b.y<a.y?b:a));
+        const nearL = leftPts.reduce((a,b)=> (b.y>a.y?b:a));
+        const farR = rightPts.reduce((a,b)=> (b.y<a.y?b:a));
+        const nearR = rightPts.reduce((a,b)=> (b.y>a.y?b:a));
+        near = [nearL, nearR];
+        far  = [farL, farR];
+      }
     }
-    if(left.length<2 || right.length<2) return null;
-    const farL=left.reduce((a,b)=> (b.y<a.y?b:a));
-    const nearL=left.reduce((a,b)=> (b.y>a.y?b:a));
-    const farR=right.reduce((a,b)=> (b.y<a.y?b:a));
-    const nearR=right.reduce((a,b)=> (b.y>a.y?b:a));
-    // Ensure a reasonable trapezoid (near should be below far)
-    if(nearL.y <= farL.y || nearR.y <= farR.y) return null;
+
+    if(!near || !far) return null;
+    let nearL=near[0], nearR=near[1], farL=far[0], farR=far[1];
+
+    // Ensure near is below far
+    if(!(nearL.y > farL.y && nearR.y > farR.y)){
+      // Attempt swap if inverted
+      const tL=nearL; nearL=farL; farL=tL;
+      const tR=nearR; nearR=farR; farR=tR;
+      if(!(nearL.y > farL.y && nearR.y > farR.y)) return null;
+    }
+
+    // Apply user controls:
+    // - perspective: blend far edge towards its inferred position (0 => mild, 1 => full)
+    // - horizon: shifts far edge up/down and slightly converges towards center when pushing up
+    const cx = (nearL.x + nearR.x) * 0.5;
+    const mild = 0.25 + 0.75*persp; // never fully collapse
+    farL = { x: nearL.x + (farL.x-nearL.x)*mild, y: nearL.y + (farL.y-nearL.y)*mild };
+    farR = { x: nearR.x + (farR.x-nearR.x)*mild, y: nearR.y + (farR.y-nearR.y)*mild };
+
+    const dy = horizon * 0.22 * h; // up: negative, down: positive
+    farL.y += dy; farR.y += dy;
+    // Converge far edge when moving horizon up (horizon<0)
+    const conv = Math.max(0, Math.min(0.35, (-horizon)*0.25));
+    farL.x = farL.x + (cx - farL.x) * conv;
+    farR.x = farR.x + (cx - farR.x) * conv;
+
     return [nearL, nearR, farR, farL];
   }
   async function drawZoneFill(zone){
@@ -393,7 +463,7 @@ function distCanvasFromImg(a,b){
       // AR-like floor projection without explicit plane mode: infer a quadrilateral from the contour.
       let usePerspective=false;
       let H=null, gridN=28;
-      const quadImg = inferQuadFromContour(zone.contour);
+      const quadImg = inferQuadFromContour(zone.contour, {params: mat.params});
       if(quadImg){
         // Keep the inferred near/near/far/far order; only normalize winding and validate.
         const quadRaw = quadImg.map(imgToCanvasPt);
@@ -416,6 +486,8 @@ function distCanvasFromImg(a,b){
         String(mat.params.rotation??0),
         String(mat.params.opacity??1),
         String(mat.params.blendMode??"multiply"),
+        String(mat.params.perspective??0.75),
+        String(mat.params.horizon??0.0),
         String(usePerspective?1:0),
         String(gridN),
         String(zone.contour.length)

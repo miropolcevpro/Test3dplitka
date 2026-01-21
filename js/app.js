@@ -148,6 +148,8 @@ async function handlePhotoFile(file){
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
     el("opacityRange").value=z.material.params.opacity??1.0;
     el("blendSelect").value=z.material.params.blendMode??"source-over";
+    el("perspectiveRange").value=z.material.params.perspective??0.75;
+    el("horizonRange").value=z.material.params.horizon??0.0;
   }
 
   function syncCloseButtonUI(){
@@ -265,7 +267,10 @@ async function handlePhotoFile(file){
     el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.opacity=parseFloat(el("opacityRange").value);ED.render();});
     el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("blendSelect").value;ED.render();});
 
-    el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
+    
+    el("perspectiveRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.perspective=parseFloat(el("perspectiveRange").value);ED.render();});
+    el("horizonRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.horizon=parseFloat(el("horizonRange").value);ED.render();});
+el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
     el("copySummaryBtn").addEventListener("click",async ()=>{const t=makeSummaryText();await navigator.clipboard.writeText(t).catch(()=>{});API.setStatus("Описание скопировано");});
     el("waBtn").addEventListener("click",()=>openMessenger("wa"));
     el("tgBtn").addEventListener("click",()=>openMessenger("tg"));

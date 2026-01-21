@@ -2,7 +2,7 @@
 window.PhotoPaveState=(function(){
   const DEFAULT_GATEWAY="https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const state={
-    build:{version:"mvp-iter1.13-fix02-unified-contour-no-plane-corsfallback",ts:new Date().toISOString()},
+    build:{version:"mvp-iter1.14-fix08-robust-autofloor",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",config:null},
     ui:{activeStep:"photo",mode:"photo",activeZoneId:null,activeCutoutId:null,draggingPoint:null,selectedPoint:null,isPointerDown:false},
     catalog:{shapes:[],palettesByShape:{},texturesByShape:{},activeShapeId:null},
@@ -26,7 +26,7 @@ window.PhotoPaveState=(function(){
       textureUrl:null,
       // Defaults tuned for clear visibility on photos (like a solid fill after contour close).
       // Users can still switch to Multiply in UI if they want a more subtle blend.
-      params:{scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over"}
+      params:{scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over",perspective:0.75,horizon:0.0}
     }
   });
   const makeCutout=(n)=>({id:uid("cut"),name:n?("Вырез "+n):"Вырез",closed:false,polygon:[]});
