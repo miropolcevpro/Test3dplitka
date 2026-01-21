@@ -145,8 +145,9 @@ async function handlePhotoFile(file){
     const z=S.getActiveZone(); if(!z) return;
     el("scaleRange").value=z.material.params.scale??1.0;
     el("rotRange").value=z.material.params.rotation??0;
-    el("opacityRange").value=z.material.params.opacity??0.85;
-    el("blendSelect").value=z.material.params.blendMode??"multiply";
+    // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
+    el("opacityRange").value=z.material.params.opacity??1.0;
+    el("blendSelect").value=z.material.params.blendMode??"source-over";
   }
 
   function syncCloseButtonUI(){

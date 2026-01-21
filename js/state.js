@@ -13,7 +13,22 @@ window.PhotoPaveState=(function(){
   const uid=(p="id")=>p+"_"+Math.random().toString(16).slice(2)+"_"+Date.now().toString(16);
   const getActiveZone=()=>state.zones.find(z=>z.id===state.ui.activeZoneId)||null;
   const getActiveCutout=(z)=>z? (z.cutouts||[]).find(c=>c.id===state.ui.activeCutoutId)||null : null;
-  const makeZone=()=>({id:uid("zone"),name:"Зона "+(state.zones.length+1),enabled:true,closed:false,contour:[],cutouts:[],material:{shapeId:state.catalog.activeShapeId||null,textureId:null,textureUrl:null,params:{scale:1.0,rotation:0,opacity:0.85,blendMode:"multiply"}}});
+  const makeZone=()=>({
+    id:uid("zone"),
+    name:"Зона "+(state.zones.length+1),
+    enabled:true,
+    closed:false,
+    contour:[],
+    cutouts:[],
+    material:{
+      shapeId:state.catalog.activeShapeId||null,
+      textureId:null,
+      textureUrl:null,
+      // Defaults tuned for clear visibility on photos (like a solid fill after contour close).
+      // Users can still switch to Multiply in UI if they want a more subtle blend.
+      params:{scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over"}
+    }
+  });
   const makeCutout=(n)=>({id:uid("cut"),name:n?("Вырез "+n):"Вырез",closed:false,polygon:[]});
 
   const history=[],future=[],HISTORY_LIMIT=60;

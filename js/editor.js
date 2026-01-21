@@ -392,9 +392,10 @@ function distCanvasFromImg(a,b){
       const key=keyParts.join("|");
 
       if(zone._fillCache && zone._fillCache.key===key && zone._fillCache.w===canvas.width && zone._fillCache.h===canvas.height){
+        // Composite cached layer onto the already-rendered photo.
         ctx.save();
-        ctx.globalAlpha=1;
-        ctx.globalCompositeOperation="source-over";
+        ctx.globalAlpha=mat.params.opacity??0.85;
+        ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
         ctx.drawImage(zone._fillCache.layer,0,0);
         ctx.restore();
         return;
