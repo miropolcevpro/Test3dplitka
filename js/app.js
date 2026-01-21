@@ -4,6 +4,8 @@
   const {state,makeZone,makeCutout,pushHistory,undo,redo}=S;
   const el=(id)=>document.getElementById(id);
   const escapeHtml=(s)=>String(s||"").replace(/[&<>'"]/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[c]));
+  const ESC_ATTR_MAP={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
+  const escapeAttr=(s)=>String(s||"").replace(/[&<>"']/g,(c)=>ESC_ATTR_MAP[c]);
 
   function setBuildInfo(){el("buildInfo").textContent=`${state.build.version} • ${state.build.ts}`;}
   function setActiveStep(step){

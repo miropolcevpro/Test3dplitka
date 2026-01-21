@@ -42,35 +42,32 @@ function absFromStorageMaybe(p){
   }
   async function loadShapes(){
   setStatus("Загрузка форм…");
+  // Prefer local/static shapes.json to avoid 401 on protected API Gateways
+  const baseHref=window.location.href;
+  const candidates=[
+    new URL("shapes.json", baseHref).toString(),
+    new URL("data/shapes.json", baseHref).toString(),
+    new URL("frontend_github_pages/shapes.json", baseHref).toString(),
+    "https://miropolcevpro.github.io/test3d/shapes.json"
+  ];
+  try{
+    const shapes=await tryJsonCandidates(candidates);
+    state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
+    return;
+  }catch(eStatic){
+    // fall through to API
+  }
+
   const apiUrl=state.api.apiBase+"/api/shapes";
   try{
     const shapes=await fetchJson(apiUrl);
     state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
   }catch(e){
-    // If API is protected (missing_token), fall back to static shapes.json from site
-    const baseHref=window.location.href;
-    const candidates=[
-      new URL("shapes.json", baseHref).toString(),
-      new URL("data/shapes.json", baseHref).toString(),
-      new URL("frontend_github_pages/shapes.json", baseHref).toString(),
-      // common legacy paths
-      "https://miropolcevpro.github.io/test3d/shapes.json"
-    ];
-    try{
-      const shapes=await tryJsonCandidates(candidates);
-      state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
-    }catch(e2){
-      console.warn("Shapes load failed from API and static fallbacks", e, e2);
-      state.catalog.shapes=[];
-    }
+    console.warn("Shapes load failed from static and API", e);
+    state.catalog.shapes=[];
   }
-  if(!state.catalog.activeShapeId&&state.catalog.shapes.length){
-    const s0=state.catalog.shapes[0];
-    state.catalog.activeShapeId=s0.id||s0.shapeId||s0.slug;
-  }
-  setStatus("Формы: "+state.catalog.shapes.length);
-  return state.catalog.shapes;
 }
+
   function normalizePaletteTextures(pal){
     const out=[];const arr=pal?.textures||pal?.items||pal||[];if(!Array.isArray(arr))return out;
     for(const it of arr){
