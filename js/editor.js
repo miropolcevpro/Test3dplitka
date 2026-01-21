@@ -104,6 +104,43 @@ function orderQuadCCW(pts){
   ccw = ccw.slice(bestIdx).concat(ccw.slice(0,bestIdx));
   return ccw;
 }
+  function quadSignedArea(q){
+    // q: [{x,y}...4] in order
+    let a=0;
+    for(let i=0;i<4;i++){
+      const p=q[i], n=q[(i+1)%4];
+      a += (p.x*n.y - n.x*p.y);
+    }
+    return a/2;
+  }
+
+  function segmentsIntersect(a,b,c,d){
+    // Proper segment intersection excluding shared endpoints, using orientation tests
+    const orient = (p,q,r)=> (q.x-p.x)*(r.y-p.y) - (q.y-p.y)*(r.x-p.x);
+    const onSeg = (p,q,r)=> Math.min(p.x,r.x)-1e-9<=q.x && q.x<=Math.max(p.x,r.x)+1e-9 &&
+                           Math.min(p.y,r.y)-1e-9<=q.y && q.y<=Math.max(p.y,r.y)+1e-9;
+    const o1=orient(a,b,c), o2=orient(a,b,d), o3=orient(c,d,a), o4=orient(c,d,b);
+    if(Math.abs(o1)<1e-12 && onSeg(a,c,b)) return true;
+    if(Math.abs(o2)<1e-12 && onSeg(a,d,b)) return true;
+    if(Math.abs(o3)<1e-12 && onSeg(c,a,d)) return true;
+    if(Math.abs(o4)<1e-12 && onSeg(c,b,d)) return true;
+    return (o1>0)!=(o2>0) && (o3>0)!=(o4>0);
+  }
+
+  function normalizeQuad(q){
+    // Ensure consistent CCW winding and avoid self-intersection. Return null if invalid.
+    if(!q || q.length!==4) return null;
+    const area = quadSignedArea(q);
+    if(!isFinite(area) || Math.abs(area) < 1e-3) return null;
+    let qq = q;
+    if(area < 0) qq = [q[0],q[3],q[2],q[1]]; // reverse winding
+
+    // Reject bow-tie / self-intersecting quads
+    if(segmentsIntersect(qq[0],qq[1],qq[2],qq[3]) || segmentsIntersect(qq[1],qq[2],qq[3],qq[0])) return null;
+
+    return qq;
+  }
+
 
 function invert3x3(m){
   const a=m[0], b=m[1], c=m[2],
@@ -358,8 +395,12 @@ function distCanvasFromImg(a,b){
       let H=null, gridN=28;
       const quadImg = inferQuadFromContour(zone.contour);
       if(quadImg){
-        const quad = orderQuadCCW(quadImg.map(imgToCanvasPt));
-        H = homographyUnitSquareToQuad(quad);
+        // Keep the inferred near/near/far/far order; only normalize winding and validate.
+        const quadRaw = quadImg.map(imgToCanvasPt);
+        const quad = normalizeQuad(quadRaw);
+        if(quad){
+          H = homographyUnitSquareToQuad(quad);
+        }
         if(H){
           usePerspective=true;
           const edge=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
