@@ -415,8 +415,13 @@ function distCanvasFromImg(a,b){
       }
       lctx.clip("evenodd");
 
-      lctx.globalAlpha=mat.params.opacity??0.85;
-      lctx.globalCompositeOperation=mat.params.blendMode??"multiply";
+      // IMPORTANT: Do NOT apply blend modes like "multiply" inside the offscreen layer.
+      // The layer has a transparent background, so blending against transparency will
+      // effectively cancel the texture (especially for multiply/screen/etc.).
+      // We render the texture into the layer using normal compositing, then blend the
+      // whole layer onto the main canvas (where the photo already exists).
+      lctx.globalAlpha=1;
+      lctx.globalCompositeOperation="source-over";
 
       if(usePerspective){
         // Project tiled pattern through homography (AR-like "floor going into distance")
@@ -444,8 +449,8 @@ function distCanvasFromImg(a,b){
       // Cache and composite
       zone._fillCache={key,layer,w:canvas.width,h:canvas.height};
       ctx.save();
-      ctx.globalAlpha=1;
-      ctx.globalCompositeOperation="source-over";
+      ctx.globalAlpha=mat.params.opacity??0.85;
+      ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
       ctx.drawImage(layer,0,0);
       ctx.restore();
     }catch(e){
