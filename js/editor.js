@@ -154,6 +154,8 @@ function distCanvasFromImg(a,b){
 
   async function render(){
     if(!ctx)return;
+    const ov=document.getElementById("uploadOverlay");
+    if(ov){ov.style.display=state.assets.photoBitmap?"none":"flex";}
     ctx.save();ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle="#0b0e14";ctx.fillRect(0,0,canvas.width,canvas.height);
 

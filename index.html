@@ -11,7 +11,7 @@
     <header class="topbar">
       <div class="brand">
         <div class="brand__title">Фото‑конструктор мощения</div>
-        <div class="brand__subtitle">MVP (итерация 1): фото, плоскость, зоны, вырезы, каталог, базовая заливка</div>
+        <div class="brand__subtitle">Фото‑редактор мощения (MVP)</div>
       </div>
       <div class="topbar__right">
         <div class="status" id="statusText">Инициализация…</div>
@@ -47,14 +47,30 @@
           <div class="hint" id="hintText"></div>
         </div>
 
-        <div class="canvasWrap">
+        
+        <div class="canvasWrap" id="canvasWrap">
           <canvas id="editorCanvas"></canvas>
+          <div class="uploadOverlay" id="uploadOverlay">
+            <div class="uploadOverlay__box">
+              <div class="uploadOverlay__title">Загрузите фотографию двора</div>
+              <div class="uploadOverlay__subtitle">Перетащите файл сюда или выберите с устройства. Фото будет показано полностью, без прокрутки страницы.</div>
+              <button class="btn" id="uploadOverlayBtn">Выбрать файл</button>
+            </div>
+          </div>
         </div>
 
-        <div class="kbdHelp">
-          Подсказка: клик — поставить точку, перетащить — переместить, Del — удалить выделенную точку. Замыкание: подведите к первой точке.
+        <div class="bottomMenu">
+          <div class="bottomSection">
+            <div class="bottomTitle">Формы</div>
+            <div id="shapesList" class="hscroll hscroll--shapes"></div>
+          </div>
+          <div class="bottomSection">
+            <div class="bottomTitle">Текстуры</div>
+            <div id="texturesList" class="hscroll hscroll--textures"></div>
+          </div>
         </div>
-      </section>
+</div>
+</section>
 
       <aside class="sidePane">
         <div class="panel">
@@ -95,19 +111,11 @@
           </div>
         </div>
 
-        <div class="panel">
-          <div class="panel__title">Форма плитки</div>
-          <div class="panel__body">
-            <div id="shapesList" class="grid grid--shapes"></div>
-          </div>
-        </div>
+        
 
-        <div class="panel">
-          <div class="panel__title">Текстура</div>
-          <div class="panel__body">
-            <div id="texturesList" class="grid grid--textures"></div>
-          </div>
-        </div>
+
+        
+
 
         <div class="panel">
           <div class="panel__title">Настройки наложения (активная зона)</div>

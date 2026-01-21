@@ -64,7 +64,7 @@
       const preview=sh.preview||sh.previewUrl||sh.image||sh.icon||sh.iconUrl||null;
       const card=document.createElement("div");
       card.className="card"+(shapeId===state.catalog.activeShapeId?" card--active":"");
-      card.innerHTML=`<div class="thumb">${preview?`<img src="${preview}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(title)}</span><span class="badge">${escapeHtml(shapeId||"")}</span></div>`;
+      card.innerHTML=`<div class="thumb">${preview?`<img src="${escapeAttr(preview)}" alt="${escapeAttr(title)}"/>`:""}</div>`;
       card.addEventListener("click",async ()=>{
         pushHistory();
         state.catalog.activeShapeId=shapeId;
@@ -180,6 +180,14 @@
 
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
     el("replacePhotoBtn").addEventListener("click",()=>el("photoInput").click());
+    const ovBtn=document.getElementById("uploadOverlayBtn");
+    if(ovBtn){ovBtn.addEventListener("click",()=>el("photoInput").click());}
+    const cw=document.getElementById("canvasWrap");
+    if(cw){
+      cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
+      cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
+    }
+
     el("resetProjectBtn").addEventListener("click",()=>{
       pushHistory();
       state.assets.photoBitmap=null;state.assets.photoW=0;state.assets.photoH=0;
