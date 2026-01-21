@@ -32,11 +32,17 @@ window.PhotoPaveEditor=(function(){
     return {x:clamp(nx,0,1)*state.assets.photoW,y:clamp(ny,0,1)*state.assets.photoH};
   }
 
-function eventToImgPt(ev){
+function eventToCanvasPx(ev){
   const r=canvas.getBoundingClientRect();
-  const cx=(ev.clientX - r.left) * dpr;
-  const cy=(ev.clientY - r.top) * dpr;
-  return canvasToImgPt(cx,cy);
+  const sx = canvas.width / Math.max(1, r.width);
+  const sy = canvas.height / Math.max(1, r.height);
+  const cx = (ev.clientX - r.left) * sx;
+  const cy = (ev.clientY - r.top) * sy;
+  return {cx,cy};
+}
+function eventToImgPt(ev){
+  const p = eventToCanvasPx(ev);
+  return canvasToImgPt(p.cx,p.cy);
 }
 function distCanvasFromImg(a,b){
   const pa=imgToCanvasPt(a), pb=imgToCanvasPt(b);
@@ -47,7 +53,7 @@ function distCanvasFromImg(a,b){
     const rect=getImageRectInCanvas();
     const tx=rect.x+(imgPt.x/state.assets.photoW)*rect.w;
     const ty=rect.y+(imgPt.y/state.assets.photoH)*rect.h;
-    const md=maxDist*dpr;let best=null,bd=1e9;
+    const md=maxDist*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width));let best=null,bd=1e9;
     for(let i=0;i<points.length;i++){
       const p=imgToCanvasPt(points[i]);
       const d=Math.hypot(p.x-tx,p.y-ty);
@@ -197,7 +203,7 @@ function distCanvasFromImg(a,b){
   // Add points / close polygons
   if(state.ui.mode==="plane"){
     if(state.floorPlane.closed) return;
-    if(state.floorPlane.points.length>=3 && distCanvasFromImg(state.floorPlane.points[0],pt) <= 20*dpr){
+    if(state.floorPlane.points.length>=3 && distCanvasFromImg(state.floorPlane.points[0],pt) <= 20*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width))){
       pushHistory();
       state.floorPlane.closed=true;
       render();
@@ -212,7 +218,7 @@ function distCanvasFromImg(a,b){
 
   if(state.ui.mode==="contour"&&zone){
     if(zone.closed) return;
-    if(zone.contour.length>=3 && distCanvasFromImg(zone.contour[0],pt) <= 20*dpr){
+    if(zone.contour.length>=3 && distCanvasFromImg(zone.contour[0],pt) <= 20*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width))){
       pushHistory();
       zone.closed=true;
       render();
@@ -227,7 +233,7 @@ function distCanvasFromImg(a,b){
 
   if(state.ui.mode==="cutout"&&zone&&cut){
     if(cut.closed) return;
-    if(cut.polygon.length>=3 && distCanvasFromImg(cut.polygon[0],pt) <= 20*dpr){
+    if(cut.polygon.length>=3 && distCanvasFromImg(cut.polygon[0],pt) <= 20*(canvas.width/Math.max(1, canvas.getBoundingClientRect().width))){
       pushHistory();
       cut.closed=true;
       render();

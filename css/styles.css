@@ -53,3 +53,8 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .muted{color:var(--muted);font-size:12px}
 @media (max-width:1100px){.main{grid-template-columns:1fr}.sidePane{order:2}.canvasPane{order:1}.grid--textures{grid-template-columns:repeat(5,minmax(0,1fr))}}
 @media (max-width:720px){.grid--shapes{grid-template-columns:repeat(2,minmax(0,1fr))}.grid--textures{grid-template-columns:repeat(3,minmax(0,1fr))}.hint{min-width:unset}}
+
+
+@media (min-width: 1100px){
+  .canvasWrap{min-height:520px;height:calc(70vh - 140px);}
+}

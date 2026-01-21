@@ -61,7 +61,7 @@
     for(const sh of (state.catalog.shapes||[])){
       const shapeId=sh.id||sh.shapeId||sh.slug;
       const title=sh.title||sh.name||shapeId;
-      const preview=sh.preview||sh.previewUrl||sh.image||null;
+      const preview=sh.preview||sh.previewUrl||sh.image||sh.icon||sh.iconUrl||null;
       const card=document.createElement("div");
       card.className="card"+(shapeId===state.catalog.activeShapeId?" card--active":"");
       card.innerHTML=`<div class="thumb">${preview?`<img src="${preview}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(title)}</span><span class="badge">${escapeHtml(shapeId||"")}</span></div>`;
