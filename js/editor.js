@@ -3,6 +3,8 @@ window.PhotoPaveEditor=(function(){
   const {state,getActiveZone,getActiveCutout,pushHistory}=window.PhotoPaveState;
   const {loadImage}=window.PhotoPaveAPI;
   let canvas,ctx,dpr=1;
+  const ENABLE_PLANE=false; // unified mode: plane handles disabled
+
   const setHint=(t)=>{const el=document.getElementById("hintText");if(el)el.textContent=t||"";};
 
   // Interaction tuning in CSS pixels (converted to canvas pixels via boundingClientRect scale)
@@ -447,7 +449,7 @@ function distCanvasFromImg(a,b){
       ctx.drawImage(layer,0,0);
       ctx.restore();
     }catch(e){
-      console.warn("[fill] failed to render texture. Most common cause: image failed to load with CORS, so it cannot be used for canvas rendering.", e);
+      console.warn("[fill] drawZoneFill failed:", e);
     }finally{
       ctx.globalCompositeOperation="source-over";ctx.globalAlpha=1;
     }
@@ -471,6 +473,22 @@ function polyPath(points){
     ctx.beginPath();ctx.fillStyle=color;ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill();
     ctx.strokeStyle="rgba(0,0,0,0.5)";ctx.lineWidth=2*dpr;ctx.stroke();
     if(showIdx){ctx.fillStyle="rgba(0,0,0,0.65)";ctx.font=`${10*dpr}px sans-serif`;ctx.fillText(String(idx+1),p.x+8*dpr,p.y-8*dpr);}
+  }
+
+  function drawPlaneOverlay(){
+    if(!ENABLE_PLANE) return;
+    const pts=state.floorPlane.points;if(!pts.length)return;
+    ctx.save();
+    ctx.strokeStyle="rgba(0,229,255,0.85)";ctx.lineWidth=3.5*dpr;ctx.fillStyle="rgba(0,229,255,0.08)";
+    if(pts.length>=2){
+      ctx.beginPath();
+      const p0=imgToCanvasPt(pts[0]);ctx.moveTo(p0.x,p0.y);
+      for(let i=1;i<pts.length;i++){const p=imgToCanvasPt(pts[i]);ctx.lineTo(p.x,p.y);}
+      if(state.floorPlane.closed && pts.length>=3){ctx.closePath();ctx.fill();}
+      ctx.stroke();
+    }
+    for(let i=0;i<pts.length;i++) drawPoint(pts[i],i,state.ui.mode==="plane");
+    ctx.restore();
   }
 
   function drawZonesOverlay(){
@@ -501,8 +519,13 @@ function polyPath(points){
     }
     ctx.restore();
   }
+
   function getOpenPolyForMode(){
-const zone=getActiveZone();
+    if(state.ui.mode==="plane"){
+      if(!ENABLE_PLANE) return null;
+      return {kind:"plane", points:state.floorPlane.points, closed:state.floorPlane.closed};
+    }
+    const zone=getActiveZone();
     if(!zone) return null;
     if(state.ui.mode==="contour"){
       return {kind:"contour", points:zone.contour, closed:zone.closed, zone};
@@ -572,6 +595,7 @@ const zone=getActiveZone();
 
     for(const zone of state.zones){ if(zone.enabled) await drawZoneFill(zone); }
 
+    drawPlaneOverlay();
     drawZonesOverlay();
     drawLivePreview();
     ctx.restore();
@@ -587,8 +611,13 @@ const zone=getActiveZone();
   pendingClose = null;
 
   let target=null;
-  // Editing focuses on zones/holes only. Perspective is inferred automatically from the closed contour.
-  if(state.ui.mode==="contour"&&zone){
+
+  // Unified editing: the "floor plane" is always present (4 draggable handles).
+  // This avoids a separate "plane placing" mode and reduces user steps.
+  const pIdx=ENABLE_PLANE ? findNearest(state.floorPlane.points,pt) : -1;
+  if(pIdx!==null){
+    target={kind:"plane",idx:pIdx};
+  }else if(state.ui.mode==="contour"&&zone){
     const idx=findNearest(zone.contour,pt);
     if(idx===0 && !zone.closed && zone.contour.length>=3 && isCloseToFirst(zone.contour, pt)){
       pendingClose={kind:"contour", start:eventToCanvasPx(ev)};
@@ -700,9 +729,12 @@ if(state.ui.mode==="contour"&&zone){
       const ev2=lastMoveEv; if(!ev2) return;
       const pt=eventToImgPt(ev2);
       const drag=state.ui.draggingPoint;
+      if(drag.kind==="plane" && ENABLE_PLANE){state.floorPlane.points[drag.idx]=pt;}
+      else{
         const zone=getActiveZone();if(!zone)return;
         if(drag.kind==="contour"){zone.contour[drag.idx]=pt;}
         else if(drag.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return;cut.polygon[drag.idx]=pt;}
+      }
       // update hover for magnet/label while dragging last point
       hoverCanvas = eventToCanvasPx(ev2);
       const poly = getOpenPolyForMode();
@@ -719,6 +751,11 @@ if(state.ui.mode==="contour"&&zone){
   function maybeAutoCloseOnDragRelease(){
     const sel=state.ui.selectedPoint;
     if(!sel) return;
+    if(sel.kind==="plane"){
+      const pts=state.floorPlane.points;
+      if(!state.floorPlane.closed && pts.length>=3 && sel.idx===pts.length-1){
+        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)) state.floorPlane.closed=true;
+      }
       return;
     }
     const zone=getActiveZone();
@@ -760,6 +797,12 @@ if(state.ui.mode==="contour"&&zone){
   function deleteSelectedPoint(){
     const sel=state.ui.selectedPoint;if(!sel)return false;
     pushHistory();
+    if(sel.kind==="plane" && ENABLE_PLANE){ state.floorPlane.points.splice(sel.idx,1); if(state.floorPlane.points.length<4) state.floorPlane.closed=false; }
+    else{
+      const zone=getActiveZone();if(!zone)return false;
+      if(sel.kind==="contour"){ zone.contour.splice(sel.idx,1); if(zone.contour.length<3) zone.closed=false; }
+      else if(sel.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return false;cut.polygon.splice(sel.idx,1); if(cut.polygon.length<3) cut.closed=false;}
+    }
     state.ui.selectedPoint=null;render();return true;
   }
   function bindInput(){
@@ -770,10 +813,11 @@ if(state.ui.mode==="contour"&&zone){
     window.addEventListener("keydown",(e)=>{if(e.key==="Delete"||e.key==="Backspace"){if(deleteSelectedPoint())e.preventDefault();}});
   }
   function setMode(mode){
-        state.ui.mode=mode;
+    if(mode==="plane") mode="contour";
+    state.ui.mode=mode;
     hoverCanvas=null;
     hoverCloseCandidate=false;
-    const map={photo:"Загрузите фото или замените его.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
+    const map={photo:"Загрузите фото или замените его.",plane:"Контур: ставьте точки по краю зоны и замкните к первой точке (магнит). Плоскость определяется автоматически. Точки можно двигать.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
     setHint(map[mode]||"");render();
   }
   function exportPNG(){
