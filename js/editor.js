@@ -319,24 +319,48 @@ function distCanvasFromImg(a,b){
     return distCanvasFromImg(points[0], imgPt) <= cssToCanvasPx(snapCss);
   }
 
+
+
+  // Infer a "floor" quadrilateral from a polygon contour.
+  // This lets us project the texture with perspective *without* asking users to place 4 plane points.
+  // Heuristic: split by centroid X into left/right; take minY (far) and maxY (near) on each side.
+  function inferQuadFromContour(imgPts){
+    if(!imgPts || imgPts.length < 4) return null;
+    let cx=0; for(const p of imgPts) cx+=p.x; cx/=imgPts.length;
+    let left=imgPts.filter(p=>p.x<=cx);
+    let right=imgPts.filter(p=>p.x>cx);
+    if(left.length<2 || right.length<2){
+      // fallback split by median X
+      const xs=imgPts.map(p=>p.x).sort((a,b)=>a-b);
+      const med=xs[Math.floor(xs.length/2)]||cx;
+      left=imgPts.filter(p=>p.x<=med);
+      right=imgPts.filter(p=>p.x>med);
+    }
+    if(left.length<2 || right.length<2) return null;
+    const farL=left.reduce((a,b)=> (b.y<a.y?b:a));
+    const nearL=left.reduce((a,b)=> (b.y>a.y?b:a));
+    const farR=right.reduce((a,b)=> (b.y<a.y?b:a));
+    const nearR=right.reduce((a,b)=> (b.y>a.y?b:a));
+    // Ensure a reasonable trapezoid (near should be below far)
+    if(nearL.y <= farL.y || nearR.y <= farR.y) return null;
+    return [nearL, nearR, farR, farL];
+  }
   async function drawZoneFill(zone){
     const mat=zone.material;
     if(!mat||!mat.textureUrl||!zone.closed||zone.contour.length<3)return;
     try{
       const img=await loadImage(mat.textureUrl);
       const rect=getImageRectInCanvas();
-
-      // Determine if we can do AR-like floor projection
-      const plane=state.floorPlane;
+      // AR-like floor projection without explicit plane mode: infer a quadrilateral from the contour.
       let usePerspective=false;
       let H=null, gridN=28;
-      if(plane && plane.closed && plane.points && plane.points.length===4){
-        const quad = orderQuadCCW(plane.points.map(imgToCanvasPt));
+      const quadImg = inferQuadFromContour(zone.contour);
+      if(quadImg){
+        const quad = orderQuadCCW(quadImg.map(imgToCanvasPt));
         H = homographyUnitSquareToQuad(quad);
         if(H){
           usePerspective=true;
-          // grid density proportional to plane size (in CSS pixels)
-          const edge = (a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+          const edge=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
           const maxEdge = Math.max(edge(quad[0],quad[1]),edge(quad[1],quad[2]),edge(quad[2],quad[3]),edge(quad[3],quad[0]))/Math.max(1,dpr);
           gridN = Math.max(18, Math.min(64, Math.round(maxEdge/26)));
         }
@@ -360,8 +384,8 @@ function distCanvasFromImg(a,b){
           keyParts.push("cut:"+c.polygon.map(rp).join(";"));
         }
       }
-      if(usePerspective){
-        keyParts.push("plane:"+plane.points.map(rp).join(";"));
+      if(usePerspective && quadImg){
+        keyParts.push("quad:"+quadImg.map(rp).join(";"));
       }
       const key=keyParts.join("|");
 

@@ -182,7 +182,8 @@ async function handlePhotoFile(file){
 
   function bindUI(){
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");});
-    el("modePlane").addEventListener("click",()=>{setActiveStep("plane");ED.setMode("plane");});
+    const btnPlane=el("modePlane");
+    if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("plane");ED.setMode("plane");});}
     el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");});
     el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");});
     el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");});
@@ -194,7 +195,8 @@ async function handlePhotoFile(file){
       if(e.ctrlKey&&(e.key.toLowerCase()==="y"||(e.shiftKey&&e.key.toLowerCase()==="z"))){if(redo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
     });
 
-    el("resetPlaneBtn").addEventListener("click",()=>{pushHistory();const w=state.assets.photoW||0,h=state.assets.photoH||0;state.floorPlane.points=(w&&h)?defaultFloorPlanePoints(w,h):[];state.floorPlane.closed=!!(w&&h);ED.render();});
+    const btnResetPlane=el("resetPlaneBtn");
+    if(btnResetPlane){btnResetPlane.addEventListener("click",()=>{pushHistory();const w=state.assets.photoW||0,h=state.assets.photoH||0;state.floorPlane.points=(w&&h)?defaultFloorPlanePoints(w,h):[];state.floorPlane.closed=!!(w&&h);ED.render();});}
     el("resetZoneBtn").addEventListener("click",()=>{const z=S.getActiveZone();if(!z)return;pushHistory();z.contour=[];z.closed=false;z.cutouts=[];state.ui.activeCutoutId=null;renderZonesUI();ED.render();});
 
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
@@ -207,11 +209,13 @@ async function handlePhotoFile(file){
       cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
     }
 
-    el("resetProjectBtn").addEventListener("click",()=>{
+        el("resetProjectBtn").addEventListener("click",()=>{
       pushHistory();
       state.assets.photoBitmap=null;state.assets.photoW=0;state.assets.photoH=0;
-      state.floorPlane.points=defaultFloorPlanePoints(nw,nh);state.floorPlane.closed=true;state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
+      state.floorPlane.points=[];state.floorPlane.closed=false;
+      state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
       ensureActiveZone();renderZonesUI();ED.render();
+      setActiveStep("photo");ED.setMode("photo");
     });
 
     el("addZoneBtn").addEventListener("click",()=>{pushHistory();const z=makeZone();state.zones.push(z);state.ui.activeZoneId=z.id;state.ui.activeCutoutId=null;renderZonesUI();setActiveStep("zones");ED.setMode("contour");});
@@ -265,7 +269,9 @@ async function handlePhotoFile(file){
     pushHistory();
 
     try{
-      await API.loadConfig();
+      // Config endpoint may be protected by JWT in production.
+      // This photo-editor widget uses public shapes.json and public Object Storage palettes,
+      // so we do not require /config here.
       await API.loadShapes();
       renderShapesUI();
       await loadTexturesForActiveShape();

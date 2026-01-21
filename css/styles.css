@@ -133,3 +133,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .uploadOverlay__box{max-width:520px;width:100%;background:rgba(21,26,34,0.92);border:1px solid rgba(255,255,255,0.14);border-radius:16px;box-shadow:var(--shadow);padding:16px}
 .uploadOverlay__title{font-weight:700;font-size:16px;margin-bottom:6px}
 .uploadOverlay__subtitle{color:var(--muted);font-size:13px;line-height:1.35;margin-bottom:12px}
+
+
+/* Hide explicit plane controls: perspective is inferred from the contour for a simpler UX */
+#modePlane, #resetPlaneBtn { display: none !important; }

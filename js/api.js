@@ -87,15 +87,16 @@ function absFromStorageMaybe(p){
   }
   async function loadPalette(shapeId){
   setStatus("Загрузка палитры…");
+  // Many deployments protect /api/palettes with JWT (401 missing_token).
+  // For this public website widget we prefer reading palettes directly from Object Storage.
+  const s3Url=state.api.storageBase.replace(/\/$/,"")+"/palettes/"+encodeURIComponent(shapeId)+".json";
   const apiUrl=state.api.apiBase+"/api/palettes/"+encodeURIComponent(shapeId);
   let pal=null;
   try{
-    pal=await fetchJson(apiUrl);
-  }catch(e){
-    // Fallback to public Object Storage palettes if API requires token
-    const s3Url=state.api.storageBase.replace(/\/$/,"")+"/palettes/"+encodeURIComponent(shapeId)+".json";
-    try{ pal=await fetchJson(s3Url); }
-    catch(e2){ console.warn("Palette load failed", e, e2); pal=null; }
+    pal=await fetchJson(s3Url);
+  }catch(eS3){
+    try{ pal=await fetchJson(apiUrl); }
+    catch(eApi){ console.warn("Palette load failed", eS3, eApi); pal=null; }
   }
   if(!pal){ state.catalog.palettesByShape[shapeId]=null; state.catalog.texturesByShape[shapeId]=[]; setStatus("Палитра не найдена"); return {palette:null,textures:[]}; }
 
