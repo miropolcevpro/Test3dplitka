@@ -391,8 +391,8 @@ function distCanvasFromImg(a,b){
 
       if(zone._fillCache && zone._fillCache.key===key && zone._fillCache.w===canvas.width && zone._fillCache.h===canvas.height){
         ctx.save();
-        ctx.globalAlpha=1;
-        ctx.globalCompositeOperation="source-over";
+        ctx.globalAlpha=mat.params.opacity??0.85;
+        ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
         ctx.drawImage(zone._fillCache.layer,0,0);
         ctx.restore();
         return;
@@ -413,8 +413,8 @@ function distCanvasFromImg(a,b){
       }
       lctx.clip("evenodd");
 
-      lctx.globalAlpha=mat.params.opacity??0.85;
-      lctx.globalCompositeOperation=mat.params.blendMode??"multiply";
+      lctx.globalAlpha=1;
+      lctx.globalCompositeOperation="source-over";
 
       if(usePerspective){
         // Project tiled pattern through homography (AR-like "floor going into distance")
@@ -442,8 +442,8 @@ function distCanvasFromImg(a,b){
       // Cache and composite
       zone._fillCache={key,layer,w:canvas.width,h:canvas.height};
       ctx.save();
-      ctx.globalAlpha=1;
-      ctx.globalCompositeOperation="source-over";
+      ctx.globalAlpha=mat.params.opacity??0.85;
+      ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
       ctx.drawImage(layer,0,0);
       ctx.restore();
     }catch(e){
@@ -473,20 +473,7 @@ function polyPath(points){
     if(showIdx){ctx.fillStyle="rgba(0,0,0,0.65)";ctx.font=`${10*dpr}px sans-serif`;ctx.fillText(String(idx+1),p.x+8*dpr,p.y-8*dpr);}
   }
 
-  function drawPlaneOverlay(){
-    const pts=state.floorPlane.points;if(!pts.length)return;
-    ctx.save();
-    ctx.strokeStyle="rgba(0,229,255,0.85)";ctx.lineWidth=3.5*dpr;ctx.fillStyle="rgba(0,229,255,0.08)";
-    if(pts.length>=2){
-      ctx.beginPath();
-      const p0=imgToCanvasPt(pts[0]);ctx.moveTo(p0.x,p0.y);
-      for(let i=1;i<pts.length;i++){const p=imgToCanvasPt(pts[i]);ctx.lineTo(p.x,p.y);}
-      if(state.floorPlane.closed && pts.length>=3){ctx.closePath();ctx.fill();}
-      ctx.stroke();
-    }
-    for(let i=0;i<pts.length;i++) drawPoint(pts[i],i,state.ui.mode==="plane");
-    ctx.restore();
-  }
+  function drawPlaneOverlay(){ return; }
 
   function drawZonesOverlay(){
     ctx.save();
@@ -608,39 +595,7 @@ function polyPath(points){
 
   let target=null;
 
-  // Unified editing: the "floor plane" is always present (4 draggable handles).
-  // This avoids a separate "plane placing" mode and reduces user steps.
-  const pIdx=findNearest(state.floorPlane.points,pt);
-  if(pIdx!==null){
-    target={kind:"plane",idx:pIdx};
-  }else if(state.ui.mode==="contour"&&zone){
-    const idx=findNearest(zone.contour,pt);
-    if(idx===0 && !zone.closed && zone.contour.length>=3 && isCloseToFirst(zone.contour, pt)){
-      pendingClose={kind:"contour", start:eventToCanvasPx(ev)};
-      state.ui.selectedPoint={kind:"contour", idx:0};
-      render();
-      return;
-    }
-    if(idx!==null)target={kind:"contour",idx};
-  }else if(state.ui.mode==="cutout"&&zone&&cut){
-    const idx=findNearest(cut.polygon,pt);
-    if(idx===0 && !cut.closed && cut.polygon.length>=3 && isCloseToFirst(cut.polygon, pt)){
-      pendingClose={kind:"cutout", start:eventToCanvasPx(ev)};
-      state.ui.selectedPoint={kind:"cutout", idx:0};
-      render();
-      return;
-    }
-    if(idx!==null)target={kind:"cutout",idx};
-  }
-
-  if(target){
-    // start drag (single history snapshot)
-    pushHistory();
-    state.ui.draggingPoint=target;
-    state.ui.selectedPoint=target;
-    render();
-    return;
-  }
+  // Unified editing: no explicit floor-plane handles; perspective is inferred from the closed contour.
 
   // Add points / close polygons
 if(state.ui.mode==="contour"&&zone){

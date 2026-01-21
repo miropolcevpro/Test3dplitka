@@ -182,9 +182,7 @@ async function handlePhotoFile(file){
 
   function bindUI(){
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");});
-    const btnPlane=el("modePlane");
-    if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("plane");ED.setMode("plane");});}
-    el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");});
+        el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");});
     el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");});
     el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");});
 
