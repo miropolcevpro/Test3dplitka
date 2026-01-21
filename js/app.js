@@ -116,6 +116,21 @@
   }
 
   
+  function defaultFloorPlanePoints(w,h){
+    // Heuristic trapezoid: near edge at bottom, far edge mid-height.
+    // User can always drag the 4 handles to match the real floor.
+    const nearY = h*0.88;
+    const farY  = h*0.48;
+    const nearW = w*0.92;
+    const farW  = w*0.52;
+    const cx = w*0.50;
+    return [
+      {x: cx - nearW*0.50, y: nearY},
+      {x: cx + nearW*0.50, y: nearY},
+      {x: cx + farW*0.50,  y: farY},
+      {x: cx - farW*0.50,  y: farY},
+    ];
+  }
 async function handlePhotoFile(file){
     if(!file) return;
     API.setStatus("Загрузка фото…");
@@ -131,6 +146,7 @@ async function handlePhotoFile(file){
 
     pushHistory();
     state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;
+    state.floorPlane.points=defaultFloorPlanePoints(nw,nh);state.floorPlane.closed=true;
     state.zones.forEach(z=>{z.contour=[];z.closed=false;z.cutouts=[];});
     state.ui.activeCutoutId=null;
 
@@ -166,9 +182,7 @@ async function handlePhotoFile(file){
 
   function bindUI(){
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");});
-    const btnPlane=el("modePlane");
-    if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");});}
-    el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");});
+        el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");});
     el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");});
     el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");});
 
@@ -180,6 +194,7 @@ async function handlePhotoFile(file){
     });
 
     const btnResetPlane=el("resetPlaneBtn");
+    if(btnResetPlane){btnResetPlane.addEventListener("click",()=>{pushHistory();const w=state.assets.photoW||0,h=state.assets.photoH||0;state.floorPlane.points=(w&&h)?defaultFloorPlanePoints(w,h):[];state.floorPlane.closed=!!(w&&h);ED.render();});}
     el("resetZoneBtn").addEventListener("click",()=>{const z=S.getActiveZone();if(!z)return;pushHistory();z.contour=[];z.closed=false;z.cutouts=[];state.ui.activeCutoutId=null;renderZonesUI();ED.render();});
 
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
@@ -195,6 +210,7 @@ async function handlePhotoFile(file){
         el("resetProjectBtn").addEventListener("click",()=>{
       pushHistory();
       state.assets.photoBitmap=null;state.assets.photoW=0;state.assets.photoH=0;
+      state.floorPlane.points=[];state.floorPlane.closed=false;
       state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
       ensureActiveZone();renderZonesUI();ED.render();
       setActiveStep("photo");ED.setMode("photo");

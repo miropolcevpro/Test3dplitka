@@ -3,8 +3,6 @@ window.PhotoPaveEditor=(function(){
   const {state,getActiveZone,getActiveCutout,pushHistory}=window.PhotoPaveState;
   const {loadImage}=window.PhotoPaveAPI;
   let canvas,ctx,dpr=1;
-  const ENABLE_PLANE=false; // unified mode: plane handles disabled
-
   const setHint=(t)=>{const el=document.getElementById("hintText");if(el)el.textContent=t||"";};
 
   // Interaction tuning in CSS pixels (converted to canvas pixels via boundingClientRect scale)
@@ -393,8 +391,8 @@ function distCanvasFromImg(a,b){
 
       if(zone._fillCache && zone._fillCache.key===key && zone._fillCache.w===canvas.width && zone._fillCache.h===canvas.height){
         ctx.save();
-        ctx.globalAlpha=1;
-        ctx.globalCompositeOperation="source-over";
+        ctx.globalAlpha=mat.params.opacity??0.85;
+        ctx.globalCompositeOperation=mat.params.blendMode??"multiply";
         ctx.drawImage(zone._fillCache.layer,0,0);
         ctx.restore();
         return;
@@ -405,46 +403,76 @@ function distCanvasFromImg(a,b){
       layer.width=canvas.width;
       layer.height=canvas.height;
       const lctx=layer.getContext("2d");
+      lctx.clearRect(0,0,layer.width,layer.height);
 
-      // Clip to zone contour and holes
-      lctx.save();
-      lctx.beginPath();
-      polyPathTo(lctx, zone.contour);
-      for(const c of (zone.cutouts||[])){
-        if(c.closed && c.polygon && c.polygon.length>=3) polyPathTo(lctx, c.polygon);
-      }
-      lctx.clip("evenodd");
-
-      // IMPORTANT: Do NOT apply blend modes like "multiply" inside the offscreen layer.
-      // The layer has a transparent background, so blending against transparency will
-      // effectively cancel the texture (especially for multiply/screen/etc.).
-      // We render the texture into the layer using normal compositing, then blend the
-      // whole layer onto the main canvas (where the photo already exists).
-      lctx.globalAlpha=1;
-      lctx.globalCompositeOperation="source-over";
+      // Draw texture (perspective preferred), then apply mask (zone minus cutouts).
+      let drew=false;
 
       if(usePerspective){
-        // Project tiled pattern through homography (AR-like "floor going into distance")
-        const patternCanvas = buildPatternCanvas(img);
-        const matTmp = {params: mat.params, _texW: img.width, _texH: img.height};
-        drawProjectedTiledPlane(lctx, H, matTmp, patternCanvas, gridN);
-      }else{
+        try{
+          // Project tiled pattern through homography (AR-like "floor going into distance")
+          const patternCanvas = buildPatternCanvas(img);
+          const matTmp = {params: mat.params, _texW: img.width, _texH: img.height};
+          drawProjectedTiledPlane(lctx, H, matTmp, patternCanvas, gridN);
+          drew=true;
+        }catch(eProj){
+          // Fallback to simple tiling if projection fails (degenerate quad / NaNs / browser quirks)
+          drew=false;
+        }
+      }
+
+      if(!drew){
         // Fallback: simple 2D tiling (no perspective plane)
         const pattern=lctx.createPattern(img,"repeat");
         if(pattern){
           const scale=mat.params.scale??1.0;
           const rot=((mat.params.rotation??0)*Math.PI)/180;
           const cx=rect.x+rect.w/2,cy=rect.y+rect.h/2;
+          lctx.save();
           lctx.translate(cx,cy);
           lctx.rotate(rot);
           lctx.scale(scale,scale);
           lctx.translate(-cx,-cy);
           lctx.fillStyle=pattern;
           lctx.fillRect(rect.x-rect.w,rect.y-rect.h,rect.w*3,rect.h*3);
+          lctx.restore();
+          drew=true;
         }
       }
 
-      lctx.restore();
+      if(drew){
+        // Build a robust mask without relying on clip('evenodd') support.
+        const mask=document.createElement("canvas");
+        mask.width=layer.width;
+        mask.height=layer.height;
+        const mctx=mask.getContext("2d");
+        mctx.clearRect(0,0,mask.width,mask.height);
+
+        // Zone shape in white
+        mctx.fillStyle="#fff";
+        mctx.globalCompositeOperation="source-over";
+        mctx.beginPath();
+        polyPathTo(mctx, zone.contour);
+        mctx.fill();
+
+        // Cutouts punch holes
+        mctx.globalCompositeOperation="destination-out";
+        for(const c of (zone.cutouts||[])){
+          if(c.closed && c.polygon && c.polygon.length>=3){
+            mctx.beginPath();
+            polyPathTo(mctx, c.polygon);
+            mctx.fill();
+          }
+        }
+
+        // Apply mask to texture layer
+        lctx.globalCompositeOperation="destination-in";
+        lctx.drawImage(mask,0,0);
+        lctx.globalCompositeOperation="source-over";
+      }else{
+        // Nothing to draw
+        return;
+      }
 
       // Cache and composite
       zone._fillCache={key,layer,w:canvas.width,h:canvas.height};
@@ -454,7 +482,7 @@ function distCanvasFromImg(a,b){
       ctx.drawImage(layer,0,0);
       ctx.restore();
     }catch(e){
-      console.warn("[fill] drawZoneFill failed:", e);
+      // ignore
     }finally{
       ctx.globalCompositeOperation="source-over";ctx.globalAlpha=1;
     }
@@ -480,21 +508,7 @@ function polyPath(points){
     if(showIdx){ctx.fillStyle="rgba(0,0,0,0.65)";ctx.font=`${10*dpr}px sans-serif`;ctx.fillText(String(idx+1),p.x+8*dpr,p.y-8*dpr);}
   }
 
-  function drawPlaneOverlay(){
-    if(!ENABLE_PLANE) return;
-    const pts=state.floorPlane.points;if(!pts.length)return;
-    ctx.save();
-    ctx.strokeStyle="rgba(0,229,255,0.85)";ctx.lineWidth=3.5*dpr;ctx.fillStyle="rgba(0,229,255,0.08)";
-    if(pts.length>=2){
-      ctx.beginPath();
-      const p0=imgToCanvasPt(pts[0]);ctx.moveTo(p0.x,p0.y);
-      for(let i=1;i<pts.length;i++){const p=imgToCanvasPt(pts[i]);ctx.lineTo(p.x,p.y);}
-      if(state.floorPlane.closed && pts.length>=3){ctx.closePath();ctx.fill();}
-      ctx.stroke();
-    }
-    for(let i=0;i<pts.length;i++) drawPoint(pts[i],i,state.ui.mode==="plane");
-    ctx.restore();
-  }
+  function drawPlaneOverlay(){ return; }
 
   function drawZonesOverlay(){
     ctx.save();
@@ -527,7 +541,6 @@ function polyPath(points){
 
   function getOpenPolyForMode(){
     if(state.ui.mode==="plane"){
-      if(!ENABLE_PLANE) return null;
       return {kind:"plane", points:state.floorPlane.points, closed:state.floorPlane.closed};
     }
     const zone=getActiveZone();
@@ -617,42 +630,7 @@ function polyPath(points){
 
   let target=null;
 
-  // Unified mode: plane handles are disabled; perspective is inferred from the closed contour.
-  if(ENABLE_PLANE){
-    const pIdx=findNearest(state.floorPlane.points,pt);
-    if(pIdx!==null){
-      target={kind:"plane",idx:pIdx};
-    }
-  }
-
-  if(!target && state.ui.mode==="contour"&&zone){
-    const idx=findNearest(zone.contour,pt);
-    if(idx===0 && !zone.closed && zone.contour.length>=3 && isCloseToFirst(zone.contour, pt)){
-      pendingClose={kind:"contour", start:eventToCanvasPx(ev)};
-      state.ui.selectedPoint={kind:"contour", idx:0};
-      render();
-      return;
-    }
-    if(idx!==null)target={kind:"contour",idx};
-  }else if(state.ui.mode==="cutout"&&zone&&cut){
-    const idx=findNearest(cut.polygon,pt);
-    if(idx===0 && !cut.closed && cut.polygon.length>=3 && isCloseToFirst(cut.polygon, pt)){
-      pendingClose={kind:"cutout", start:eventToCanvasPx(ev)};
-      state.ui.selectedPoint={kind:"cutout", idx:0};
-      render();
-      return;
-    }
-    if(idx!==null)target={kind:"cutout",idx};
-  }
-
-  if(target){
-    // start drag (single history snapshot)
-    pushHistory();
-    state.ui.draggingPoint=target;
-    state.ui.selectedPoint=target;
-    render();
-    return;
-  }
+  // Unified editing: no explicit floor-plane handles; perspective is inferred from the closed contour.
 
   // Add points / close polygons
 if(state.ui.mode==="contour"&&zone){
@@ -736,10 +714,8 @@ if(state.ui.mode==="contour"&&zone){
       rafMove=0;
       const ev2=lastMoveEv; if(!ev2) return;
       const pt=eventToImgPt(ev2);
-	      const drag=state.ui.draggingPoint;
-	      // PointerUp may have cleared draggingPoint before this RAF runs.
-	      if(!drag) return;
-	      if(drag.kind==="plane" && ENABLE_PLANE){state.floorPlane.points[drag.idx]=pt;}
+      const drag=state.ui.draggingPoint;
+      if(drag.kind==="plane"){state.floorPlane.points[drag.idx]=pt;}
       else{
         const zone=getActiveZone();if(!zone)return;
         if(drag.kind==="contour"){zone.contour[drag.idx]=pt;}
@@ -807,7 +783,7 @@ if(state.ui.mode==="contour"&&zone){
   function deleteSelectedPoint(){
     const sel=state.ui.selectedPoint;if(!sel)return false;
     pushHistory();
-    if(sel.kind==="plane" && ENABLE_PLANE){ state.floorPlane.points.splice(sel.idx,1); if(state.floorPlane.points.length<4) state.floorPlane.closed=false; }
+    if(sel.kind==="plane"){ state.floorPlane.points.splice(sel.idx,1); if(state.floorPlane.points.length<4) state.floorPlane.closed=false; }
     else{
       const zone=getActiveZone();if(!zone)return false;
       if(sel.kind==="contour"){ zone.contour.splice(sel.idx,1); if(zone.contour.length<3) zone.closed=false; }

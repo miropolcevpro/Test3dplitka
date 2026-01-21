@@ -151,52 +151,31 @@ function absFromStorageMaybe(p){
 }
   async function loadImage(url){
     const cache=state.assets.textureCache;
-    // Cache key should be the final URL actually used.
-    if(cache.has(url)) return cache.get(url).img;
-
-    // Two-pass strategy:
-    // 1) Try CORS-safe load (crossOrigin="anonymous") so canvas export works.
-    // 2) If it fails (likely missing CORS on bucket for this domain), retry WITHOUT CORS so rendering works,
-    //    but warn that export may be blocked ("tainted canvas") until CORS is fixed.
-    async function tryLoad(u, useCORS){
-      return await new Promise((resolve,reject)=>{
-        const img=new Image();
-        if(useCORS) img.crossOrigin="anonymous";
-        img.onload=()=>resolve(img);
-        img.onerror=()=>reject(new Error("Image load failed: "+u+(useCORS?" (CORS)":" (no-CORS)")));
-        img.src=u;
-      });
-    }
-
-    let finalUrl=url;
-    let img=null;
-
+    if(cache.has(url))return cache.get(url).img;
+    
+    const img=new Image();img.crossOrigin="anonymous";
+    const tryLoad = (u)=>new Promise((resolve,reject)=>{
+      img.onload=()=>resolve();
+      img.onerror=()=>reject(new Error("Image load failed: "+u));
+      img.src=u;
+    });
     try{
-      img=await tryLoad(finalUrl, true);
-    }catch(e1){
+      await tryLoad(url);
+    }catch(e){
       // Retry once by rewriting gateway/proxy URLs to Object Storage
-      const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(finalUrl, null, null) : null;
-      if(alt && alt!==finalUrl){
-        try{
-          img=await tryLoad(alt, true);
-          finalUrl=alt;
-        }catch(e2){
-          // Fall back to no-CORS load (rendering will work; exporting may not)
-          console.warn("[assets] CORS-safe image load failed, falling back to no-CORS. Export may be blocked until CORS is configured.", e2);
-          img=await tryLoad(alt, false);
-          finalUrl=alt;
-        }
+      const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(url, null, null) : null;
+      if(alt && alt!==url){
+        await tryLoad(alt);
+        url = alt;
       }else{
-        // Fall back to no-CORS load
-        console.warn("[assets] CORS-safe image load failed, falling back to no-CORS. Export may be blocked until CORS is configured.", e1);
-        img=await tryLoad(finalUrl, false);
+        throw e;
       }
     }
 
-    cache.set(finalUrl,{img,ts:Date.now()});
+    cache.set(url,{img,ts:Date.now()});
     if(cache.size>14){
       const entries=[...cache.entries()].sort((a,b)=>a[1].ts-b[1].ts);
-      for(let i=0;i<Math.max(1,cache.size-14);i++) cache.delete(entries[i][0]);
+      for(let i=0;i<cache.size-12;i++)cache.delete(entries[i][0]);
     }
     return img;
   }
