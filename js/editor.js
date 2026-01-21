@@ -612,12 +612,15 @@ function polyPath(points){
 
   let target=null;
 
-  // Unified editing: the "floor plane" is always present (4 draggable handles).
-  // This avoids a separate "plane placing" mode and reduces user steps.
-  const pIdx=ENABLE_PLANE ? findNearest(state.floorPlane.points,pt) : -1;
-  if(pIdx!==null){
-    target={kind:"plane",idx:pIdx};
-  }else if(state.ui.mode==="contour"&&zone){
+  // Unified mode: plane handles are disabled; perspective is inferred from the closed contour.
+  if(ENABLE_PLANE){
+    const pIdx=findNearest(state.floorPlane.points,pt);
+    if(pIdx!==null){
+      target={kind:"plane",idx:pIdx};
+    }
+  }
+
+  if(!target && state.ui.mode==="contour"&&zone){
     const idx=findNearest(zone.contour,pt);
     if(idx===0 && !zone.closed && zone.contour.length>=3 && isCloseToFirst(zone.contour, pt)){
       pendingClose={kind:"contour", start:eventToCanvasPx(ev)};
@@ -728,8 +731,10 @@ if(state.ui.mode==="contour"&&zone){
       rafMove=0;
       const ev2=lastMoveEv; if(!ev2) return;
       const pt=eventToImgPt(ev2);
-      const drag=state.ui.draggingPoint;
-      if(drag.kind==="plane" && ENABLE_PLANE){state.floorPlane.points[drag.idx]=pt;}
+	      const drag=state.ui.draggingPoint;
+	      // PointerUp may have cleared draggingPoint before this RAF runs.
+	      if(!drag) return;
+	      if(drag.kind==="plane" && ENABLE_PLANE){state.floorPlane.points[drag.idx]=pt;}
       else{
         const zone=getActiveZone();if(!zone)return;
         if(drag.kind==="contour"){zone.contour[drag.idx]=pt;}
