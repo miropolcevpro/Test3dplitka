@@ -128,13 +128,13 @@
 
     pushHistory();
     state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;
-    state.floorPlane.points=[];
-    state.zones.forEach(z=>{z.contour=[];z.cutouts=[];});
+    state.floorPlane.points=[];state.floorPlane.closed=false;
+    state.zones.forEach(z=>{z.contour=[];z.closed=false;z.cutouts=[];});
     state.ui.activeCutoutId=null;
 
     API.setStatus(`Фото загружено (${nw}×${nh})`);
-    setActiveStep("plane");
-    ED.setMode("plane");
+    setActiveStep("zones");
+    ED.setMode("contour");
     ED.render();
   }
 
@@ -175,15 +175,15 @@
       if(e.ctrlKey&&(e.key.toLowerCase()==="y"||(e.shiftKey&&e.key.toLowerCase()==="z"))){if(redo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
     });
 
-    el("resetPlaneBtn").addEventListener("click",()=>{pushHistory();state.floorPlane.points=[];ED.render();});
-    el("resetZoneBtn").addEventListener("click",()=>{const z=S.getActiveZone();if(!z)return;pushHistory();z.contour=[];z.cutouts=[];state.ui.activeCutoutId=null;renderZonesUI();ED.render();});
+    el("resetPlaneBtn").addEventListener("click",()=>{pushHistory();state.floorPlane.points=[];state.floorPlane.closed=false;ED.render();});
+    el("resetZoneBtn").addEventListener("click",()=>{const z=S.getActiveZone();if(!z)return;pushHistory();z.contour=[];z.closed=false;z.cutouts=[];state.ui.activeCutoutId=null;renderZonesUI();ED.render();});
 
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
     el("replacePhotoBtn").addEventListener("click",()=>el("photoInput").click());
     el("resetProjectBtn").addEventListener("click",()=>{
       pushHistory();
       state.assets.photoBitmap=null;state.assets.photoW=0;state.assets.photoH=0;
-      state.floorPlane.points=[];state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
+      state.floorPlane.points=[];state.floorPlane.closed=false;state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
       ensureActiveZone();renderZonesUI();ED.render();
     });
 

@@ -3,10 +3,32 @@ window.PhotoPaveAPI=(function(){
   const {state}=window.PhotoPaveState;
   const setStatus=(t)=>{const el=document.getElementById("statusText");if(el)el.textContent=t||"";};
   async function fetchJson(url,opts={}){
+    // opts may include headers, method, body
+
     const res=await fetch(url,{...opts,headers:{...(opts.headers||{}),"Accept":"application/json"}});
     if(!res.ok){const txt=await res.text().catch(()=> "");throw new Error(`HTTP ${res.status} ${res.statusText} for ${url} :: ${txt.slice(0,120)}`);}
     return await res.json();
   }
+
+function isAuthMissing(err){
+  const msg=String(err&&err.message||"");
+  return msg.includes("HTTP 401") || msg.includes("missing_token") || msg.includes("Unauthorized");
+}
+async function tryJsonCandidates(urls){
+  let lastErr=null;
+  for(const u of urls){
+    try{ return await fetchJson(u); }catch(e){ lastErr=e; }
+  }
+  throw lastErr||new Error("All candidates failed");
+}
+function absFromStorageMaybe(p){
+  if(!p) return null;
+  if(typeof p!=="string") return null;
+  if(/^https?:\/\//i.test(p)) return p;
+  // common cases: "surfaces/..." or "/surfaces/..."
+  const key=p.replace(/^\//,"");
+  return state.api.storageBase.replace(/\/$/,"")+"/"+key;
+}
   async function loadConfig(){
     setStatus("Загрузка config…");
     const base=state.api.gatewayBase;
@@ -19,16 +41,36 @@ window.PhotoPaveAPI=(function(){
     return state.api.apiBase;
   }
   async function loadShapes(){
-    setStatus("Загрузка форм…");
-    const shapes=await fetchJson(state.api.apiBase+"/api/shapes");
+  setStatus("Загрузка форм…");
+  const apiUrl=state.api.apiBase+"/api/shapes";
+  try{
+    const shapes=await fetchJson(apiUrl);
     state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
-    if(!state.catalog.activeShapeId&&state.catalog.shapes.length){
-      const s0=state.catalog.shapes[0];
-      state.catalog.activeShapeId=s0.id||s0.shapeId||s0.slug;
+  }catch(e){
+    // If API is protected (missing_token), fall back to static shapes.json from site
+    const baseHref=window.location.href;
+    const candidates=[
+      new URL("shapes.json", baseHref).toString(),
+      new URL("data/shapes.json", baseHref).toString(),
+      new URL("frontend_github_pages/shapes.json", baseHref).toString(),
+      // common legacy paths
+      "https://miropolcevpro.github.io/test3d/shapes.json"
+    ];
+    try{
+      const shapes=await tryJsonCandidates(candidates);
+      state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
+    }catch(e2){
+      console.warn("Shapes load failed from API and static fallbacks", e, e2);
+      state.catalog.shapes=[];
     }
-    setStatus("Формы: "+state.catalog.shapes.length);
-    return state.catalog.shapes;
   }
+  if(!state.catalog.activeShapeId&&state.catalog.shapes.length){
+    const s0=state.catalog.shapes[0];
+    state.catalog.activeShapeId=s0.id||s0.shapeId||s0.slug;
+  }
+  setStatus("Формы: "+state.catalog.shapes.length);
+  return state.catalog.shapes;
+}
   function normalizePaletteTextures(pal){
     const out=[];const arr=pal?.textures||pal?.items||pal||[];if(!Array.isArray(arr))return out;
     for(const it of arr){
@@ -46,14 +88,29 @@ window.PhotoPaveAPI=(function(){
     return out;
   }
   async function loadPalette(shapeId){
-    setStatus("Загрузка палитры…");
-    const pal=await fetchJson(state.api.apiBase+"/api/palettes/"+encodeURIComponent(shapeId));
-    state.catalog.palettesByShape[shapeId]=pal;
-    const tex=normalizePaletteTextures(pal);
-    state.catalog.texturesByShape[shapeId]=tex;
-    setStatus("Текстур: "+tex.length);
-    return {palette:pal,textures:tex};
+  setStatus("Загрузка палитры…");
+  const apiUrl=state.api.apiBase+"/api/palettes/"+encodeURIComponent(shapeId);
+  let pal=null;
+  try{
+    pal=await fetchJson(apiUrl);
+  }catch(e){
+    // Fallback to public Object Storage palettes if API requires token
+    const s3Url=state.api.storageBase.replace(/\/$/,"")+"/palettes/"+encodeURIComponent(shapeId)+".json";
+    try{ pal=await fetchJson(s3Url); }
+    catch(e2){ console.warn("Palette load failed", e, e2); pal=null; }
   }
+  if(!pal){ state.catalog.palettesByShape[shapeId]=null; state.catalog.texturesByShape[shapeId]=[]; setStatus("Палитра не найдена"); return {palette:null,textures:[]}; }
+
+  state.catalog.palettesByShape[shapeId]=pal;
+  const tex=normalizePaletteTextures(pal).map(t=>({
+    ...t,
+    previewUrl: absFromStorageMaybe(t.previewUrl),
+    albedoUrl: absFromStorageMaybe(t.albedoUrl),
+  }));
+  state.catalog.texturesByShape[shapeId]=tex;
+  setStatus("Текстур: "+tex.length);
+  return {palette:pal,textures:tex};
+}
   async function loadImage(url){
     const cache=state.assets.textureCache;
     if(cache.has(url))return cache.get(url).img;
