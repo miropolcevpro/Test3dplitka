@@ -444,7 +444,9 @@ function distCanvasFromImg(a,b){
     // Returns [nearL, nearR, farR, farL] in IMAGE coordinates (y grows downward), or null.
     if(!imgPts || imgPts.length < 4) return null;
     const params = (opts && opts.params) ? opts.params : {};
-    const persp = Math.max(0, Math.min(1, (params.perspective ?? 0.75)));
+    // Perspective slider supports negative values as an "invert depth" control.
+    // For quad inference we only need the strength.
+    const persp = Math.abs(Math.max(-1, Math.min(1, (params.perspective ?? 0.75))));
     const horizon = Math.max(-1, Math.min(1, (params.horizon ?? 0.0)));
 
     // Convex hull for stability on concave contours

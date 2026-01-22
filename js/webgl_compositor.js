@@ -191,7 +191,7 @@ window.PhotoPaveCompositor = (function(){
   uniform float uAO;        // 0..1
   uniform float uPhotoFit;  // 0..1
   uniform float uFarFade;   // 0..1
-  uniform int uDebugUV;      // 0/1
+  uniform int uVFlip;       // 0/1: flip plane V (depth)
 
   out vec4 outColor;
 
@@ -231,19 +231,15 @@ window.PhotoPaveCompositor = (function(){
     vec3 q = uInvH * vec3(fragPx, 1.0);
     vec2 uv = q.xy / q.z;
 
-    if(uDebugUV==1){
-      // Visualize plane UV direction: green increases with V (far), red increases with U.
-      vec2 g = fract(uv*10.0);
-      vec3 col = vec3(g.x, g.y, 0.0);
-      vec3 outLin = mix(prevLin, toLinear(col), alpha);
-      outColor = vec4(toSRGB(outLin), 1.0);
-      return;
-    }
-
     // If homography is near-singular, keep previous content for this pixel.
     if(abs(q.z) < 1e-6){
       outColor = vec4(toSRGB(prevLin), 1.0);
       return;
+    }
+
+    // Optional plane depth inversion (user control via negative perspective slider).
+    if(uVFlip == 1){
+      uv.y = 1.0 - uv.y;
     }
 
     // Tile transform
@@ -251,6 +247,8 @@ window.PhotoPaveCompositor = (function(){
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
     vec2 suv = fract(tuv);
+    // Flip Y for uploaded tile texture (top-left origin) while preserving repeat.
+    suv.y = 1.0 - suv.y;
     vec3 tile = texture(uTile, suv).rgb;
     vec3 tileLin = toLinear(tile);
 
@@ -392,9 +390,7 @@ window.PhotoPaveCompositor = (function(){
     // mipmaps for distance stability
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     try{
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.generateMipmap(gl.TEXTURE_2D);
       if(extAniso){
         const maxA = gl.getParameter(extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 4;
@@ -682,7 +678,8 @@ function _inferQuadFromContour(contour, params, w, h){
   if(Math.abs(nearR.x - nearL.x) < 2 || Math.abs(farR.x - farL.x) < 2) return null;
 
   // User controls: keep them gentle and monotonic
-  const persp = clamp(params?.perspective ?? 0.75, 0, 1);
+  // Perspective strength is |perspective|, sign is reserved for user-facing depth inversion.
+  const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1));
   const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
 
   const mild = 0.25 + 0.75*persp; // 0.25..1.0
@@ -764,6 +761,9 @@ function _blendModeId(blend){
 
     // Params
     const params = zone.material?.params || {};
+    // Negative perspective value is used as a user-facing "invert depth" control.
+    const perspRaw = Number(params.perspective ?? 0.75);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), (perspRaw < 0 ? 1 : 0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), Math.max(0.0001, params.scale ?? 1.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uRotation'), (params.rotation ?? 0.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uOpacity'), clamp(params.opacity ?? 1.0, 0, 1));
@@ -774,10 +774,6 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
-
-
-    const dbg = (new URLSearchParams(location.search).get('debuguv')==='1') ? 1 : 0;
-    gl.uniform1i(gl.getUniformLocation(progZone,'uDebugUV'), dbg);
 
     const invH = _mat3FromArray9(invHArr9);
     gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);
