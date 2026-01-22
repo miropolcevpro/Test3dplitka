@@ -236,6 +236,12 @@ window.PhotoPaveCompositor = (function(){
       return;
     }
 
+    // Ensure a consistent "near → far" direction for the projected plane.
+    // Without this, the mapping can be vertically inverted, making the perspective
+    // feel like it recedes *towards* the user. Flipping the plane's V coordinate
+    // fixes that while preserving the rest of the pipeline.
+    uv.y = 1.0 - uv.y;
+
     // Tile transform
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
