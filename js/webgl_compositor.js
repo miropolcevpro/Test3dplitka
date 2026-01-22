@@ -37,6 +37,57 @@ window.PhotoPaveCompositor = (function(){
   const maskCache = new Map(); // key -> {maskTex, blurTex, w,h, ts}
   const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
 
+  const lastGoodDepthFlip = new Map(); // zoneId -> boolean (true if v-axis swapped i.e. quad reordered [3,2,1,0])
+
+  function _dist2(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return dx*dx+dy*dy; }
+  function _dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+
+  function _orientQuadDepth(q, w, h, zoneId){
+    // q is [nearL, nearR, farR, farL] in image pixel coords (y down)
+    const nearLen = _dist(q[0], q[1]);
+    const farLen  = _dist(q[2], q[3]);
+    const nearY = (q[0].y + q[1].y) * 0.5;
+    const farY  = (q[2].y + q[3].y) * 0.5;
+
+    // Primary cue: in perspective, the edge closer to camera is typically longer in pixels.
+    const lenRatio = (farLen > 1e-6) ? (nearLen / farLen) : 1.0;
+
+    // Secondary cue: near edge is usually closer to bottom of the frame.
+    const yDelta = nearY - farY;
+
+    const prev = lastGoodDepthFlip.get(zoneId) || false;
+
+    // Decision with hysteresis: only flip if clearly wrong, otherwise keep previous orientation.
+    let shouldFlip = false;
+    let confident = false;
+
+    if(lenRatio < 0.88){ // far edge notably longer -> near/far likely swapped
+      shouldFlip = true; confident = true;
+    }else if(lenRatio > 1.14){
+      shouldFlip = false; confident = true;
+    }else{
+      // length ambiguous; use Y cue with a small deadband
+      const dead = Math.max(6, h * 0.02);
+      if(yDelta < -dead){ // far is lower than near -> swapped
+        shouldFlip = true; confident = true;
+      }else if(yDelta > dead){
+        shouldFlip = false; confident = true;
+      }
+    }
+
+    if(!confident){
+      shouldFlip = prev;
+    }
+
+    if(shouldFlip){
+      lastGoodDepthFlip.set(zoneId, true);
+      return [q[3], q[2], q[1], q[0]]; // swap v-axis: far becomes v=0
+    }else{
+      lastGoodDepthFlip.set(zoneId, false);
+      return q;
+    }
+  }
+
 
   // Small reusable 2D canvases for mask raster
   const _maskCanvas = document.createElement('canvas');
@@ -235,7 +286,14 @@ window.PhotoPaveCompositor = (function(){
       outColor = vec4(toSRGB(prevLin), 1.0);
       return;
     }
-// Tile transform
+
+    // Ensure a consistent "near → far" direction for the projected plane.
+    // Without this, the mapping can be vertically inverted, making the perspective
+    // feel like it recedes *towards* the user. Flipping the plane's V coordinate
+    // fixes that while preserving the rest of the pipeline.
+    uv.y = 1.0 - uv.y;
+
+    // Tile transform
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
@@ -570,12 +628,10 @@ window.PhotoPaveCompositor = (function(){
   }
 
   function _normalizeQuad(q){
-    // IMPORTANT: In our pipeline the quad order encodes semantics: nearL, nearR, farR, farL.
-    // Do NOT reorder points based on signed area; in screen coords (Y grows downward) the sign is inverted
-    // and reordering would flip near/far, causing the texture to look "upside down" in depth.
     if(!q || q.length!==4) return null;
     const area=_quadSignedArea(q);
     if(!isFinite(area) || Math.abs(area) < 1e-3) return null;
+    // IMPORTANT: do NOT reorder quad by signed-area. We rely on semantic order: nearL,nearR,farR,farL.
     return q;
   }
 
@@ -823,7 +879,8 @@ const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, w, h
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    const H = _homographyUnitSquareToQuad(qn);
+    const qo = _orientQuadDepth(qn, w, h, zone.id);
+    const H = _homographyUnitSquareToQuad(qo);
     if(H){
       invH = _invert3x3(H);
     }
@@ -921,7 +978,8 @@ const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, outW
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    const H = _homographyUnitSquareToQuad(qn);
+    const qo = _orientQuadDepth(qn, outW, outH, zone.id);
+    const H = _homographyUnitSquareToQuad(qo);
     if(H){
       invH = _invert3x3(H);
     }
