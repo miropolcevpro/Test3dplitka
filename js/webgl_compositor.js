@@ -229,13 +229,15 @@ window.PhotoPaveCompositor = (function(){
 
     // Projective mapping: image(px) -> plane(uv)
     vec3 q = uInvH * vec3(fragPx, 1.0);
-    vec2 uv = q.xy / q.z;
-
-    // If homography is near-singular, keep previous content for this pixel.
-    if(abs(q.z) < 1e-6){
-      outColor = vec4(toSRGB(prevLin), 1.0);
+    float z = q.z;
+    if(z <= 1e-5){
+      outColor = prev;
       return;
     }
+    float zFade = smoothstep(0.002, 0.02, z);
+    alpha *= zFade;
+    if(alpha <= 0.0005){ outColor = prev; return; }
+    vec2 uv = q.xy / z;
 
     // Optional plane depth inversion (user control via negative perspective slider).
     if(uVFlip == 1){
@@ -702,6 +704,61 @@ function _inferQuadFromContour(contour, params, w, h){
     farR.y = Math.min(farR.y, fy);
   }
 
+
+  // Horizon safety: avoid near-singular / folded quads when horizon is pushed far (causes a visible seam and mirrored texture).
+  // We clamp effective horizon influence so that the quad remains convex and sufficiently well-conditioned.
+  function _quadIsWellConditioned(nL,nR,fR,fL){
+    const nearW = Math.hypot(nR.x-nL.x, nR.y-nL.y);
+    const farW  = Math.hypot(fR.x-fL.x, fR.y-fL.y);
+    if(!isFinite(nearW) || !isFinite(farW)) return false;
+    if(nearW < 4 || farW < 4) return false;
+    if(farW/nearW < 0.10) return false;
+    const p=[nL,nR,fR,fL];
+    let sign=0;
+    for(let i=0;i<4;i++){
+      const a=p[i], b=p[(i+1)%4], c=p[(i+2)%4];
+      const cross = (b.x-a.x)*(c.y-b.y) - (b.y-a.y)*(c.x-b.x);
+      if(Math.abs(cross) < 1e-6) continue;
+      const s = cross>0 ? 1 : -1;
+      if(sign===0) sign=s;
+      else if(s!==sign) return false;
+    }
+    return true;
+  }
+
+  if(!_quadIsWellConditioned(nearL, nearR, farR, farL)){
+    const h0 = horizon;
+    // baseline far points with "mild" applied but without horizon shift/convergence
+    const baseFarL = { x: nearL.x + (rFar.min - rNear.min)*mild, y: nearL.y + (yFar - nearL.y)*mild };
+    const baseFarR = { x: nearR.x + (rFar.max - rNear.max)*mild, y: nearR.y + (yFar - nearR.y)*mild };
+
+    let lo = 0.0, hi = 1.0;
+    for(let it=0; it<14; it++){
+      const t = (lo+hi)*0.5;
+
+      let fL = {x: baseFarL.x, y: baseFarL.y};
+      let fR = {x: baseFarR.x, y: baseFarR.y};
+
+      const dy = (h0 * t) * 0.22 * (photoH||h||1);
+      fL.y += dy; fR.y += dy;
+
+      const cconv = Math.max(0, Math.min(0.35, (-(h0*t))*0.25));
+      fL.x = fL.x + (cx - fL.x) * cconv;
+      fR.x = fR.x + (cx - fR.x) * cconv;
+
+      if(fL.y >= nearL.y - 1 || fR.y >= nearR.y - 1){
+        const fy = Math.min(nearL.y, nearR.y) - 1;
+        fL.y = Math.min(fL.y, fy);
+        fR.y = Math.min(fR.y, fy);
+      }
+
+      if(_quadIsWellConditioned(nearL, nearR, fR, fL)){
+        lo = t; farL = fL; farR = fR;
+      }else{
+        hi = t;
+      }
+    }
+  }
   // Map to render pixels (scale from photo px to render px)
   const sx = w / Math.max(1, photoW);
   const sy = h / Math.max(1, photoH);
