@@ -116,18 +116,32 @@
   }
 
   
+
+  async function _createBitmapFromFile(file){
+    // Ensure correct EXIF orientation (e.g., iPhone). Fallback to default if options unsupported.
+    try{
+      return await createImageBitmap(file, { imageOrientation: "from-image", premultiplyAlpha: "none", colorSpaceConversion: "default" });
+    }catch(_){
+      return await createImageBitmap(file);
+    }
+  }
 async function handlePhotoFile(file){
     if(!file) return;
     API.setStatus("Загрузка фото…");
     const maxSide=3072;
-    const bmp=await createImageBitmap(file);
+    const bmp=await _createBitmapFromFile(file);
     let w=bmp.width,h=bmp.height;
     let sc=1,longSide=Math.max(w,h);
     if(longSide>maxSide) sc=maxSide/longSide;
     const nw=Math.round(w*sc),nh=Math.round(h*sc);
     const off=document.createElement("canvas");off.width=nw;off.height=nh;
     off.getContext("2d").drawImage(bmp,0,0,nw,nh);
-    const resized=await createImageBitmap(off);
+    let resized=null;
+    try{
+      resized=await createImageBitmap(off, { imageOrientation: "none", premultiplyAlpha: "none", colorSpaceConversion: "default" });
+    }catch(_){
+      resized=await createImageBitmap(off);
+    }
 
     pushHistory();
     state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;

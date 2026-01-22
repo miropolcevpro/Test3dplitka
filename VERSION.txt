@@ -1,1 +1,1 @@
-v2_webgl_compositor_iter2_fix_photo_orientation_v1
+v2_webgl_compositor_iter2_fix_photo_orientation_v2
