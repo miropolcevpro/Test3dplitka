@@ -577,16 +577,13 @@ window.PhotoPaveCompositor = (function(){
   }
 
   function _normalizeQuad(q){
-    // Preserve semantic vertex order: [nearL, nearR, farR, farL].
-    // Do NOT reorder based on signed area because our screen/image coordinate system
-    // uses +Y downward, which inverts winding compared to the mathematical convention.
-    // Reordering here can swap near/far and flip the projected plane direction.
     if(!q || q.length!==4) return null;
-    const area = _quadSignedArea(q);
+    const area=_quadSignedArea(q);
+    // In screen/image space Y grows downward, the signed area sign can be inverted vs math coords.
+    // Reordering points here breaks semantic near/far mapping. We only validate non-degeneracy.
     if(!isFinite(area) || Math.abs(area) < 1e-3) return null;
     return q;
   }
-
 
   
 function _inferQuadFromContour(contour, params, w, h){
@@ -832,7 +829,16 @@ const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, w, h
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    const H = _homographyUnitSquareToQuad(qn);
+    // Ensure near edge is the one closer to the bottom of the image (larger Y in pixel coords).
+    // qn order is expected: nearL, nearR, farR, farL.
+    let qfix = qn;
+    const nearY = (qn[0].y + qn[1].y) * 0.5;
+    const farY  = (qn[2].y + qn[3].y) * 0.5;
+    if(isFinite(nearY) && isFinite(farY) && farY > nearY){
+      // swap near <-> far while preserving left/right
+      qfix = [qn[3], qn[2], qn[1], qn[0]];
+    }
+    const H = _homographyUnitSquareToQuad(qfix);
     if(H){
       invH = _invert3x3(H);
     }
@@ -930,7 +936,16 @@ const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, outW
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    const H = _homographyUnitSquareToQuad(qn);
+    // Ensure near edge is the one closer to the bottom of the image (larger Y in pixel coords).
+    // qn order is expected: nearL, nearR, farR, farL.
+    let qfix = qn;
+    const nearY = (qn[0].y + qn[1].y) * 0.5;
+    const farY  = (qn[2].y + qn[3].y) * 0.5;
+    if(isFinite(nearY) && isFinite(farY) && farY > nearY){
+      // swap near <-> far while preserving left/right
+      qfix = [qn[3], qn[2], qn[1], qn[0]];
+    }
+    const H = _homographyUnitSquareToQuad(qfix);
     if(H){
       invH = _invert3x3(H);
     }
