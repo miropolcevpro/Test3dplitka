@@ -1,1 +1,1 @@
-mvp-iter2.2.10-depth-camera-orient
+mvp-iter2.3.0-fix-quad-normalize
