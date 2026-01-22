@@ -538,10 +538,24 @@ function distCanvasFromImg(a,b){
       lctx.globalCompositeOperation="source-over";
 
       if(usePerspective){
-        // Project tiled pattern through homography (AR-like "floor going into distance")
-        const patternCanvas = buildPatternCanvas(img);
-        const matTmp = {params: mat.params, _texW: img.width, _texH: img.height};
-        drawProjectedTiledPlane(lctx, H, matTmp, patternCanvas, gridN);
+        // WebGL plane render (Fix10): projective mapping on GPU for stronger "floor" feel.
+        // Falls back to CPU grid projection if WebGL is unavailable.
+        let planeCanvas = null;
+        try{
+          if(typeof WebGLPlane!=="undefined" && WebGLPlane && H){
+            planeCanvas = WebGLPlane.render(img, H, mat.params, canvas.width, canvas.height);
+          }
+        }catch(e){ console.warn("[WebGLPlane] render failed:", e); planeCanvas=null; }
+        if(planeCanvas){
+          lctx.globalCompositeOperation="source-over";
+          lctx.globalAlpha=1;
+          lctx.drawImage(planeCanvas,0,0);
+        }else{
+          // CPU fallback
+          const patternCanvas = buildPatternCanvas(img);
+          const matTmp = {params: mat.params, _texW: img.width, _texH: img.height};
+          drawProjectedTiledPlane(lctx, H, matTmp, patternCanvas, gridN);
+        }
       }else{
         // Fallback: simple 2D tiling (no perspective plane)
         const pattern=lctx.createPattern(img,"repeat");
