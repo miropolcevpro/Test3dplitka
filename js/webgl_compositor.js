@@ -580,6 +580,31 @@ window.PhotoPaveCompositor = (function(){
   }
 
   
+
+  function _orientQuadDepthByCamera(q, W, H){
+    // Choose near/far orientation so that the near edge is closer to the viewer.
+    // We approximate viewer/camera position as bottom-center of the image.
+    // q order is assumed: nearL, nearR, farR, farL (may be inverted in depth).
+    const cam = {x: W*0.5, y: H*0.98};
+    const distToSeg = (p,a,b)=>{
+      const vx=b.x-a.x, vy=b.y-a.y;
+      const wx=p.x-a.x, wy=p.y-a.y;
+      const vv=vx*vx+vy*vy;
+      if(vv < 1e-9) return Math.hypot(wx,wy);
+      let t = (wx*vx+wy*vy)/vv;
+      t = Math.max(0, Math.min(1, t));
+      const px=a.x+t*vx, py=a.y+t*vy;
+      return Math.hypot(p.x-px, p.y-py);
+    };
+    const dNear = distToSeg(cam, q[0], q[1]);
+    const dFar  = distToSeg(cam, q[3], q[2]); // farL->farR
+    // Only swap if confidently inverted.
+    if(isFinite(dNear) && isFinite(dFar) && (dFar + 1e-3) < dNear){
+      return [q[3], q[2], q[1], q[0]];
+    }
+    return q;
+  }
+
 function _inferQuadFromContour(contour, params, w, h){
   // Robust quad inference for "floor plane" from an arbitrary closed contour.
   // Goal: produce a stable quad even while the user drags points.
@@ -823,15 +848,9 @@ const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, w, h
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    // Ensure near edge is the one closer to the bottom of the image (larger Y in pixel coords).
+    // Depth orientation via camera heuristic (bottom-center).
     // qn order is expected: nearL, nearR, farR, farL.
-    let qfix = qn;
-    const nearY = (qn[0].y + qn[1].y) * 0.5;
-    const farY  = (qn[2].y + qn[3].y) * 0.5;
-    if(isFinite(nearY) && isFinite(farY) && farY > nearY){
-      // swap near <-> far while preserving left/right
-      qfix = [qn[3], qn[2], qn[1], qn[0]];
-    }
+    const qfix = _orientQuadDepthByCamera(qn, w, h);
     const H = _homographyUnitSquareToQuad(qfix);
     if(H){
       invH = _invert3x3(H);
@@ -932,13 +951,7 @@ if(quad){
   if(qn){
     // Ensure near edge is the one closer to the bottom of the image (larger Y in pixel coords).
     // qn order is expected: nearL, nearR, farR, farL.
-    let qfix = qn;
-    const nearY = (qn[0].y + qn[1].y) * 0.5;
-    const farY  = (qn[2].y + qn[3].y) * 0.5;
-    if(isFinite(nearY) && isFinite(farY) && farY > nearY){
-      // swap near <-> far while preserving left/right
-      qfix = [qn[3], qn[2], qn[1], qn[0]];
-    }
+    const qfix = _orientQuadDepthByCamera(qn, outW, outH);
     const H = _homographyUnitSquareToQuad(qfix);
     if(H){
       invH = _invert3x3(H);
