@@ -183,6 +183,7 @@ window.PhotoPaveCompositor = (function(){
 
   uniform vec2 uResolution; // render target size in pixels
   uniform mat3 uInvH;       // image(px)->plane(uv)
+  uniform int uVFlip;       // 1 = flip plane V axis (depth direction)
   uniform float uScale;     // tile scale
   uniform float uRotation;  // degrees
   uniform float uOpacity;   // 0..1
@@ -228,7 +229,6 @@ window.PhotoPaveCompositor = (function(){
 
     // Projective mapping: image(px) -> plane(uv)
     vec3 q = uInvH * vec3(fragPx, 1.0);
-    vec2 uv = q.xy / q.z;
 
     // If homography is near-singular, keep previous content for this pixel.
     if(abs(q.z) < 1e-6){
@@ -236,11 +236,12 @@ window.PhotoPaveCompositor = (function(){
       return;
     }
 
-    // Ensure a consistent "near → far" direction for the projected plane.
-    // Without this, the mapping can be vertically inverted, making the perspective
-    // feel like it recedes *towards* the user. Flipping the plane's V coordinate
-    // fixes that while preserving the rest of the pipeline.
-    uv.y = 1.0 - uv.y;
+    vec2 uv = q.xy / q.z;
+
+    // Depth direction control: for some quads/homographies the plane V axis
+    // can be inverted ("horizon" points toward the viewer). We detect this on
+    // CPU per-zone and pass uVFlip.
+    if(uVFlip==1){ uv.y = 1.0 - uv.y; }
 
     // Tile transform
     float rot = radians(uRotation);
@@ -741,7 +742,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, vFlip){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -778,8 +779,33 @@ function _blendModeId(blend){
     const invH = _mat3FromArray9(invHArr9);
     gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);
 
+    gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), vFlip ? 1 : 0);
+
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindVertexArray(null);
+  }
+
+  function _applyInvH(invH, px, py){
+    // invH is row-major [a b c d e f g h i]
+    const a=invH[0], b=invH[1], c=invH[2];
+    const d=invH[3], e=invH[4], f=invH[5];
+    const g=invH[6], h=invH[7], i=invH[8];
+    const qx = a*px + b*py + c;
+    const qy = d*px + e*py + f;
+    const qz = g*px + h*py + i;
+    if(!isFinite(qz) || Math.abs(qz) < 1e-9) return null;
+    return {x: qx/qz, y: qy/qz};
+  }
+
+  function _computeVFlip(invH, w, h){
+    // Determine whether plane V axis points toward the viewer.
+    // We compare the mapped V at a near sample (bottom-center) and a far sample (top-center).
+    // Desired: vNear < vFar. If vNear > vFar, flip.
+    const pNear = _applyInvH(invH, w*0.5, h*0.92);
+    const pFar  = _applyInvH(invH, w*0.5, h*0.08);
+    if(!pNear || !pFar) return 0;
+    if(!isFinite(pNear.y) || !isFinite(pFar.y)) return 0;
+    return (pNear.y > pFar.y) ? 1 : 0;
   }
 
   async function render(state){
@@ -848,7 +874,8 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-_renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);
+const vFlip = _computeVFlip(invH, w, h);
+_renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, vFlip);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -947,7 +974,8 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);
+      const vFlip = _computeVFlip(invH, outW, outH);
+      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, vFlip);
       const tmp = src; src = dst; dst = tmp;
     }
 
