@@ -815,14 +815,10 @@ function _blendModeId(blend){
       const maskEntry = _getMaskTextures(key, zone, w, h, sx, sy);
 
       
-// Infer floor quad and homography
-// IMPORTANT: never "drop" the zone if inference becomes unstable while the user drags points.
-// We keep the last good inverse-homography per zone and reuse it if the current contour is temporarily degenerate.
+// Infer floor quad and homography (stable while dragging)
+// We keep the last good inverse-homography per zone and reuse it if the current contour becomes temporarily degenerate.
 let invH = null;
-
-
-let invH = null;
-const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, outW, outH);
+const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, w, h);
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
@@ -837,10 +833,13 @@ if(!invH){
   if(last) invH = last;
 }
 if(!invH){
-  invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1];
+  invH = [1/Math.max(1,w),0,0, 0,1/Math.max(1,h),0, 0,0,1];
+}else{
+  lastGoodInvH.set(zone.id, invH);
 }
-_renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);(src.tex, dst, zone, tileTex, maskEntry, invH);
-      const tmp = src; src = dst; dst = tmp;
+
+_renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);
+const tmp = src; src = dst; dst = tmp;
     }
 
     // Present to screen
