@@ -68,7 +68,7 @@ const WebGLPlane = (() => {
         vec2 tiled = uv * uTileCount;
 
         // Repeat
-        vec2 tuv = fract(tiled);
+        vec2 tuv = fract(tiled + vec2(1e-4));
 
         vec4 col = texture2D(uTex, tuv);
 
@@ -157,6 +157,7 @@ const WebGLPlane = (() => {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
 
     try{
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
@@ -165,21 +166,41 @@ const WebGLPlane = (() => {
       return false;
     }
 
-    // WebGL2 supports NPOT mipmaps in practice; if WebGL1, be conservative.
-    const isWebGL2 = (typeof WebGL2RenderingContext !== "undefined") && (gl instanceof WebGL2RenderingContext);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    // Texture parameters: keep WebGL1 NPOT-safe.
+// We do tiling in shader via fract(), so we can always clamp in sampler.
+const isWebGL2 = (typeof WebGL2RenderingContext !== "undefined") && (gl instanceof WebGL2RenderingContext);
 
-    if(isWebGL2){
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.generateMipmap(gl.TEXTURE_2D);
-    }else{
-      // WebGL1: to avoid NPOT restrictions, use linear without mipmaps.
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    }
-    return true;
+const w = img.naturalWidth || img.videoWidth || img.width || 0;
+const h = img.naturalHeight || img.videoHeight || img.height || 0;
+const isPOT = (v) => v && ((v & (v - 1)) === 0);
+const pot = isPOT(w) && isPOT(h);
+
+// Always clamp; repeat is handled in shader.
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+if(isWebGL2){
+  // WebGL2 allows mipmaps for NPOT, and improves distant quality.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.generateMipmap(gl.TEXTURE_2D);
+}else{
+  // WebGL1: keep it NPOT-safe (no mipmaps unless POT; but we keep it simple).
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+}
+
+// Optional anisotropic filtering for additional sharpness at glancing angles.
+const anisoExt = gl.getExtension('EXT_texture_filter_anisotropic')
+  || gl.getExtension('MOZ_EXT_texture_filter_anisotropic')
+  || gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
+if(anisoExt){
+  const max = gl.getParameter(anisoExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 0;
+  if(max > 0){
+    gl.texParameterf(gl.TEXTURE_2D, anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, max));
+  }
+}
+return true;
   }
 
   function invertHomography(H){
