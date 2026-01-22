@@ -577,12 +577,16 @@ window.PhotoPaveCompositor = (function(){
   }
 
   function _normalizeQuad(q){
+    // Preserve semantic vertex order: [nearL, nearR, farR, farL].
+    // Do NOT reorder based on signed area because our screen/image coordinate system
+    // uses +Y downward, which inverts winding compared to the mathematical convention.
+    // Reordering here can swap near/far and flip the projected plane direction.
     if(!q || q.length!==4) return null;
-    const area=_quadSignedArea(q);
+    const area = _quadSignedArea(q);
     if(!isFinite(area) || Math.abs(area) < 1e-3) return null;
-    if(area < 0) return [q[0],q[3],q[2],q[1]];
     return q;
   }
+
 
   
 function _inferQuadFromContour(contour, params, w, h){
