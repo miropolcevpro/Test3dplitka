@@ -192,6 +192,7 @@ window.PhotoPaveCompositor = (function(){
   uniform float uPhotoFit;  // 0..1
   uniform float uFarFade;   // 0..1
   uniform int uVFlip;       // 0/1: flip plane V (depth)
+  uniform int uOpaqueFill; // 0/1: force dense fill (reduce "transparency")
 
   out vec4 outColor;
 
@@ -216,12 +217,24 @@ window.PhotoPaveCompositor = (function(){
     float m = texture(uMask, uvSrc).r;
     float mb = texture(uMaskBlur, uvSrc).r;
 
-    // Feathered alpha from blurred mask
-    float alpha = clamp(mb, 0.0, 1.0);
+    // Feathered alpha from blurred mask (edge softness)
+    float alphaEdge = clamp(mb, 0.0, 1.0);
     // Slightly tighten edge to avoid bleeding
-    alpha = smoothstep(0.18, 0.82, alpha);
-    alpha = mix(m, alpha, clamp(uFeather, 0.0, 1.0));
-    alpha *= clamp(uOpacity, 0.0, 1.0);
+    alphaEdge = smoothstep(0.18, 0.82, alphaEdge);
+    alphaEdge = mix(m, alphaEdge, clamp(uFeather, 0.0, 1.0));
+
+    float op = clamp(uOpacity, 0.0, 1.0);
+    float alpha = alphaEdge * op;
+
+    // Optional "dense fill" mode: make the interior visually solid at high opacity
+    // while keeping the feathered edge.
+    if(uOpaqueFill == 1){
+      // interiorMask ~= 0 on edge, ~= 1 inside
+      float interiorMask = smoothstep(0.90, 0.995, mb);
+      float targetAlpha = mix(alphaEdge, 1.0, interiorMask);
+      alpha = targetAlpha * op;
+    }
+
     if(alpha <= 0.0005){
       outColor = vec4(toSRGB(prevLin), 1.0);
       return;
@@ -234,7 +247,7 @@ window.PhotoPaveCompositor = (function(){
       outColor = prev;
       return;
     }
-    float zFade = smoothstep(0.002, 0.02, z);
+    float zFade = smoothstep(0.0008, 0.006, z);
     alpha *= zFade;
     if(alpha <= 0.0005){ outColor = prev; return; }
     vec2 uv = q.xy / z;
@@ -818,18 +831,20 @@ function _blendModeId(blend){
 
     // Params
     const params = zone.material?.params || {};
+    const opaqueFill = !!params.opaqueFill;
     // Negative perspective value is used as a user-facing "invert depth" control.
     const perspRaw = Number(params.perspective ?? 0.75);
     gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), (perspRaw < 0 ? 1 : 0));
+    gl.uniform1i(gl.getUniformLocation(progZone,'uOpaqueFill'), (opaqueFill ? 1 : 0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), Math.max(0.0001, params.scale ?? 1.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uRotation'), (params.rotation ?? 0.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uOpacity'), clamp(params.opacity ?? 1.0, 0, 1));
-    gl.uniform1i(gl.getUniformLocation(progZone,'uBlendMode'), _blendModeId(params.blendMode));
+    gl.uniform1i(gl.getUniformLocation(progZone,'uBlendMode'), (opaqueFill ? 0 : _blendModeId(params.blendMode)));
 
     // Quality defaults tuned for "pro" look without user knobs
     gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
-    gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), 1.0);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
 
     const invH = _mat3FromArray9(invHArr9);

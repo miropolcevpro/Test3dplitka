@@ -147,7 +147,9 @@ async function handlePhotoFile(file){
     el("rotRange").value=z.material.params.rotation??0;
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
     el("opacityRange").value=z.material.params.opacity??1.0;
-    el("blendSelect").value=z.material.params.blendMode??"source-over";
+    const oc=el("opaqueFillChk"); if(oc) oc.checked=!!(z.material.params.opaqueFill);
+    const bs=el("blendSelect"); if(bs && oc){ bs.disabled=oc.checked; if(oc.checked) bs.value="source-over"; }
+    const bs2=el("blendSelect"); if(bs2){ bs2.value = (oc && oc.checked) ? "source-over" : (z.material.params.blendMode??"source-over"); }
     el("perspectiveRange").value=z.material.params.perspective??0.75;
     el("horizonRange").value=z.material.params.horizon??0.0;
   }
@@ -265,7 +267,23 @@ async function handlePhotoFile(file){
     el("scaleRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.scale=parseFloat(el("scaleRange").value);ED.render();});
     el("rotRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.rotation=parseFloat(el("rotRange").value);ED.render();});
     el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.opacity=parseFloat(el("opacityRange").value);ED.render();});
-    el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("blendSelect").value;ED.render();});
+    const oc=el("opaqueFillChk");
+    if(oc){
+      oc.addEventListener("change",()=>{
+        const z=S.getActiveZone(); if(!z) return;
+        z.material.params.opaqueFill=!!oc.checked;
+        const bs=el("blendSelect");
+        if(bs){
+          bs.disabled=oc.checked;
+          if(oc.checked){
+            bs.value="source-over";
+            z.material.params.blendMode="source-over";
+          }
+        }
+        ED.render();
+      });
+    }
+el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("blendSelect").value;ED.render();});
 
     
     el("perspectiveRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.perspective=parseFloat(el("perspectiveRange").value);ED.render();});
