@@ -235,8 +235,7 @@ window.PhotoPaveCompositor = (function(){
       outColor = vec4(toSRGB(prevLin), 1.0);
       return;
     }
-
-    // Tile transform
+// Tile transform
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
@@ -571,10 +570,12 @@ window.PhotoPaveCompositor = (function(){
   }
 
   function _normalizeQuad(q){
+    // IMPORTANT: In our pipeline the quad order encodes semantics: nearL, nearR, farR, farL.
+    // Do NOT reorder points based on signed area; in screen coords (Y grows downward) the sign is inverted
+    // and reordering would flip near/far, causing the texture to look "upside down" in depth.
     if(!q || q.length!==4) return null;
     const area=_quadSignedArea(q);
     if(!isFinite(area) || Math.abs(area) < 1e-3) return null;
-    if(area > 0) return [q[0],q[3],q[2],q[1]];
     return q;
   }
 
