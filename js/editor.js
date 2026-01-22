@@ -70,8 +70,19 @@ window.PhotoPaveEditor=(function(){
       const cssH = Math.floor(photoH * sc);
 
       // Render buffer size (WebGL + overlay). We keep it bounded for stability.
+      // Use compositor WebGL limits when available to avoid any aspect distortion
+      // from downstream clamping.
       const longSide = Math.max(photoW, photoH);
-      const targetLong = Math.min(longSide, 2048);
+      let limLong = 2048;
+      if(compositor && typeof compositor.getLimits === 'function'){
+        try{
+          const lim = compositor.getLimits();
+          const glLim = Math.min(lim.maxTexSize||2048, lim.maxRbSize||2048);
+          // Small safety margin for driver quirks.
+          limLong = Math.max(256, Math.min(limLong, glLim - 64));
+        }catch(_){ /* ignore */ }
+      }
+      const targetLong = Math.min(longSide, limLong);
       const rsc = Math.max(0.15, Math.min(1.0, targetLong / Math.max(1, longSide)));
       const rw = Math.max(1, Math.round(photoW * rsc));
       const rh = Math.max(1, Math.round(photoH * rsc));

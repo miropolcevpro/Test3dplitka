@@ -154,7 +154,10 @@ window.PhotoPaveCompositor = (function(){
   uniform sampler2D uTex;
   out vec4 outColor;
   void main(){
-    outColor = texture(uTex, vUv);
+    // HTML image sources are top-left origin. We keep UNPACK_FLIP_Y_WEBGL disabled
+    // and flip Y here for uploaded textures.
+    vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
+    outColor = texture(uTex, uv);
   }`;
 
   const FS_ZONE = `#version 300 es
@@ -184,17 +187,22 @@ window.PhotoPaveCompositor = (function(){
   vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
 
   void main(){
-    vec2 fragPx = vUv * uResolution;
+    // Coordinate conventions:
+    // - vUv: bottom-left origin (standard fullscreen quad)
+    // - uploaded HTML images/canvases: top-left origin
+    // - render targets (FBO textures): bottom-left origin
+    vec2 uvSrc = vec2(vUv.x, 1.0 - vUv.y);
+    vec2 fragPx = uvSrc * uResolution;
 
     vec4 prev = texture(uPrev, vUv);
     vec3 prevLin = toLinear(prev.rgb);
 
-    vec3 photo = texture(uPhoto, vUv).rgb;
+    vec3 photo = texture(uPhoto, uvSrc).rgb;
     vec3 photoLin = toLinear(photo);
     float lum = dot(photoLin, vec3(0.2126, 0.7152, 0.0722));
 
-    float m = texture(uMask, vUv).r;
-    float mb = texture(uMaskBlur, vUv).r;
+    float m = texture(uMask, uvSrc).r;
+    float mb = texture(uMaskBlur, uvSrc).r;
 
     // Feathered alpha from blurred mask
     float alpha = clamp(mb, 0.0, 1.0);
@@ -211,8 +219,10 @@ window.PhotoPaveCompositor = (function(){
     vec3 q = uInvH * vec3(fragPx, 1.0);
     float w = max(abs(q.z), 1e-6);
     vec2 uv = q.xy / q.z;
-    // Avoid invalid projection (near-singular homography)
-    if(abs(q.z) < 1e-5){
+
+    // Reject outside unit square aggressively to avoid sampling garbage
+    // (still allow slight overscan for feather)
+    if(uv.x < -0.25 || uv.x > 1.25 || uv.y < -0.25 || uv.y > 1.25){
       outColor = vec4(toSRGB(prevLin), 1.0);
       return;
     }
@@ -222,6 +232,8 @@ window.PhotoPaveCompositor = (function(){
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
     vec2 suv = fract(tuv);
+    // Flip Y for uploaded tile texture (top-left origin) while preserving repeat.
+    suv.y = 1.0 - suv.y;
     vec3 tile = texture(uTile, suv).rgb;
     vec3 tileLin = toLinear(tile);
 
@@ -297,6 +309,8 @@ window.PhotoPaveCompositor = (function(){
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.BLEND);
+    // Keep upload orientation as-is (top-left). We handle Y conversion in shaders
+    // to avoid double-flip issues across browsers and ImageBitmap sources.
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.clearColor(0,0,0,1);
   }
@@ -337,9 +351,15 @@ window.PhotoPaveCompositor = (function(){
   function resize(renderW, renderH){
     if(!gl) return;
     // Clamp to limits to avoid black outputs on mobile GPUs.
+    // IMPORTANT: preserve aspect ratio to avoid visual stretching.
     const lim = Math.max(256, Math.min(maxTexSize, maxRbSize));
-    const w = Math.max(1, Math.min(renderW|0, lim));
-    const h = Math.max(1, Math.min(renderH|0, lim));
+    let w = Math.max(1, renderW|0);
+    let h = Math.max(1, renderH|0);
+    if(w > lim || h > lim){
+      const sc = Math.min(lim / w, lim / h);
+      w = Math.max(1, Math.floor(w * sc));
+      h = Math.max(1, Math.floor(h * sc));
+    }
     canvas.width = w;
     canvas.height = h;
     _ensureTargets(w,h);
@@ -550,39 +570,12 @@ window.PhotoPaveCompositor = (function(){
   }
 
   function _inferQuadFromContour(contour, params, w, h){
-    // Robust quad inference for floor projection.
-    // Input contour: image-space points (photo px, y grows downward).
-    // Output: quad in render-pixel coords, order: nearL, nearR, farR, farL.
+    // Minimal port of the existing editor heuristic.
+    // Input contour: image-space points (in photo px).
+    // Output: quad in render-pixel coords, order: nearL, nearR, farR, farL
     if(!contour || contour.length < 4) return null;
 
-    const sx = w / Math.max(1, photoW);
-    const sy = h / Math.max(1, photoH);
-
-    // Fast path: if the user drew exactly 4 points, treat it as the intended quad.
-    if(contour.length === 4){
-      const q = contour.map(p=>({x: p.x*sx, y: p.y*sy}));
-
-      // Order points by angle around centroid to get a simple CCW polygon.
-      const cx = (q[0].x+q[1].x+q[2].x+q[3].x)/4;
-      const cy = (q[0].y+q[1].y+q[2].y+q[3].y)/4;
-      q.sort((a,b)=>Math.atan2(a.y-cy, a.x-cx) - Math.atan2(b.y-cy, b.x-cx));
-
-      // Determine near edge as the two points with the largest Y (closest in image coords).
-      const byY = q.slice().sort((a,b)=>b.y-a.y);
-      const nearCand = byY.slice(0,2);
-      const farCand  = byY.slice(2,4);
-      nearCand.sort((a,b)=>a.x-b.x);
-      farCand.sort((a,b)=>a.x-b.x);
-      const nearL = nearCand[0], nearR = nearCand[1];
-      const farL  = farCand[0],  farR  = farCand[1];
-
-      if(nearL.y > farL.y && nearR.y > farR.y){
-        return [nearL, nearR, farR, farL];
-      }
-      // If degenerate/self-crossing, fall through to hull heuristic.
-    }
-
-    // Convex hull (monotonic chain) for stability on concave contours
+    // Convex hull (monotonic chain)
     const pts = contour.map(p=>({x:p.x, y:p.y}));
     pts.sort((a,b)=> (a.x===b.x ? a.y-b.y : a.x-b.x));
     const cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
@@ -601,44 +594,35 @@ window.PhotoPaveCompositor = (function(){
     const hull = lower.concat(upper);
     if(hull.length < 4) return null;
 
-    // Pick near and far endpoints robustly: take several topmost/bottommost points by Y.
-    const sortedDesc = hull.slice().sort((a,b)=>b.y-a.y);
-    const sortedAsc  = hull.slice().sort((a,b)=>a.y-b.y);
-    const takeN = Math.min(6, hull.length);
-    const nearPool = sortedDesc.slice(0, takeN);
-    const farPool  = sortedAsc.slice(0, takeN);
+    // Determine near/far bands using y
+    const ys = hull.map(p=>p.y);
+    const yMin = Math.min(...ys);
+    const yMax = Math.max(...ys);
+    const band = Math.max(6, (yMax-yMin) * 0.22);
+    const near = hull.filter(p=>p.y >= yMax - band);
+    const far  = hull.filter(p=>p.y <= yMin + band);
+    if(near.length<2 || far.length<2) return null;
+    near.sort((a,b)=>a.x-b.x);
+    far.sort((a,b)=>a.x-b.x);
+    let nearL=near[0], nearR=near[near.length-1];
+    let farL=far[0], farR=far[far.length-1];
 
-    const pickLR = (pool)=>{
-      let left=pool[0], right=pool[0];
-      for(const p of pool){
-        if(p.x < left.x) left = p;
-        if(p.x > right.x) right = p;
-      }
-      return [left, right];
-    };
-
-    let [nearL, nearR] = pickLR(nearPool);
-    let [farL,  farR]  = pickLR(farPool);
-
-    if(!(nearL.y > farL.y && nearR.y > farR.y)) return null;
-
-    // User controls: perspective/horizon adjust the far edge.
+    // User controls
     const persp = clamp(params?.perspective ?? 0.75, 0, 1);
     const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
     const cx = (nearL.x + nearR.x) * 0.5;
     const mild = 0.25 + 0.75*persp;
-
     farL = { x: nearL.x + (farL.x-nearL.x)*mild, y: nearL.y + (farL.y-nearL.y)*mild };
     farR = { x: nearR.x + (farR.x-nearR.x)*mild, y: nearR.y + (farR.y-nearR.y)*mild };
-
     const dy = horizon * 0.22 * (photoH||h||1);
     farL.y += dy; farR.y += dy;
-
     const conv = Math.max(0, Math.min(0.35, (-horizon)*0.25));
     farL.x = farL.x + (cx - farL.x) * conv;
     farR.x = farR.x + (cx - farR.x) * conv;
 
-    // Map to render pixels
+    // Map to render pixels (scale from photo px to render px)
+    const sx = w / Math.max(1, photoW);
+    const sy = h / Math.max(1, photoH);
     const quad = [
       {x: nearL.x*sx, y: nearL.y*sy},
       {x: nearR.x*sx, y: nearR.y*sy},
@@ -647,7 +631,6 @@ window.PhotoPaveCompositor = (function(){
     ];
     return quad;
   }
-
 
   function _blendModeId(blend){
     const s = String(blend||'').toLowerCase();
