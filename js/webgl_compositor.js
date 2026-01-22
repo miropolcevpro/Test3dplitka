@@ -35,6 +35,8 @@ window.PhotoPaveCompositor = (function(){
 
   const tileCache = new Map(); // url -> {tex,w,h,ts}
   const maskCache = new Map(); // key -> {maskTex, blurTex, w,h, ts}
+  const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
+
 
   // Small reusable 2D canvases for mask raster
   const _maskCanvas = document.createElement('canvas');
@@ -226,12 +228,10 @@ window.PhotoPaveCompositor = (function(){
 
     // Projective mapping: image(px) -> plane(uv)
     vec3 q = uInvH * vec3(fragPx, 1.0);
-    float w = max(abs(q.z), 1e-6);
     vec2 uv = q.xy / q.z;
 
-    // Reject outside unit square aggressively to avoid sampling garbage
-    // (still allow slight overscan for feather)
-    if(uv.x < -0.25 || uv.x > 1.25 || uv.y < -0.25 || uv.y > 1.25){
+    // If homography is near-singular, keep previous content for this pixel.
+    if(abs(q.z) < 1e-6){
       outColor = vec4(toSRGB(prevLin), 1.0);
       return;
     }
@@ -578,70 +578,137 @@ window.PhotoPaveCompositor = (function(){
     return q;
   }
 
-  function _inferQuadFromContour(contour, params, w, h){
-    // Minimal port of the existing editor heuristic.
-    // Input contour: image-space points (in photo px).
-    // Output: quad in render-pixel coords, order: nearL, nearR, farR, farL
-    if(!contour || contour.length < 4) return null;
+  
+function _inferQuadFromContour(contour, params, w, h){
+  // Robust quad inference for "floor plane" from an arbitrary closed contour.
+  // Goal: produce a stable quad even while the user drags points.
+  // Strategy:
+  // 1) Build convex hull.
+  // 2) Intersect hull with two horizontal scanlines (yNear/yFar) to obtain left/right points.
+  // 3) Apply gentle user controls (perspective + horizon) without changing topology.
+  // Output order: nearL, nearR, farR, farL in render-pixel coords.
 
-    // Convex hull (monotonic chain)
-    const pts = contour.map(p=>({x:p.x, y:p.y}));
-    pts.sort((a,b)=> (a.x===b.x ? a.y-b.y : a.x-b.x));
-    const cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
-    const lower=[];
-    for(const p of pts){
-      while(lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
-      lower.push(p);
-    }
-    const upper=[];
-    for(let i=pts.length-1;i>=0;i--){
-      const p=pts[i];
-      while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
-      upper.push(p);
-    }
-    upper.pop(); lower.pop();
-    const hull = lower.concat(upper);
-    if(hull.length < 4) return null;
+  if(!contour || contour.length < 3) return null;
 
-    // Determine near/far bands using y
-    const ys = hull.map(p=>p.y);
-    const yMin = Math.min(...ys);
-    const yMax = Math.max(...ys);
-    const band = Math.max(6, (yMax-yMin) * 0.22);
-    const near = hull.filter(p=>p.y >= yMax - band);
-    const far  = hull.filter(p=>p.y <= yMin + band);
-    if(near.length<2 || far.length<2) return null;
-    near.sort((a,b)=>a.x-b.x);
-    far.sort((a,b)=>a.x-b.x);
-    let nearL=near[0], nearR=near[near.length-1];
-    let farL=far[0], farR=far[far.length-1];
+  // Convex hull (monotonic chain)
+  const pts = contour.map(p=>({x:+p.x, y:+p.y})).filter(p=>isFinite(p.x)&&isFinite(p.y));
+  if(pts.length < 3) return null;
+  pts.sort((a,b)=> (a.x===b.x ? a.y-b.y : a.x-b.x));
+  const cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
+  const lower=[];
+  for(const p of pts){
+    while(lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper=[];
+  for(let i=pts.length-1;i>=0;i--){
+    const p=pts[i];
+    while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  const hull = lower.concat(upper);
+  if(hull.length < 3) return null;
 
-    // User controls
-    const persp = clamp(params?.perspective ?? 0.75, 0, 1);
-    const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
-    const cx = (nearL.x + nearR.x) * 0.5;
-    const mild = 0.25 + 0.75*persp;
-    farL = { x: nearL.x + (farL.x-nearL.x)*mild, y: nearL.y + (farL.y-nearL.y)*mild };
-    farR = { x: nearR.x + (farR.x-nearR.x)*mild, y: nearR.y + (farR.y-nearR.y)*mild };
-    const dy = horizon * 0.22 * (photoH||h||1);
-    farL.y += dy; farR.y += dy;
-    const conv = Math.max(0, Math.min(0.35, (-horizon)*0.25));
-    farL.x = farL.x + (cx - farL.x) * conv;
-    farR.x = farR.x + (cx - farR.x) * conv;
+  // Close hull for edge iteration
+  const poly = hull.concat([hull[0]]);
 
-    // Map to render pixels (scale from photo px to render px)
-    const sx = w / Math.max(1, photoW);
-    const sy = h / Math.max(1, photoH);
-    const quad = [
-      {x: nearL.x*sx, y: nearL.y*sy},
-      {x: nearR.x*sx, y: nearR.y*sy},
-      {x: farR.x*sx,  y: farR.y*sy},
-      {x: farL.x*sx,  y: farL.y*sy}
-    ];
-    return quad;
+  const ys = hull.map(p=>p.y);
+  const yMin = Math.min(...ys);
+  const yMax = Math.max(...ys);
+  const dy = yMax - yMin;
+  if(!isFinite(dy) || dy < 2) return null;
+
+  // Scanlines slightly inside the hull to avoid vertex-only intersections
+  const inset = Math.max(4, dy * 0.12);
+  let yNear = yMax - inset;
+  let yFar  = yMin + inset;
+  if(yNear <= yFar + 1) {
+    yNear = yMax - Math.max(2, dy*0.25);
+    yFar  = yMin + Math.max(2, dy*0.25);
+    if(yNear <= yFar + 1) return null;
   }
 
-  function _blendModeId(blend){
+  function xRangeAtY(y){
+    const xs = [];
+    for(let i=0;i<poly.length-1;i++){
+      const a=poly[i], b=poly[i+1];
+      // Skip horizontal edges
+      if(Math.abs(b.y - a.y) < 1e-9) continue;
+      const y0=a.y, y1=b.y;
+      const ymin=Math.min(y0,y1), ymax=Math.max(y0,y1);
+      // Strict-ish containment to reduce double-hits at vertices
+      if(y < ymin || y > ymax) continue;
+      const t = (y - a.y) / (b.y - a.y);
+      if(t < 0 || t > 1) continue;
+      const x = a.x + t*(b.x - a.x);
+      if(isFinite(x)) xs.push(x);
+    }
+    if(xs.length < 2) return null;
+    xs.sort((p,q)=>p-q);
+    return {min: xs[0], max: xs[xs.length-1]};
+  }
+
+  let rNear = xRangeAtY(yNear);
+  let rFar  = xRangeAtY(yFar);
+
+  // If we miss due to numeric edge cases, relax inset
+  if(!rNear || !rFar){
+    const inset2 = Math.max(2, dy * 0.06);
+    yNear = yMax - inset2;
+    yFar  = yMin + inset2;
+    rNear = xRangeAtY(yNear);
+    rFar  = xRangeAtY(yFar);
+    if(!rNear || !rFar) return null;
+  }
+
+  // Construct near/far segment endpoints in image-space
+  let nearL = {x: rNear.min, y: yNear};
+  let nearR = {x: rNear.max, y: yNear};
+  let farL  = {x: rFar.min,  y: yFar};
+  let farR  = {x: rFar.max,  y: yFar};
+
+  // Guard against super-thin quads
+  if(Math.abs(nearR.x - nearL.x) < 2 || Math.abs(farR.x - farL.x) < 2) return null;
+
+  // User controls: keep them gentle and monotonic
+  const persp = clamp(params?.perspective ?? 0.75, 0, 1);
+  const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
+
+  const mild = 0.25 + 0.75*persp; // 0.25..1.0
+  farL = { x: nearL.x + (farL.x-nearL.x)*mild, y: nearL.y + (farL.y-nearL.y)*mild };
+  farR = { x: nearR.x + (farR.x-nearR.x)*mild, y: nearR.y + (farR.y-nearR.y)*mild };
+
+  const cx = (nearL.x + nearR.x) * 0.5;
+  const dyH = horizon * 0.22 * (photoH||h||1);
+  farL.y += dyH; farR.y += dyH;
+
+  const conv = Math.max(0, Math.min(0.35, (-horizon)*0.25));
+  farL.x = farL.x + (cx - farL.x) * conv;
+  farR.x = farR.x + (cx - farR.x) * conv;
+
+  // Ensure far stays above near in image-space (y grows downward)
+  if(farL.y >= nearL.y - 1 || farR.y >= nearR.y - 1) {
+    // clamp far y just above near to keep valid ordering
+    const fy = Math.min(nearL.y, nearR.y) - 1;
+    farL.y = Math.min(farL.y, fy);
+    farR.y = Math.min(farR.y, fy);
+  }
+
+  // Map to render pixels (scale from photo px to render px)
+  const sx = w / Math.max(1, photoW);
+  const sy = h / Math.max(1, photoH);
+
+  const quad = [
+    {x: nearL.x*sx, y: nearL.y*sy},
+    {x: nearR.x*sx, y: nearR.y*sy},
+    {x: farR.x*sx,  y: farR.y*sy},
+    {x: farL.x*sx,  y: farL.y*sy}
+  ];
+  return quad;
+}
+
+function _blendModeId(blend){
     const s = String(blend||'').toLowerCase();
     if(s==='multiply') return 1;
     return 0;
@@ -747,17 +814,32 @@ window.PhotoPaveCompositor = (function(){
       ].join('|');
       const maskEntry = _getMaskTextures(key, zone, w, h, sx, sy);
 
-      // Infer floor quad and homography
-      const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, w, h);
-      if(!quad) continue;
-      const qn = _normalizeQuad(quad);
-      if(!qn) continue;
-      const H = _homographyUnitSquareToQuad(qn);
-      if(!H) continue;
-      const invH = _invert3x3(H);
-      if(!invH) continue;
+      
+// Infer floor quad and homography
+// IMPORTANT: never "drop" the zone if inference becomes unstable while the user drags points.
+// We keep the last good inverse-homography per zone and reuse it if the current contour is temporarily degenerate.
+let invH = null;
 
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);
+
+let invH = null;
+const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, outW, outH);
+if(quad){
+  const qn = _normalizeQuad(quad);
+  if(qn){
+    const H = _homographyUnitSquareToQuad(qn);
+    if(H){
+      invH = _invert3x3(H);
+    }
+  }
+}
+if(!invH){
+  const last = lastGoodInvH.get(zone.id);
+  if(last) invH = last;
+}
+if(!invH){
+  invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1];
+}
+_renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);(src.tex, dst, zone, tileTex, maskEntry, invH);
       const tmp = src; src = dst; dst = tmp;
     }
 
@@ -833,14 +915,28 @@ window.PhotoPaveCompositor = (function(){
       ].join('|');
       const maskEntry = _getMaskTextures(key, zone, outW, outH, sx, sy);
 
-      const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, outW, outH);
-      if(!quad) continue;
-      const qn = _normalizeQuad(quad);
-      if(!qn) continue;
-      const H = _homographyUnitSquareToQuad(qn);
-      if(!H) continue;
-      const invH = _invert3x3(H);
-      if(!invH) continue;
+      
+let invH = null;
+const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, outW, outH);
+if(quad){
+  const qn = _normalizeQuad(quad);
+  if(qn){
+    const H = _homographyUnitSquareToQuad(qn);
+    if(H){
+      invH = _invert3x3(H);
+    }
+  }
+}
+
+if(!invH){
+  const last = lastGoodInvH.get(zone.id);
+  if(last) invH = last;
+}
+if(!invH){
+  invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1];
+}else{
+  lastGoodInvH.set(zone.id, invH);
+}
 
       _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);
       const tmp = src; src = dst; dst = tmp;
