@@ -281,7 +281,7 @@ el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
     setBuildInfo();
     ensureActiveZone();
 
-    ED.init(el("editorCanvas"));
+    ED.init(el("editorCanvas"), el("glCanvas"));
     ED.bindInput();
     bindUI();
     syncCloseButtonUI();

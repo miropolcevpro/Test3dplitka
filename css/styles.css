@@ -16,8 +16,10 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .toolGroup{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .hint{color:var(--muted);font-size:12px;padding:6px 10px;border:1px dashed rgba(255,255,255,0.14);border-radius:10px;flex:1;min-width:260px}
 .canvasWrap{position:relative;flex:1;min-height:0;background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
-/* Canvas display size is controlled in JS to preserve photo aspect ratio */
-#editorCanvas{display:block;touch-action:none;max-width:100%;max-height:100%;}
+/* Canvases: WebGL base + 2D overlay. Display size is controlled in JS to preserve photo aspect ratio. */
+#glCanvas,#editorCanvas{display:block;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);touch-action:none;max-width:100%;max-height:100%;}
+#glCanvas{z-index:0;}
+#editorCanvas{z-index:1;}
 .kbdHelp{display:none}
 .sidePane{background:transparent;display:flex;flex-direction:column;gap:10px;min-height:0;flex:0 0 360px;max-width:420px;min-width:300px;overflow:auto;}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}

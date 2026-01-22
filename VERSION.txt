@@ -1,1 +1,1 @@
-photo_pave_mvp_fix11_webgl_plane_npot_aniso
+photo_pave_mvp_iter2_webgl_compositor

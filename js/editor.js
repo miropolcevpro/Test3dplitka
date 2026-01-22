@@ -3,6 +3,8 @@ window.PhotoPaveEditor=(function(){
   const {state,getActiveZone,getActiveCutout,pushHistory}=window.PhotoPaveState;
   const {loadImage}=window.PhotoPaveAPI;
   let canvas,ctx,dpr=1;
+  let glCanvas=null;
+  let compositor=null;
   const ENABLE_PLANE=false; // unified mode: plane handles disabled
 
   const setHint=(t)=>{const el=document.getElementById("hintText");if(el)el.textContent=t||"";};
@@ -21,8 +23,37 @@ window.PhotoPaveEditor=(function(){
   // If user clicks the first point on an open polygon, we treat it as a "tap to close" unless they start dragging.
   let pendingClose = null;
 
-  function init(c){
-    canvas=c;ctx=canvas.getContext("2d");dpr=Math.max(1,window.devicePixelRatio||1);
+  function init(overlayCanvas, baseGlCanvas){
+    canvas=overlayCanvas;
+    glCanvas=baseGlCanvas;
+    ctx=canvas.getContext("2d",{alpha:true});
+    dpr=Math.max(1,window.devicePixelRatio||1);
+
+    // WebGL compositor (no 2D fill fallback)
+    compositor=window.PhotoPaveCompositor;
+    try{
+      compositor.init(glCanvas);
+    }catch(e){
+      console.error(e);
+      window.PhotoPaveAPI.setStatus("WebGL2 недоступен — требуется современный браузер");
+    }
+
+    if(glCanvas){
+      glCanvas.addEventListener('webglcontextlost', (ev)=>{
+        try{ ev.preventDefault(); }catch(_){ }
+        window.PhotoPaveAPI.setStatus('3D-движок был сброшен браузером. Перезагрузите страницу.');
+      }, {passive:false});
+      glCanvas.addEventListener('webglcontextrestored', ()=>{
+        try{
+          compositor.init(glCanvas);
+          if(state.assets.photoBitmap && state.assets.photoW && state.assets.photoH){
+            compositor.setPhoto(state.assets.photoBitmap, state.assets.photoW, state.assets.photoH);
+          }
+          if(compositor && glCanvas) compositor.resize(glCanvas.width||1, glCanvas.height||1);
+          render();
+        }catch(e){ console.error(e); }
+      });
+    }
     window.addEventListener("resize",resize);resize();
     setHint("Загрузите фото. Затем в режиме «Контур» обведите зону мощения точками и замкните, кликнув рядом с первой точкой. При необходимости добавьте «Вырез» и также замкните его.");
   }
@@ -33,20 +64,54 @@ window.PhotoPaveEditor=(function(){
     const {photoW,photoH} = state.assets;
 
     if(photoW && photoH){
-      // Tie canvas buffer to the photo to avoid aspect distortion and maximize quality
-      canvas.width = Math.round(photoW * dpr);
-      canvas.height = Math.round(photoH * dpr);
-
-      // Fit the displayed canvas inside available area while preserving aspect
+      // Display size (CSS) — fit inside available area
       const sc = Math.min(aw / photoW, ah / photoH);
-      canvas.style.width = Math.floor(photoW * sc) + "px";
-      canvas.style.height = Math.floor(photoH * sc) + "px";
+      const cssW = Math.floor(photoW * sc);
+      const cssH = Math.floor(photoH * sc);
+
+      // Render buffer size (WebGL + overlay). We keep it bounded for stability.
+      const longSide = Math.max(photoW, photoH);
+      const targetLong = Math.min(longSide, 2048);
+      const rsc = Math.max(0.15, Math.min(1.0, targetLong / Math.max(1, longSide)));
+      const rw = Math.max(1, Math.round(photoW * rsc));
+      const rh = Math.max(1, Math.round(photoH * rsc));
+
+      canvas.width = rw;
+      canvas.height = rh;
+      canvas.style.width = cssW + "px";
+      canvas.style.height = cssH + "px";
+
+      if(glCanvas){
+        glCanvas.width = rw;
+        glCanvas.height = rh;
+        glCanvas.style.width = cssW + "px";
+        glCanvas.style.height = cssH + "px";
+      }
+
+      // Actual pixel ratio for crisp overlay sizing
+      const r = canvas.getBoundingClientRect();
+      dpr = canvas.width / Math.max(1, r.width);
+
+      if(compositor && glCanvas){
+        try{ compositor.resize(rw, rh); }catch(e){ console.warn(e); }
+        if(state.assets.photoBitmap){
+          try{ compositor.setPhoto(state.assets.photoBitmap, photoW, photoH); }catch(e){ console.warn(e); }
+        }
+      }
     }else{
       // No photo: fill available area
       canvas.style.width = "100%";
       canvas.style.height = "100%";
       canvas.width = Math.floor(aw * dpr);
       canvas.height = Math.floor(ah * dpr);
+
+      if(glCanvas){
+        glCanvas.style.width = "100%";
+        glCanvas.style.height = "100%";
+        glCanvas.width = canvas.width;
+        glCanvas.height = canvas.height;
+        if(compositor){ try{ compositor.resize(glCanvas.width, glCanvas.height); }catch(e){ } }
+      }
     }
 
     render();
@@ -714,19 +779,27 @@ function polyPath(points){
     if(!ctx)return;
     const ov=document.getElementById("uploadOverlay");
     if(ov){ov.style.display=state.assets.photoBitmap?"none":"flex";}
-    ctx.save();ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle="#0b0e14";ctx.fillRect(0,0,canvas.width,canvas.height);
+    // 1) WebGL base render
+    if(compositor && glCanvas && state.assets.photoBitmap){
+      try{
+        await compositor.render(state);
+      }catch(e){
+        console.warn("[WebGLCompositor] render failed:", e);
+        window.PhotoPaveAPI.setStatus("Ошибка WebGL-рендера (см. консоль)");
+      }
+    }
 
-    const rect=getImageRectInCanvas();
-    if(state.assets.photoBitmap){
-      ctx.drawImage(state.assets.photoBitmap,rect.x,rect.y,rect.w,rect.h);
-    }else{
+    // 2) Overlay (UI): contours, points, handles
+    ctx.save();
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // subtle dim when no photo
+    if(!state.assets.photoBitmap){
+      ctx.fillStyle="#0b0e14";ctx.fillRect(0,0,canvas.width,canvas.height);
+      const rect=getImageRectInCanvas();
       ctx.fillStyle="rgba(255,255,255,0.06)";ctx.fillRect(rect.x,rect.y,rect.w,rect.h);
       ctx.fillStyle="rgba(255,255,255,0.65)";ctx.font=`${14*dpr}px sans-serif`;
       ctx.fillText("Загрузите фотографию",rect.x+18*dpr,rect.y+28*dpr);
     }
-
-    for(const zone of state.zones){ if(zone.enabled) await drawZoneFill(zone); }
 
     drawPlaneOverlay();
     drawZonesOverlay();
@@ -966,10 +1039,22 @@ if(state.ui.mode==="contour"&&zone){
     setHint(map[mode]||"");render();
   }
   function exportPNG(){
-    const a=document.createElement("a");
-    a.download="paving_preview.png";
-    a.href=canvas.toDataURL("image/png");
-    a.click();
+    (async ()=>{
+      try{
+        if(!compositor){
+          window.PhotoPaveAPI.setStatus("Экспорт недоступен: WebGL композитор не инициализирован");
+          return;
+        }
+        const dataURL = await compositor.exportPNG(state, {maxLongSide: Math.max(1, state.assets.photoW, state.assets.photoH)});
+        const a=document.createElement("a");
+        a.download="paving_preview.png";
+        a.href=dataURL;
+        a.click();
+      }catch(e){
+        console.warn(e);
+        window.PhotoPaveAPI.setStatus("Не удалось экспортировать PNG (см. консоль)");
+      }
+    })();
   }
   return {init,bindInput,render,resize,setMode,exportPNG};
 })();
