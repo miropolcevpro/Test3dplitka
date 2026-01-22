@@ -148,19 +148,26 @@ window.PhotoPaveCompositor = (function(){
     gl_Position = vec4(aPos, 0.0, 1.0);
   }`;
 
-  // IMPORTANT ORIENTATION RULE (stability across browsers):
-  // - We upload all DOM sources (photo/tile/masks) with UNPACK_FLIP_Y_WEBGL=true.
-  // - We keep all shaders sampling with vUv directly (no conditional flips).
-  // This avoids double-flip bugs that vary across ImageBitmap implementations.
+  // Copy shader.
+  // IMPORTANT: the compositor uses this both for DOM-backed textures (photo, masks)
+  // and for FBO-backed textures (previous composite passes). These two sources have
+  // different Y origins in practice.
+  //
+  // To avoid the "photo upside-down" bug, we do NOT hardcode a flip here.
+  // Instead we pass uFlipY at draw time:
+  //  - uFlipY = 1 when copying from DOM-backed textures (photo/mask/tile)
+  //  - uFlipY = 0 when copying from FBO textures (ping/pong)
   const FS_COPY = `#version 300 es
   precision highp float;
   in vec2 vUv;
   uniform sampler2D uTex;
+  uniform int uFlipY;
   out vec4 outColor;
   void main(){
-    outColor = texture(uTex, vUv);
+    vec2 uv = vUv;
+    if(uFlipY==1){ uv.y = 1.0 - uv.y; }
+    outColor = texture(uTex, uv);
   }`;
-
 
   const FS_ZONE = `#version 300 es
   precision highp float;
@@ -191,25 +198,20 @@ window.PhotoPaveCompositor = (function(){
   void main(){
     // Coordinate conventions:
     // - vUv: bottom-left origin (standard fullscreen quad)
-    // - All uploaded DOM sources (photo/tile/masks) are flipped on upload, so they also
-    //   sample correctly with vUv.
-    // - However, projective math (uInvH) is defined in image pixel coords with top-left
-    //   origin (y down), because contour points come from Canvas2D/image space.
-    // Therefore:
-    //   * Sampling uses vUv
-    //   * Homography uses uvPix = (x, 1-y)
-    vec2 uvPix = vec2(vUv.x, 1.0 - vUv.y);
-    vec2 fragPx = uvPix * uResolution;
+    // - uploaded HTML images/canvases: top-left origin
+    // - render targets (FBO textures): bottom-left origin
+    vec2 uvSrc = vec2(vUv.x, 1.0 - vUv.y);
+    vec2 fragPx = uvSrc * uResolution;
 
     vec4 prev = texture(uPrev, vUv);
     vec3 prevLin = toLinear(prev.rgb);
 
-    vec3 photo = texture(uPhoto, vUv).rgb;
+    vec3 photo = texture(uPhoto, uvSrc).rgb;
     vec3 photoLin = toLinear(photo);
     float lum = dot(photoLin, vec3(0.2126, 0.7152, 0.0722));
 
-    float m = texture(uMask, vUv).r;
-    float mb = texture(uMaskBlur, vUv).r;
+    float m = texture(uMask, uvSrc).r;
+    float mb = texture(uMaskBlur, uvSrc).r;
 
     // Feathered alpha from blurred mask
     float alpha = clamp(mb, 0.0, 1.0);
@@ -239,6 +241,8 @@ window.PhotoPaveCompositor = (function(){
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
     vec2 suv = fract(tuv);
+    // Flip Y for uploaded tile texture (top-left origin) while preserving repeat.
+    suv.y = 1.0 - suv.y;
     vec3 tile = texture(uTile, suv).rgb;
     vec3 tileLin = toLinear(tile);
 
@@ -314,8 +318,8 @@ window.PhotoPaveCompositor = (function(){
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.BLEND);
-    // Default: no global flip. We flip DOM sources per-upload (texImage2D) so that
-    // they sample correctly with vUv in all shaders.
+    // Keep upload orientation as-is (top-left). We handle Y conversion in shaders
+    // to avoid double-flip issues across browsers and ImageBitmap sources.
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.clearColor(0,0,0,1);
   }
@@ -333,12 +337,8 @@ window.PhotoPaveCompositor = (function(){
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     try{
-      // Flip DOM source on upload so that it samples correctly with vUv.
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     }catch(e){
-      try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); }catch(_){ }
       gl.bindTexture(gl.TEXTURE_2D, null);
       throw new Error('Failed to upload photo texture to WebGL.');
     }
@@ -384,17 +384,13 @@ window.PhotoPaveCompositor = (function(){
     // mipmaps for distance stability
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     try{
-      // Flip DOM source on upload so it samples correctly with vUv.
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.generateMipmap(gl.TEXTURE_2D);
       if(extAniso){
         const maxA = gl.getParameter(extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 4;
         gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, maxA));
       }
     }catch(e){
-      try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); }catch(_){ }
       gl.bindTexture(gl.TEXTURE_2D, null);
       gl.deleteTexture(tex);
       throw new Error('Failed to upload tile texture to WebGL (likely CORS). Ensure Object Storage has CORS headers for this domain.');
@@ -465,12 +461,8 @@ window.PhotoPaveCompositor = (function(){
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     try{
-      // Flip DOM source on upload so it samples correctly with vUv.
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcCanvas);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     }catch(e){
-      try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); }catch(_){ }
       gl.bindTexture(gl.TEXTURE_2D, null);
       if(!existingTex) gl.deleteTexture(tex);
       throw new Error('Failed to upload mask texture to WebGL.');
@@ -660,13 +652,14 @@ window.PhotoPaveCompositor = (function(){
     gl.bindTexture(gl.TEXTURE_2D, tex);
   }
 
-  function _renderCopy(srcTex, dstRT){
+  function _renderCopy(srcTex, dstRT, flipY){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT ? dstRT.fbo : null);
     gl.viewport(0,0, (dstRT?dstRT.w:canvas.width), (dstRT?dstRT.h:canvas.height));
     gl.useProgram(progCopy);
     gl.bindVertexArray(quadVao.vao);
     _bindTex(0, srcTex);
     gl.uniform1i(gl.getUniformLocation(progCopy, 'uTex'), 0);
+    gl.uniform1i(gl.getUniformLocation(progCopy, 'uFlipY'), flipY ? 1 : 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindVertexArray(null);
   }
@@ -726,7 +719,8 @@ window.PhotoPaveCompositor = (function(){
     _ensureTargets(w,h);
 
     // Start composite with the photo.
-    _renderCopy(photoTex, ping);
+    // photoTex is a DOM-backed upload (top-left origin) -> needs flipY during copy
+    _renderCopy(photoTex, ping, true);
     let src = ping;
     let dst = pong;
 
@@ -770,7 +764,8 @@ window.PhotoPaveCompositor = (function(){
     // Present to screen
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0,0,w,h);
-    _renderCopy(src.tex, null);
+    // src.tex is an FBO texture -> no flip at display
+    _renderCopy(src.tex, null, false);
   }
 
   function _readPixelsToDataURL(rt){
@@ -813,7 +808,7 @@ window.PhotoPaveCompositor = (function(){
 
     // Render photo at export scale: we can reuse the same photoTex and sample it.
     gl.viewport(0,0,outW,outH);
-    _renderCopy(photoTex, rtA);
+    _renderCopy(photoTex, rtA, true);
     let src = rtA;
     let dst = rtB;
 
