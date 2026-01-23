@@ -259,6 +259,77 @@
     return { canvas: c, min: mn, max: mx };
   }
 
+  // Estimate a dominant "far" direction from a relative depth map.
+  // Conservative by design: if signal is weak, returns low confidence and will be ignored by the compositor.
+  // Output dir is normalized in image space (x right, y down).
+  function _estimatePlaneDirFromDepth(depthData, w, h){
+    try{
+      const n = w*h;
+      if(!depthData || n <= 0) return { dir: null, confidence: 0 };
+
+      // Fit a simple plane: d = a*x + b*y + c (least squares on a coarse grid).
+      // Use normalized coords centered at 0.
+      const step = Math.max(2, Math.floor(Math.min(w, h) / 96)); // ~<=96 samples per axis
+
+      let sumX=0, sumY=0, sumD=0;
+      let sumXX=0, sumYY=0, sumXY=0;
+      let sumXD=0, sumYD=0;
+      let cnt=0;
+
+      for(let y=0; y<h; y+=step){
+        const ny = (y/(h-1))*2 - 1;
+        const row = y*w;
+        for(let x=0; x<w; x+=step){
+          const nx = (x/(w-1))*2 - 1;
+          const d = depthData[row + x];
+          if(!isFinite(d)) continue;
+          sumX += nx; sumY += ny; sumD += d;
+          sumXX += nx*nx; sumYY += ny*ny; sumXY += nx*ny;
+          sumXD += nx*d; sumYD += ny*d;
+          cnt++;
+        }
+      }
+
+      if(cnt < 200) return { dir: null, confidence: 0 };
+
+      // Solve normal equations for a,b (ignore c):
+      // [sumXX sumXY] [a] = [sumXD]
+      // [sumXY sumYY] [b]   [sumYD]
+      const det = sumXX*sumYY - sumXY*sumXY;
+      if(!isFinite(det) || Math.abs(det) < 1e-6) return { dir: null, confidence: 0 };
+
+      const invDet = 1/det;
+      const a = ( sumYY*sumXD - sumXY*sumYD) * invDet;
+      const b = (-sumXY*sumXD + sumXX*sumYD) * invDet;
+
+      // Direction of increasing depth in normalized coords.
+      let dx = a;
+      let dy = b;
+      const mag = Math.hypot(dx, dy);
+      if(!isFinite(mag) || mag < 1e-4) return { dir: null, confidence: 0 };
+      dx /= mag; dy /= mag;
+
+      // Choose sign so "far" tends to point upward (negative y in image space).
+      // If dy is positive (points downward), flip.
+      if(dy > 0) { dx = -dx; dy = -dy; }
+
+      // Convert from normalized coord direction to pixel-space direction (account for aspect).
+      // In normalized space, x spans 2 over width, y spans 2 over height.
+      // Multiply by aspect so that dot products in pixel space remain consistent.
+      const px = dx * (w/h);
+      const py = dy;
+      const pm = Math.hypot(px, py);
+      const outDir = pm > 1e-6 ? { x: px/pm, y: py/pm } : { x: dx, y: dy };
+
+      // Confidence: stronger gradient + adequate sample count.
+      // Calibrate conservatively.
+      const conf = Math.max(0, Math.min(1, (mag*2.5) * Math.min(1, cnt/1200)));
+      return { dir: outDir, confidence: conf };
+    }catch(_){
+      return { dir: null, confidence: 0 };
+    }
+  }
+
   async function _ensureDepthSession(ort, preferProvider){
     const modelUrl = (state.ai && state.ai.models && state.ai.models.depthUrl) ? state.ai.models.depthUrl : DEFAULT_DEPTH_MODEL_URL;
 
@@ -373,6 +444,14 @@
 
       const norm = _normalizeDepthToCanvas(depthData, ow, oh);
 
+      // Build a normalized float depth array (0..1) for lightweight geometry inference (Patch 3+).
+      // Keep it small: this runs on the downscaled inference resolution.
+      const denom = (norm.max - norm.min) || 1;
+      const depthNorm = new Float32Array(expected);
+      for(let i=0;i<expected;i++){
+        depthNorm[i] = (depthData[i] - norm.min) / denom;
+      }
+
       // Store a canvas-based depth map for safe WebGL texture upload.
       ai.depthMap = {
         canvas: norm.canvas,
@@ -380,10 +459,17 @@
         height: oh,
         min: norm.min,
         max: norm.max,
+        data: depthNorm,
         provider,
         modelUrl: sessionInfo.modelUrl,
         photoHash: ai.photoHash || null
       };
+
+      // Patch 3 groundwork: infer a dominant plane direction from depth (conservative confidence).
+      // Compositor may use this to orient the perspective along the real scene direction.
+      const est = _estimatePlaneDirFromDepth(depthNorm, ow, oh);
+      ai.planeDir = est.dir;
+      ai.confidence = Math.max(ai.confidence||0, est.confidence||0);
 
       ai.timings.depthTotalMs = Math.round(nowMs() - t0);
       ai.depthReady = true;

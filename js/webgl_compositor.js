@@ -681,54 +681,136 @@ function _inferQuadFromContour(contour, params, w, h){
   const dy = yMax - yMin;
   if(!isFinite(dy) || dy < 2) return null;
 
-  // Scanlines slightly inside the hull to avoid vertex-only intersections
-  const inset = Math.max(4, dy * 0.12);
-  let yNear = yMax - inset;
-  let yFar  = yMin + inset;
-  if(yNear <= yFar + 1) {
-    yNear = yMax - Math.max(2, dy*0.25);
-    yFar  = yMin + Math.max(2, dy*0.25);
-    if(yNear <= yFar + 1) return null;
-  }
+  // Patch 3: optional AI-guided quad inference.
+  // If AI provides a dominant plane direction (in normalized image space) with decent confidence,
+  // infer near/far along that direction (instead of always assuming "far is up").
+  let nearL = null, nearR = null, farL = null, farR = null;
+  let usedAi = false;
+  try{
+    const aiDirN = params && params._aiPlaneDir ? params._aiPlaneDir : null;
+    const aiConf = params && isFinite(params._aiConfidence) ? params._aiConfidence : 0;
+    if(aiDirN && aiConf >= 0.35 && isFinite(aiDirN.x) && isFinite(aiDirN.y)){
+      // Convert normalized dir (0..1 space) into photo-pixel space direction.
+      // Use photoW/photoH to account for aspect.
+      const dxp = aiDirN.x * Math.max(1, photoW||1);
+      const dyp = aiDirN.y * Math.max(1, photoH||1);
+      let dm = Math.hypot(dxp, dyp);
+      if(isFinite(dm) && dm > 1e-6){
+        const d = { x: dxp/dm, y: dyp/dm };
+        const nrm = { x: -d.y, y: d.x }; // perpendicular (across)
 
-  function xRangeAtY(y){
-    const xs = [];
-    for(let i=0;i<poly.length-1;i++){
-      const a=poly[i], b=poly[i+1];
-      // Skip horizontal edges
-      if(Math.abs(b.y - a.y) < 1e-9) continue;
-      const y0=a.y, y1=b.y;
-      const ymin=Math.min(y0,y1), ymax=Math.max(y0,y1);
-      // Strict-ish containment to reduce double-hits at vertices
-      if(y < ymin || y > ymax) continue;
-      const t = (y - a.y) / (b.y - a.y);
-      if(t < 0 || t > 1) continue;
-      const x = a.x + t*(b.x - a.x);
-      if(isFinite(x)) xs.push(x);
+        // Project hull to find near/far extents along d.
+        let tMin = Infinity, tMax = -Infinity;
+        for(const p of hull){
+          const t = p.x*d.x + p.y*d.y;
+          if(t < tMin) tMin = t;
+          if(t > tMax) tMax = t;
+        }
+        const dt = tMax - tMin;
+        if(isFinite(dt) && dt > 6){
+          const insetT = Math.max(4, dt * 0.12);
+          let tNear = tMax - insetT;
+          let tFar  = tMin + insetT;
+          if(tNear <= tFar + 1){
+            tNear = tMax - Math.max(2, dt*0.25);
+            tFar  = tMin + Math.max(2, dt*0.25);
+          }
+
+          function segAtT(t){
+            const ips = [];
+            for(let i=0;i<poly.length-1;i++){
+              const a=poly[i], b=poly[i+1];
+              const da = (a.x*d.x + a.y*d.y) - t;
+              const db = (b.x*d.x + b.y*d.y) - t;
+              // If edge is entirely on one side, skip.
+              if((da > 0 && db > 0) || (da < 0 && db < 0)) continue;
+              const denom = (da - db);
+              if(Math.abs(denom) < 1e-9) continue;
+              const u = da / denom; // between 0..1
+              if(u < 0 || u > 1) continue;
+              const x = a.x + u*(b.x - a.x);
+              const y = a.y + u*(b.y - a.y);
+              if(isFinite(x) && isFinite(y)) ips.push({x,y});
+            }
+            if(ips.length < 2) return null;
+            ips.sort((p,q)=> (p.x*nrm.x + p.y*nrm.y) - (q.x*nrm.x + q.y*nrm.y));
+            return { min: ips[0], max: ips[ips.length-1] };
+          }
+
+          let sNear = segAtT(tNear);
+          let sFar  = segAtT(tFar);
+
+          // If we miss due to numeric edge cases, relax inset
+          if(!sNear || !sFar){
+            const inset2 = Math.max(2, dt * 0.06);
+            tNear = tMax - inset2;
+            tFar  = tMin + inset2;
+            sNear = segAtT(tNear);
+            sFar  = segAtT(tFar);
+          }
+
+          if(sNear && sFar){
+            nearL = {x: sNear.min.x, y: sNear.min.y};
+            nearR = {x: sNear.max.x, y: sNear.max.y};
+            farL  = {x: sFar.min.x,  y: sFar.min.y};
+            farR  = {x: sFar.max.x,  y: sFar.max.y};
+            usedAi = true;
+          }
+        }
+      }
     }
-    if(xs.length < 2) return null;
-    xs.sort((p,q)=>p-q);
-    return {min: xs[0], max: xs[xs.length-1]};
+  }catch(_){ /* no-op */ }
+
+  if(!usedAi){
+    // Default: scanlines slightly inside the hull to avoid vertex-only intersections.
+    const inset = Math.max(4, dy * 0.12);
+    let yNear = yMax - inset;
+    let yFar  = yMin + inset;
+    if(yNear <= yFar + 1) {
+      yNear = yMax - Math.max(2, dy*0.25);
+      yFar  = yMin + Math.max(2, dy*0.25);
+      if(yNear <= yFar + 1) return null;
+    }
+
+    function xRangeAtY(y){
+      const xs = [];
+      for(let i=0;i<poly.length-1;i++){
+        const a=poly[i], b=poly[i+1];
+        // Skip horizontal edges
+        if(Math.abs(b.y - a.y) < 1e-9) continue;
+        const y0=a.y, y1=b.y;
+        const ymin=Math.min(y0,y1), ymax=Math.max(y0,y1);
+        // Strict-ish containment to reduce double-hits at vertices
+        if(y < ymin || y > ymax) continue;
+        const t = (y - a.y) / (b.y - a.y);
+        if(t < 0 || t > 1) continue;
+        const x = a.x + t*(b.x - a.x);
+        if(isFinite(x)) xs.push(x);
+      }
+      if(xs.length < 2) return null;
+      xs.sort((p,q)=>p-q);
+      return {min: xs[0], max: xs[xs.length-1]};
+    }
+
+    let rNear = xRangeAtY(yNear);
+    let rFar  = xRangeAtY(yFar);
+
+    // If we miss due to numeric edge cases, relax inset
+    if(!rNear || !rFar){
+      const inset2 = Math.max(2, dy * 0.06);
+      yNear = yMax - inset2;
+      yFar  = yMin + inset2;
+      rNear = xRangeAtY(yNear);
+      rFar  = xRangeAtY(yFar);
+      if(!rNear || !rFar) return null;
+    }
+
+    // Construct near/far segment endpoints in image-space
+    nearL = {x: rNear.min, y: yNear};
+    nearR = {x: rNear.max, y: yNear};
+    farL  = {x: rFar.min,  y: yFar};
+    farR  = {x: rFar.max,  y: yFar};
   }
-
-  let rNear = xRangeAtY(yNear);
-  let rFar  = xRangeAtY(yFar);
-
-  // If we miss due to numeric edge cases, relax inset
-  if(!rNear || !rFar){
-    const inset2 = Math.max(2, dy * 0.06);
-    yNear = yMax - inset2;
-    yFar  = yMin + inset2;
-    rNear = xRangeAtY(yNear);
-    rFar  = xRangeAtY(yFar);
-    if(!rNear || !rFar) return null;
-  }
-
-  // Construct near/far segment endpoints in image-space
-  let nearL = {x: rNear.min, y: yNear};
-  let nearR = {x: rNear.max, y: yNear};
-  let farL  = {x: rFar.min,  y: yFar};
-  let farR  = {x: rFar.max,  y: yFar};
 
   // Guard against super-thin quads
   if(Math.abs(nearR.x - nearL.x) < 2 || Math.abs(farR.x - farL.x) < 2) return null;
@@ -750,12 +832,30 @@ function _inferQuadFromContour(contour, params, w, h){
   farL.x = farL.x + (cx - farL.x) * conv;
   farR.x = farR.x + (cx - farR.x) * conv;
 
-  // Ensure far stays above near in image-space (y grows downward)
-  if(farL.y >= nearL.y - 1 || farR.y >= nearR.y - 1) {
-    // clamp far y just above near to keep valid ordering
-    const fy = Math.min(nearL.y, nearR.y) - 1;
-    farL.y = Math.min(farL.y, fy);
-    farR.y = Math.min(farR.y, fy);
+  // Ensure far remains "in front" of near along the inferred depth direction.
+  // Default behavior uses image-space Y (y grows downward). For AI-guided quads, use projection on ai direction.
+  if(usedAi && params && params._aiPlaneDir && isFinite(params._aiPlaneDir.x) && isFinite(params._aiPlaneDir.y)){
+    const dxp = params._aiPlaneDir.x * Math.max(1, photoW||1);
+    const dyp = params._aiPlaneDir.y * Math.max(1, photoH||1);
+    let dm = Math.hypot(dxp, dyp);
+    if(isFinite(dm) && dm > 1e-6){
+      const d = { x: dxp/dm, y: dyp/dm };
+      const tNear = ((nearL.x*d.x + nearL.y*d.y) + (nearR.x*d.x + nearR.y*d.y)) * 0.5;
+      const tFar  = ((farL.x*d.x  + farL.y*d.y)  + (farR.x*d.x  + farR.y*d.y)) * 0.5;
+      if(tFar >= tNear - 1){
+        const push = (tFar - (tNear - 1)) + 1;
+        farL.x -= d.x * push; farL.y -= d.y * push;
+        farR.x -= d.x * push; farR.y -= d.y * push;
+      }
+    }
+  }else{
+    // Ensure far stays above near in image-space (y grows downward)
+    if(farL.y >= nearL.y - 1 || farR.y >= nearR.y - 1) {
+      // clamp far y just above near to keep valid ordering
+      const fy = Math.min(nearL.y, nearR.y) - 1;
+      farL.y = Math.min(farL.y, fy);
+      farR.y = Math.min(farR.y, fy);
+    }
   }
 
 
@@ -949,7 +1049,16 @@ function _blendModeId(blend){
 // Infer floor quad and homography (stable while dragging)
 // We keep the last good inverse-homography per zone and reuse it if the current contour becomes temporarily degenerate.
 let invH = null;
-const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, w, h);
+// Patch 3: if AI inferred a dominant plane direction with decent confidence, pass it to quad inference.
+const baseParams = zone.material?.params||{};
+let quadParams = baseParams;
+if(ai && ai.enabled !== false && ai.planeDir && (ai.confidence||0) >= 0.35){
+  quadParams = Object.assign({}, baseParams, {
+    _aiPlaneDir: ai.planeDir,
+    _aiConfidence: ai.confidence||0
+  });
+}
+const quad = _inferQuadFromContour(zone.contour, quadParams, w, h);
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
