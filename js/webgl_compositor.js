@@ -876,6 +876,16 @@ function _inferQuadFromContour(contour, params, w, h){
           }
 
           if(sNear && sFar){
+            // Stabilize near/far assignment to avoid vertical inversion.
+            // In image coordinates (y grows downward), the near edge of the ground plane
+            // is typically lower than the far edge. When the direction sign is ambiguous,
+            // the two cuts can swap and the homography flips V (texture appears upside-down).
+            const midYN = (sNear.min.y + sNear.max.y) * 0.5;
+            const midYF = (sFar.min.y + sFar.max.y) * 0.5;
+            if(isFinite(midYN) && isFinite(midYF) && midYN < midYF){
+              const tmp = sNear; sNear = sFar; sFar = tmp;
+            }
+
             aiNearL = {x: sNear.min.x, y: sNear.min.y};
             aiNearR = {x: sNear.max.x, y: sNear.max.y};
             aiFarL  = {x: sFar.min.x,  y: sFar.min.y};
@@ -896,6 +906,16 @@ function _inferQuadFromContour(contour, params, w, h){
   }else{
     nearL = baseNearL; nearR = baseNearR; farL = baseFarL; farR = baseFarR;
     usedAi = false;
+  }
+
+
+  // Final safety: ensure near edge is below far edge in image coordinates (y grows downward).
+  // This blocks rare vertical homography flips that manifest as an upside-down tile projection.
+  const _ny = (nearL.y + nearR.y) * 0.5;
+  const _fy = (farL.y + farR.y) * 0.5;
+  if(isFinite(_ny) && isFinite(_fy) && _ny < _fy){
+    const _tL = nearL; nearL = farL; farL = _tL;
+    const _tR = nearR; nearR = farR; farR = _tR;
   }
 
 // Guard against super-thin quads
@@ -1238,6 +1258,7 @@ const tmp = src; src = dst; dst = tmp;
     const ai = state && state.ai ? state.ai : null;
     if(ai){
       try{ _ensureAIDepthTexture(ai); }catch(_){ /*no-op*/ }
+      try{ _ensureAIOcclusionTexture(ai); }catch(_){ /*no-op*/ }
     }
 
     const longSide = Math.max(1, photoW, photoH);
@@ -1281,7 +1302,14 @@ const tmp = src; src = dst; dst = tmp;
 
       
 let invH = null;
-const quad = _inferQuadFromContour(zone.contour, zone.material?.params||{}, outW, outH);
+const baseParams = zone.material?.params||{};
+const conf = (ai && isFinite(ai.confidence)) ? ai.confidence : 0;
+const quadParams = (ai && ai.enabled !== false && ai.planeDir) ? Object.assign({}, baseParams, {
+  _aiPlaneDir: ai.planeDir,
+  _aiConfidence: conf,
+  _aiMix: smoothstep(0.18, 0.55, conf)
+}) : baseParams;
+const quad = _inferQuadFromContour(zone.contour, quadParams, outW, outH);
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
