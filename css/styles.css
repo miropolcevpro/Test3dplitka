@@ -141,12 +141,26 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 #modePlane, #resetPlaneBtn { display: none !important; }
 
 
-/* Left textures column (single column + vertical scroll) */
-.leftPane{flex:0 0 220px;max-width:260px;min-width:190px;min-height:0;display:flex;flex-direction:column;gap:10px}
+/* Left textures column (single column + vertical scroll)
+   Goal: free more space for the photo canvas by making the left column more compact.
+   Important: do NOT upscale texture preview images; instead we shrink paddings and make the
+   card frame fit tightly around the preview.
+*/
+.leftPane{flex:0 0 190px;max-width:220px;min-width:170px;min-height:0;display:flex;flex-direction:column;gap:10px}
 .leftPane #texturesPanel{display:flex;flex-direction:column;flex:1;min-height:0}
 .leftPane #texturesPanel .panel__body--textures{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
-.leftPane .texturesGrid{display:flex;flex-direction:column;gap:10px}
+.leftPane #texturesPanel .panel__body--textures{padding:8px 8px}
+.leftPane .texturesGrid{display:flex;flex-direction:column;gap:8px}
 .leftPane .texturesGrid .card{width:100%}
+
+/* Tight texture cards in the left column: remove empty fields around square previews
+   by using a square thumbnail box. This keeps the preview scale consistent while
+   allowing the overall column to be narrower.
+*/
+.leftPane .texturesGrid .card{border-radius:12px}
+.leftPane .texturesGrid .thumb{aspect-ratio:1/1;background:#0b0e14}
+.leftPane .texturesGrid .thumb img{object-fit:contain}
+.leftPane .texturesGrid .card__label{padding:6px 8px}
 
 /* Ensure upload overlay is always visible above canvases */
 .canvasWrap{position:relative}
@@ -158,11 +172,14 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 #blendSelect{display:none !important}
 
 /* Left bottom textures: keep export on top, textures anchored bottom */
-#leftPane{display:flex;flex-direction:column;min-height:0;gap:10px}
+#leftPane{display:flex;flex-direction:column;min-height:0;gap:10px;flex:0 0 190px;max-width:220px;min-width:170px}
 #leftPane #texturesPanel{margin-top:auto;display:flex;flex-direction:column;min-height:0}
-#leftPane #texturesPanel .panel__body--textures{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
-#leftPane .texturesGrid{display:flex;flex-direction:column;gap:10px}
-#leftPane .texturesGrid .card{width:100%}
+#leftPane #texturesPanel .panel__body--textures{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;padding:8px 8px}
+#leftPane .texturesGrid{display:flex;flex-direction:column;gap:8px}
+#leftPane .texturesGrid .card{width:100%;border-radius:12px}
+#leftPane .texturesGrid .thumb{aspect-ratio:1/1;background:#0b0e14}
+#leftPane .texturesGrid .thumb img{object-fit:contain}
+#leftPane .texturesGrid .card__label{padding:6px 8px}
 
 /* Ensure textures are not shown on right even if stray markup exists */
 .sidePane .panel__body--textures{display:none !important}
