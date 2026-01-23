@@ -21,12 +21,12 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 #glCanvas{z-index:0;}
 #editorCanvas{z-index:1;}
 .kbdHelp{display:none}
-.sidePane{background:transparent;display:grid;grid-template-columns:180px 1fr;gap:10px;min-height:0;flex:0 0 360px;max-width:420px;min-width:300px;overflow:auto;}
+.sidePane{background:transparent;display:flex;flex-direction:column;gap:10px;min-height:0;flex:0 0 360px;max-width:420px;min-width:300px;overflow:auto;}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
 .panel--textures{min-height:240px}
 .panel__title{padding:10px 12px;border-bottom:1px solid var(--border);font-weight:600;font-size:13px}
 .panel__body{padding:10px 12px}
-.panel__body--textures{padding:10px 10px;overflow-y:auto;overflow-x:hidden;max-height:calc(100vh - 140px);scrollbar-gutter:stable}
+.panel__body--textures{padding:10px 10px;overflow-y:auto;overflow-x:hidden;min-height:0;scrollbar-gutter:stable}
 .panel__body--textures{overflow:auto;max-height:42vh}
 .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
 .btn{appearance:none;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:var(--text);padding:8px 10px;border-radius:12px;cursor:pointer;font-size:12px}
@@ -140,5 +140,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 /* Hide explicit plane controls: perspective is inferred from the contour for a simpler UX */
 #modePlane, #resetPlaneBtn { display: none !important; }
 
-#texturesPanel{grid-column:1;grid-row:1 / span 999;align-self:stretch}
-.sidePane > .panel:not(#texturesPanel){grid-column:2}
+
+.texturesPane{flex:0 0 180px;max-width:220px;min-width:180px;min-height:0;display:flex;flex-direction:column}
+.texturesPane #texturesPanel{display:flex;flex-direction:column;min-height:0;flex:1}
+.texturesPane .panel__body--textures{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
