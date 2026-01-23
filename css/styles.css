@@ -156,3 +156,8 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 
 /* Hide legacy blend mode UI (keep DOM to avoid JS regressions) */
 #blendSelect{display:none !important}
+
+/* Place textures panel at bottom-left */
+#leftPane{display:flex;flex-direction:column;min-height:0}
+#leftPane #texturesPanel{margin-top:auto}
+#leftPane #texturesPanel .panel__body--textures{max-height:calc(100vh - 380px)}
