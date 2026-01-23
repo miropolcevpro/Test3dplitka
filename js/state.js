@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build:{version:"mvp-iter2.2.34-ultra-depth-ortcdn-stable",ts:new Date().toISOString()},
+    build:{version:"mvp-iter2.2.35-ultra-depth-model-url",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -28,8 +28,9 @@ window.PhotoPaveState=(function(){
       device:{webgpu:false,tier:"low",mem:null,probeMs:0,error:null},
       photoHash:null,
       models:{
-        // Place your depth ONNX model here (Patch 2). If missing, the app continues without AI.
-        depthUrl:"assets/ai/models/depth_ultra.onnx"
+        // Depth ONNX model URL (Depth Anything V2 ViT-B outdoor dynamic).
+        // Stored in Yandex Object Storage (public read + CORS required).
+        depthUrl:"https://storage.yandexcloud.net/webar3dtexture/ai/models/depth_anything_v2_vitb_outdoor_dynamic.onnx"
       },
       // Geometry (future patches)
       horizonY:null,

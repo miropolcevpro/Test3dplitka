@@ -91,7 +91,9 @@
       wasmBase: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/" }
   ];
 
-  const DEFAULT_DEPTH_MODEL_URL = "assets/ai/models/depth_ultra.onnx";
+  // Default depth model URL. Can be overridden via state.ai.models.depthUrl.
+  // Team-provided model in Yandex Object Storage (Depth Anything V2 ViT-B outdoor dynamic).
+  const DEFAULT_DEPTH_MODEL_URL = "https://storage.yandexcloud.net/webar3dtexture/ai/models/depth_anything_v2_vitb_outdoor_dynamic.onnx";
 
   function _isRelativeUrl(url){
     return !/^https?:\/\//i.test(url);
@@ -163,11 +165,20 @@
   let _depthSessionProvider = null;
 
   function _pickDepthInputLongSide(tier){
-    // keep conservative for now; can be tuned later
-    return (tier === "high") ? 320 : 256;
+    // Depth Anything V2 *dynamic* ONNX models require H and W to be multiples of 14.
+    // Pick values that are already multiples of 14 so snapping doesn't upscale.
+    // high: 336 (=24*14), mid/low: 280 (=20*14)
+    return (tier === "high") ? 336 : 280;
   }
 
-  function _downscaleToCanvas(bitmap, longSide){
+  function _snapToMultiple(v, m){
+    v = (v|0);
+    if(!m || m<=1) return Math.max(1, v);
+    const snapped = Math.floor(v / m) * m;
+    return Math.max(m, snapped);
+  }
+
+  function _downscaleToCanvas(bitmap, longSide, snapMultiple){
     const bw = bitmap.width || 1;
     const bh = bitmap.height || 1;
     let w = bw;
@@ -183,6 +194,12 @@
     }
     w = Math.max(1, w|0);
     h = Math.max(1, h|0);
+
+    // For dynamic depth models: enforce H/W multiples (e.g. 14 for DAv2).
+    if(snapMultiple && snapMultiple > 1){
+      w = _snapToMultiple(w, snapMultiple);
+      h = _snapToMultiple(h, snapMultiple);
+    }
     const c = document.createElement("canvas");
     c.width = w;
     c.height = h;
@@ -315,7 +332,10 @@
       if(!inName || !outName) throw new Error("Depth model IO names not found");
 
       const longSide = _pickDepthInputLongSide(ai.device.tier);
-      const ds = _downscaleToCanvas(bmp, longSide);
+      // Depth Anything V2 dynamic ONNX requires H/W multiples of 14.
+      // We detect dynamic models by filename to keep this patch minimal and safe.
+      const isDynamic = /_dynamic\.onnx(\?|$)/i.test(depthUrl);
+      const ds = _downscaleToCanvas(bmp, longSide, isDynamic ? 14 : 0);
       const inputTensor = _canvasToNCHWTensor(ort, ds.canvas, ds.w, ds.h);
 
       const feeds = {};

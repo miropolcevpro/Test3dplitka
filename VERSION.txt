@@ -1,1 +1,1 @@
-mvp-iter2.2.34-ultra-depth-ortcdn-stable
+mvp-iter2.2.35-ultra-depth-model-url
