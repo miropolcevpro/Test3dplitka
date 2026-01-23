@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.39-ultra-depth-fx1",ts:new Date().toISOString()},
+    build: { version: "mvp-iter2.2.40-ultra-occlusion-interactive",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -39,7 +39,12 @@ window.PhotoPaveState=(function(){
       plane:null,
       confidence:0,
       // Masks
+      // Interactive occlusion mask (premium). If present, compositor will clip tiles under objects.
+      // Shape: {canvas:HTMLCanvasElement,width:number,height:number,photoHash:string,updatedAt:number}
       occlusionMask:null,
+      // Feature toggles (UI)
+      occlusionEnabled:true,
+      _occPickMode:false,
       floorHintMask:null,
       depthMap:null,
       depthReady:false,

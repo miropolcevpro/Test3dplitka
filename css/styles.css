@@ -33,6 +33,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .btn:hover{background:rgba(255,255,255,0.10)}
 .btn--ghost{background:transparent}
 .btn--danger{border-color:rgba(255,77,79,0.45);background:rgba(255,77,79,0.10)}
+.btn--active{box-shadow:0 0 0 2px rgba(0,0,0,0.18) inset}
 .note{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.35}
 .hr{height:1px;background:var(--border);margin:12px 0}
 .list{display:flex;flex-direction:column;gap:6px;margin-top:10px}

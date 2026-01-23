@@ -342,6 +342,12 @@ async function handlePhotoFile(file){
     // Ultra AI toggle (skeleton)
     const aiChk = document.getElementById("aiUltraChk");
     const aiStatusEl = document.getElementById("aiStatusText");
+
+    // Premium occlusion controls (Patch 4)
+    const aiOccChk = document.getElementById("aiOccChk");
+    const aiOccPickBtn = document.getElementById("aiOccPickBtn");
+    const aiOccClearBtn = document.getElementById("aiOccClearBtn");
+    const aiOccHint = document.getElementById("aiOccHint");
     function renderAiStatus(){
       if(!aiStatusEl) return;
       const a = state.ai || {};
@@ -350,11 +356,13 @@ async function handlePhotoFile(file){
       const tier = a.device && a.device.tier ? a.device.tier : "";
       const wg = (a.device && a.device.webgpu) ? "WebGPU" : "no WebGPU";
       const depth = (a.depthMap && a.depthReady) ? "depth" : "";
+      const occ = (a.occlusionMask && a.occlusionMask.canvas) ? "occ" : "";
       let txt = `AI: ${st}`;
       if(q) txt += ` • ${q}`;
       if(tier) txt += ` • ${tier}`;
       txt += ` • ${wg}`;
       if(depth) txt += ` • ${depth}`;
+      if(occ) txt += ` • ${occ}`;
       aiStatusEl.textContent = txt;
     }
     if(aiChk){
@@ -368,10 +376,45 @@ async function handlePhotoFile(file){
         renderAiStatus();
       });
     }
+
+    // Occlusion toggle (enabled by default, but does nothing until user creates a mask).
+    if(aiOccChk){
+      aiOccChk.checked = !(state.ai && state.ai.occlusionEnabled === false);
+      aiOccChk.addEventListener("change", ()=>{
+        state.ai = state.ai || {};
+        state.ai.occlusionEnabled = aiOccChk.checked;
+        renderAiStatus();
+        ED.render();
+      });
+    }
+
+    // Enter/exit pick mode (click on photo to select an object).
+    if(aiOccPickBtn){
+      aiOccPickBtn.addEventListener("click", ()=>{
+        state.ai = state.ai || {};
+        state.ai._occPickMode = !(state.ai._occPickMode);
+        if(aiOccHint) aiOccHint.style.display = state.ai._occPickMode ? "block" : "none";
+        aiOccPickBtn.classList.toggle("btn--active", !!state.ai._occPickMode);
+      });
+    }
+
+    // Clear occlusion mask
+    if(aiOccClearBtn){
+      aiOccClearBtn.addEventListener("click", ()=>{
+        state.ai = state.ai || {};
+        state.ai.occlusionMask = null;
+        state.ai._occPickMode = false;
+        if(aiOccHint) aiOccHint.style.display = "none";
+        if(aiOccPickBtn) aiOccPickBtn.classList.remove("btn--active");
+        renderAiStatus();
+        ED.render();
+      });
+    }
     window.addEventListener("ai:status", renderAiStatus);
     window.addEventListener("ai:ready", renderAiStatus);
     window.addEventListener("ai:error", renderAiStatus);
     window.addEventListener("ai:depthReady", renderAiStatus);
+    window.addEventListener("ai:occlusionReady", renderAiStatus);
     renderAiStatus();
 
     // AI debug overlay (Patch 3.1)

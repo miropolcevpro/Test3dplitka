@@ -835,6 +835,23 @@ function polyPath(points){
   const pt=eventToImgPt(ev);
   const zone=getActiveZone();const cut=getActiveCutout(zone);
 
+  // Patch 4: Interactive occlusion pick mode (premium)
+  // When enabled, a click on the photo selects an object to be excluded from tiling.
+  try{
+    const a = state.ai || null;
+    const hasPhoto = !!(state.assets && state.assets.photoBitmap && state.assets.photoW && state.assets.photoH);
+    if(hasPhoto && a && a.enabled !== false && a.occlusionEnabled !== false && a._occPickMode && window.AIUltraPipeline && typeof window.AIUltraPipeline.pickOcclusionAt === "function"){
+      const nx = (pt.x / Math.max(1, state.assets.photoW));
+      const ny = (pt.y / Math.max(1, state.assets.photoH));
+      // Shift+click removes from mask.
+      window.AIUltraPipeline.pickOcclusionAt(nx, ny, {mode: ev.shiftKey ? "sub" : "add"})
+        .then(()=>{ try{ window.dispatchEvent(new Event("ai:occlusionReady")); }catch(_){ } render(); })
+        .catch((e)=>{ console.warn("[AI] occlusion pick error", e); try{ window.dispatchEvent(new Event("ai:error")); }catch(_){ } });
+      // Do not interact with contour editing while in pick mode.
+      return;
+    }
+  }catch(_){ }
+
   // Reset pending close candidate each pointerdown
   pendingClose = null;
 

@@ -572,6 +572,175 @@
     }
   }
 
+  // ---------------- Premium occlusion (interactive segmentation)
+  // This is intentionally "user-driven" to avoid heavy per-frame ML. User clicks an object once;
+  // we cache the occlusion mask by photoHash and deliver it to the WebGL compositor.
+
+  const MP_VERSION = "0.10.15";
+  const MP_WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
+  // Default model shipped by MediaPipe for InteractiveSegmenter (publicly hosted).
+  const MP_DEFAULT_MODEL_URL = "https://storage.googleapis.com/mediapipe-tasks/interactive_segmenter/ptm_512_hdt_ptm_woid.tflite";
+
+  let _mpVision = null;
+  let _mpSegmenter = null;
+  let _occInputCanvas = null;
+  let _occCanvas = null;
+  let _occHash = null;
+
+  async function ensureInteractiveSegmenter(){
+    if(_mpSegmenter) return _mpSegmenter;
+    if(!_mpVision){
+      // Dynamic import keeps this optional and avoids bundler requirements.
+      _mpVision = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`);
+    }
+    const FilesetResolver = _mpVision.FilesetResolver;
+    const InteractiveSegmenter = _mpVision.InteractiveSegmenter;
+    const fileset = await FilesetResolver.forVisionTasks(MP_WASM_BASE);
+    _mpSegmenter = await InteractiveSegmenter.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: (state.ai?.models?.interactiveSegUrl || MP_DEFAULT_MODEL_URL) },
+      outputCategoryMask: true,
+      outputConfidenceMasks: false
+    });
+    return _mpSegmenter;
+  }
+
+  function _ensureOccCanvases(info){
+    const photoW = info && info.photoW ? info.photoW : (state.assets && state.assets.photoW) || 0;
+    const photoH = info && info.photoH ? info.photoH : (state.assets && state.assets.photoH) || 0;
+    const long = Math.max(1, photoW, photoH);
+    const longSide = 512;
+    const sc = longSide / long;
+    const w = Math.max(1, Math.round(photoW * sc));
+    const h = Math.max(1, Math.round(photoH * sc));
+
+    if(!_occInputCanvas){ _occInputCanvas = document.createElement("canvas"); }
+    if(!_occCanvas){ _occCanvas = document.createElement("canvas"); }
+
+    if(_occInputCanvas.width !== w || _occInputCanvas.height !== h){
+      _occInputCanvas.width = w; _occInputCanvas.height = h;
+    }
+    if(_occCanvas.width !== w || _occCanvas.height !== h){
+      _occCanvas.width = w; _occCanvas.height = h;
+      // Reset on resize
+      const ctx0 = _occCanvas.getContext("2d");
+      ctx0.clearRect(0,0,w,h);
+    }
+
+    return { w, h };
+  }
+
+  function _maskToBinaryU8(maskImageData){
+    // Converts mask ImageData into a 0/255 grayscale Uint8ClampedArray.
+    const d = maskImageData.data;
+    const out = new Uint8ClampedArray(maskImageData.width * maskImageData.height);
+    for(let i=0,j=0;i<d.length;i+=4,j++){
+      // Category mask: non-zero means selected region.
+      const v = d[i];
+      out[j] = (v > 0) ? 255 : 0;
+    }
+    return out;
+  }
+
+  function _blendOccMask(mode, binU8, w, h){
+    // Union/subtract into persistent occlusion canvas.
+    const ctx = _occCanvas.getContext("2d");
+    const img = ctx.getImageData(0,0,w,h);
+    const d = img.data;
+    if(mode === "sub"){
+      for(let p=0, i=0;p<binU8.length;p++, i+=4){
+        if(binU8[p] > 0){
+          d[i] = 0; d[i+1] = 0; d[i+2] = 0; d[i+3] = 0;
+        }
+      }
+    }else{
+      for(let p=0, i=0;p<binU8.length;p++, i+=4){
+        const v = binU8[p];
+        if(v > 0){
+          // Store mask in RGB (alpha also filled) for straightforward sampling.
+          d[i] = 255; d[i+1] = 255; d[i+2] = 255; d[i+3] = 255;
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    // Light feather for nicer edges (cheap): draw blurred copy over itself.
+    try{
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.filter = "blur(1.2px)";
+      ctx.drawImage(_occCanvas, 0, 0);
+      ctx.restore();
+    }catch(_){ /* noop */ }
+  }
+
+  async function pickOcclusionAt(nx, ny, opts={}){
+    // nx,ny are normalized in photo coordinates (0..1).
+    const a = state.ai || (state.ai = {});
+    if(a.enabled === false) return;
+    if(a.occlusionEnabled === false) return;
+    if(!(state.assets && state.assets.photoBitmap && state.assets.photoW && state.assets.photoH)) return;
+
+    const seg = await ensureInteractiveSegmenter();
+    const info = {
+      photoBitmap: state.assets.photoBitmap,
+      photoW: state.assets.photoW,
+      photoH: state.assets.photoH
+    };
+
+    // Ensure hash and canvases
+    if(!a.photoHash){
+      try{ a.photoHash = await computePhotoHash(info); }catch(_){ a.photoHash = String(Date.now()); }
+    }
+    const dims = _ensureOccCanvases(info);
+    const ctxIn = _occInputCanvas.getContext("2d");
+    ctxIn.clearRect(0,0,dims.w,dims.h);
+    ctxIn.drawImage(info.photoBitmap, 0, 0, dims.w, dims.h);
+
+    if(_occHash !== a.photoHash){
+      _occHash = a.photoHash;
+      // Reset per photo
+      const ctx0 = _occCanvas.getContext("2d");
+      ctx0.clearRect(0,0,dims.w,dims.h);
+    }
+
+    const x = Math.max(0, Math.min(1, nx));
+    const y = Math.max(0, Math.min(1, ny));
+    const mode = (opts && opts.mode === "sub") ? "sub" : "add";
+
+    let res = null;
+    // segment() is synchronous in many builds, but handle Promise-based implementations as well.
+    res = seg.segment(_occInputCanvas, { keypoint: { x, y } });
+    if(res && typeof res.then === "function"){
+      res = await res;
+    }
+    const cm = res && res.categoryMask ? res.categoryMask : null;
+    if(!cm) throw new Error("InteractiveSegmenter returned empty categoryMask");
+
+    let maskImageData = null;
+    try{
+      maskImageData = cm.getAsImageData();
+    }catch(_){
+      // Fallback: build ImageData from raw data if supported.
+      const u8 = cm.getAsUint8Array ? cm.getAsUint8Array() : null;
+      const mw = cm.width || dims.w;
+      const mh = cm.height || dims.h;
+      if(!u8) throw new Error("Cannot read mask data");
+      const rgba = new Uint8ClampedArray(mw*mh*4);
+      for(let p=0, i=0;p<u8.length;p++, i+=4){
+        const v = u8[p];
+        rgba[i] = v; rgba[i+1] = v; rgba[i+2] = v; rgba[i+3] = 255;
+      }
+      maskImageData = new ImageData(rgba, mw, mh);
+    }
+
+    const bin = _maskToBinaryU8(maskImageData);
+    _blendOccMask(mode, bin, maskImageData.width, maskImageData.height);
+
+    // Publish to state
+    a.occlusionMask = { canvas: _occCanvas, width: _occCanvas.width, height: _occCanvas.height, photoHash: a.photoHash, updatedAt: Date.now() };
+    return true;
+  }
+
   // -------- Public API
   const API = {
     setEnabled(v){
@@ -590,7 +759,8 @@
     },
     // For debugging/manual triggers
     _run: run,
-    _ensureOrtLoaded: ensureOrtLoaded
+    _ensureOrtLoaded: ensureOrtLoaded,
+    pickOcclusionAt
   };
 
   window.AIUltraPipeline = API;

@@ -47,6 +47,11 @@ window.PhotoPaveCompositor = (function(){
   let aiDepthKey = null;
   let aiDepthW = 0, aiDepthH = 0;
 
+  // Ultra AI resources (Patch 4) - occlusion mask (tile under objects)
+  let aiOccTex = null;
+  let aiOccKey = null;
+  let aiOccW = 0, aiOccH = 0;
+
   function _destroyTex(t){
     try{ if(t) gl.deleteTexture(t); }catch(_){/*noop*/}
   }
@@ -80,6 +85,33 @@ window.PhotoPaveCompositor = (function(){
 
     gl.bindTexture(gl.TEXTURE_2D, null);
     aiDepthTex = tex;
+  }
+
+  function _ensureAIOcclusionTexture(ai){
+    const om = ai && ai.occlusionMask ? ai.occlusionMask : null;
+    const enabled = !(ai && ai.occlusionEnabled === false);
+    const key = (om && (om.photoHash || (ai && ai.photoHash) || "")) + "|" + (om && om.updatedAt ? om.updatedAt : 0);
+    if(!enabled || !om || !om.canvas){
+      if(aiOccTex){ _destroyTex(aiOccTex); aiOccTex=null; aiOccKey=null; }
+      return;
+    }
+    if(aiOccTex && aiOccKey === key && aiOccW === (om.width|0) && aiOccH === (om.height|0)) return;
+    if(aiOccTex){ _destroyTex(aiOccTex); aiOccTex=null; }
+    aiOccKey = key;
+    aiOccW = om.width|0;
+    aiOccH = om.height|0;
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    // Upload RGBA canvas (mask stored in RGB/alpha)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, om.canvas);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    aiOccTex = tex;
   }
 
 
@@ -229,6 +261,8 @@ window.PhotoPaveCompositor = (function(){
   uniform sampler2D uDepth;
   uniform int uHasDepth;
   uniform int uDepthFarHigh;
+  uniform sampler2D uOcc;
+  uniform int uHasOcc;
 
   uniform vec2 uResolution; // render target size in pixels
   uniform mat3 uInvH;       // image(px)->plane(uv)
@@ -282,6 +316,14 @@ window.PhotoPaveCompositor = (function(){
       float interiorMask = smoothstep(0.90, 0.995, mb);
       float targetAlpha = mix(alphaEdge, 1.0, interiorMask);
       alpha = targetAlpha * op;
+    }
+
+    // Premium occlusion: if a mask exists, clip the tile under selected objects.
+    // The mask is in photo space, so we sample with uvSrc.
+    if(uHasOcc == 1){
+      float occ = texture(uOcc, uvSrc).r; // 0..1
+      float o = smoothstep(0.15, 0.60, occ);
+      alpha *= (1.0 - o);
     }
 
     if(alpha <= 0.0005){
@@ -1004,6 +1046,10 @@ function _blendModeId(blend){
     // Optional AI depth texture (Patch 4): used for far fade/haze only.
     const hasDepth = !!aiDepthTex && !!(ai && ai.depthMap && ai.depthMap.canvas);
     _bindTex(5, hasDepth ? aiDepthTex : photoTex);
+
+    // Optional occlusion mask (Patch 4): clip tile under objects.
+    const hasOcc = !!aiOccTex && !!(ai && ai.occlusionMask && ai.occlusionMask.canvas) && !(ai && ai.occlusionEnabled === false);
+    _bindTex(6, hasOcc ? aiOccTex : photoTex);
     gl.uniform1i(gl.getUniformLocation(progZone,'uPrev'), 0);
     gl.uniform1i(gl.getUniformLocation(progZone,'uPhoto'), 1);
     gl.uniform1i(gl.getUniformLocation(progZone,'uTile'), 2);
@@ -1012,6 +1058,9 @@ function _blendModeId(blend){
     gl.uniform1i(gl.getUniformLocation(progZone,'uDepth'), 5);
     gl.uniform1i(gl.getUniformLocation(progZone,'uHasDepth'), hasDepth ? 1 : 0);
     gl.uniform1i(gl.getUniformLocation(progZone,'uDepthFarHigh'), (hasDepth && ai && ai.depthFarHigh === false) ? 0 : 1);
+
+    gl.uniform1i(gl.getUniformLocation(progZone,'uOcc'), 6);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uHasOcc'), hasOcc ? 1 : 0);
 
     // Params
     const params = zone.material?.params || {};
@@ -1054,9 +1103,10 @@ function _blendModeId(blend){
     _ensureTargets(w,h);
 
 
-    // Patch 2: if AI depth map is available, upload it as a GL texture (no visual effect yet).
+    // Ultra AI resources: upload depth + occlusion (if available). Safe no-ops on errors.
     if(ai){
       try{ _ensureAIDepthTexture(ai); }catch(_){ /* no-op */ }
+      try{ _ensureAIOcclusionTexture(ai); }catch(_){ /* no-op */ }
     }
 
     // Start composite with the photo.
