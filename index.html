@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_19_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_20_0" />
 </head>
 <body>
   <div class="app">
@@ -27,12 +27,22 @@
     </div>
 
     <main class="main">
-      <aside class="texturesPane">
+      <aside class="leftPane">
 
 
         <div class="panel panel--textures" id="texturesPanel">
           <div class="panel__title">Текстуры</div>
           
+
+
+        <div class="panel">
+          <div class="panel__title">Сохранить и отправить</div>
+          <div class="panel__body">
+            <div class="row">
+              <button class="btn" id="exportPngBtn">Скачать PNG</button>
+              <button class="btn btn--ghost" id="copySummaryBtn">Скопировать описание</button>
+            </div>
+            
       </aside>
 
       <section class="canvasPane">
@@ -59,9 +69,9 @@
           <canvas id="editorCanvas"></canvas>
           <div class="uploadOverlay" id="uploadOverlay">
             <div class="uploadOverlay__box">
-              <div class="uploadOverlay__title">Загрузите фотографию двора</div>
+              <div class="uploadOverlay__title">Загрузите фото своего двора для визуализации мощения</div>
               <div class="uploadOverlay__subtitle">Перетащите файл сюда или выберите с устройства. Фото будет показано полностью, без прокрутки страницы.</div>
-              <button class="btn" id="uploadOverlayBtn">Выбрать файл</button>
+              <button class="btn" id="uploadOverlayBtn">Загрузить фото</button>
             </div>
           </div>
         </div>
@@ -92,34 +102,6 @@
         </div>
 <div class="panel__body panel__body--textures">
             <div id="texturesList" class="texturesGrid"></div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel__title">Зоны мощения</div>
-          <div class="panel__body">
-            <div class="row">
-              <button class="btn" id="addZoneBtn">Добавить зону</button>
-              <button class="btn btn--ghost" id="dupZoneBtn">Дублировать</button>
-              <button class="btn btn--danger" id="delZoneBtn">Удалить</button>
-            </div>
-
-            <div class="row">
-              <button class="btn btn--ghost" id="closePolyBtn" title="Закрыть текущий контур/вырез">Замкнуть контур</button>
-            </div>
-            <div id="zonesList" class="list"></div>
-
-            <div class="hr"></div>
-
-            <div class="row">
-              <button class="btn" id="addCutoutBtn">Добавить вырез</button>
-              <button class="btn btn--danger" id="delCutoutBtn">Удалить вырез</button>
-            </div>
-            <div id="cutoutsList" class="list"></div>
-
-            <div class="note">
-              Плоскость пола определяется автоматически по контуру (без отдельного шага). Зон и вырезов может быть много.
-            </div>
           </div>
         </div>
 
@@ -174,17 +156,40 @@
               Итерация 1: текстура тайлится в координатах изображения и клипится по контуру+вырезам (без перспективы).
               Следующая итерация: перспективная укладка по плоскости пола (homography/WebGL) без изменения UI/данных.
             </div>
-          </div>
-        </div>
+          
+
 
         <div class="panel">
-          <div class="panel__title">Сохранить и отправить</div>
+          <div class="panel__title">Зоны мощения</div>
           <div class="panel__body">
             <div class="row">
-              <button class="btn" id="exportPngBtn">Скачать PNG</button>
-              <button class="btn btn--ghost" id="copySummaryBtn">Скопировать описание</button>
+              <button class="btn" id="addZoneBtn">Добавить зону</button>
+              <button class="btn btn--ghost" id="dupZoneBtn">Дублировать</button>
+              <button class="btn btn--danger" id="delZoneBtn">Удалить</button>
             </div>
+
+            
+<div class="row">
+              <button class="btn btn--ghost" id="closePolyBtn" title="Закрыть текущий контур/вырез">Замкнуть контур</button>
+            </div>
+            <div id="zonesList" class="list"></div>
+
+            <div class="hr"></div>
+
             <div class="row">
+              <button class="btn" id="addCutoutBtn">Добавить вырез</button>
+              <button class="btn btn--danger" id="delCutoutBtn">Удалить вырез</button>
+            </div>
+            <div id="cutoutsList" class="list"></div>
+
+            <div class="note">
+              Плоскость пола определяется автоматически по контуру (без отдельного шага). Зон и вырезов может быть много.
+            </div>
+          </div>
+        </div>
+</div>
+        </div>
+<div class="row">
               <button class="btn btn--ghost" id="waBtn">WhatsApp</button>
               <button class="btn btn--ghost" id="tgBtn">Telegram</button>
               <button class="btn btn--ghost" id="shareBtn">Поделиться</button>
@@ -205,12 +210,12 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-    <script src="js/updater.js?v=iter2_2_19_0"></script>
-<script src="js/state.js?v=iter2_2_19_0"></script>
-  <script src="js/api.js?v=iter2_2_19_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_19_0"></script>
-  <script src="js/editor.js?v=iter2_2_19_0"></script>
-  <script src="js/app.js?v=iter2_2_19_0"></script>
+    <script src="js/updater.js?v=iter2_2_20_0"></script>
+<script src="js/state.js?v=iter2_2_20_0"></script>
+  <script src="js/api.js?v=iter2_2_20_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_20_0"></script>
+  <script src="js/editor.js?v=iter2_2_20_0"></script>
+  <script src="js/app.js?v=iter2_2_20_0"></script>
 
     <div class="field">
       <label>Контур</label>
