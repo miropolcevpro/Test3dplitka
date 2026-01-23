@@ -259,6 +259,38 @@
     return { canvas: c, min: mn, max: mx };
   }
 
+  function _estimateDepthFarHigh(depth01, w, h){
+    // Heuristic: in typical outdoor photos, far regions are near the horizon (upper image)
+    // and near regions are at the bottom. Compare means.
+    try{
+      if(!depth01 || w*h !== depth01.length || w < 8 || h < 8) return true;
+      const band = Math.max(2, Math.floor(h * 0.18));
+      let topSum=0, topCnt=0, botSum=0, botCnt=0;
+      for(let y=0;y<band;y++){
+        const off = y*w;
+        for(let x=0;x<w;x++){
+          const v = depth01[off+x];
+          if(Number.isFinite(v)){ topSum += v; topCnt++; }
+        }
+      }
+      for(let y=h-band;y<h;y++){
+        const off = y*w;
+        for(let x=0;x<w;x++){
+          const v = depth01[off+x];
+          if(Number.isFinite(v)){ botSum += v; botCnt++; }
+        }
+      }
+      if(topCnt < 16 || botCnt < 16) return true;
+      const topMean = topSum / topCnt;
+      const botMean = botSum / botCnt;
+      // If top is larger, normalized values are higher for far (good).
+      // Otherwise, treat it as inverted.
+      return topMean >= botMean;
+    }catch(_){
+      return true;
+    }
+  }
+
   // Estimate a dominant "far" direction from a relative depth map.
   // Conservative by design: if signal is weak, returns low confidence and will be ignored by the compositor.
   // Output dir is normalized in image space (x right, y down).
@@ -464,6 +496,10 @@
         modelUrl: sessionInfo.modelUrl,
         photoHash: ai.photoHash || null
       };
+
+      // Determine whether normalized depth values increase with distance (far=high).
+      // This allows shaders to apply far effects consistently even if the model output is inverted.
+      ai.depthFarHigh = _estimateDepthFarHigh(depthNorm, ow, oh);
 
       // Patch 3 groundwork: infer a dominant plane direction from depth (conservative confidence).
       // Compositor may use this to orient the perspective along the real scene direction.

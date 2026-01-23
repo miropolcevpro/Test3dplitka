@@ -226,6 +226,9 @@ window.PhotoPaveCompositor = (function(){
   uniform sampler2D uTile;
   uniform sampler2D uMask;
   uniform sampler2D uMaskBlur;
+  uniform sampler2D uDepth;
+  uniform int uHasDepth;
+  uniform int uDepthFarHigh;
 
   uniform vec2 uResolution; // render target size in pixels
   uniform mat3 uInvH;       // image(px)->plane(uv)
@@ -319,11 +322,24 @@ window.PhotoPaveCompositor = (function(){
     float shade = mix(1.0, clamp(0.65 + lum * 0.75, 0.55, 1.35), fit);
     tileLin *= shade;
 
-    // Far fade to reduce moire: gently desaturate and compress contrast as uv.y approaches 1
-    float farK = clamp(uv.y, 0.0, 1.0) * clamp(uFarFade, 0.0, 1.0);
+    // Far fade to reduce moire + add subtle atmospheric integration.
+    // If depth is available, prefer it over uv.y, because the real "far" direction may be diagonal.
+    float farBase = clamp(uv.y, 0.0, 1.0);
+    if(uHasDepth==1){
+      float d = texture(uDepth, uvSrc).r; // 0..1 (normalized in AI pipeline)
+      float farD = (uDepthFarHigh==1) ? d : (1.0 - d);
+      // Stabilize extremes and reduce sensitivity to noisy depth.
+      farBase = smoothstep(0.10, 0.95, clamp(farD, 0.0, 1.0));
+    }
+    float farK = farBase * clamp(uFarFade, 0.0, 1.0);
     float gray = dot(tileLin, vec3(0.2126,0.7152,0.0722));
     tileLin = mix(tileLin, vec3(gray), farK*0.15);
     tileLin = mix(tileLin, vec3(0.5) + (tileLin-vec3(0.5))*0.85, farK*0.35);
+
+    // Depth haze: gently blend towards the photo to reduce "cutout" feeling in the distance.
+    // Keep it subtle to avoid visible color shifts.
+    float haze = farK * 0.14;
+    tileLin = mix(tileLin, photoLin, haze);
 
     // Contact AO along the edge: use blurred mask halo
     float ao = clamp((mb - m) * 1.8, 0.0, 1.0);
@@ -970,7 +986,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, ai){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -985,11 +1001,17 @@ function _blendModeId(blend){
     _bindTex(2, tileTex);
     _bindTex(3, maskEntry.maskTex);
     _bindTex(4, maskEntry.blurTex);
+    // Optional AI depth texture (Patch 4): used for far fade/haze only.
+    const hasDepth = !!aiDepthTex && !!(ai && ai.depthMap && ai.depthMap.canvas);
+    _bindTex(5, hasDepth ? aiDepthTex : photoTex);
     gl.uniform1i(gl.getUniformLocation(progZone,'uPrev'), 0);
     gl.uniform1i(gl.getUniformLocation(progZone,'uPhoto'), 1);
     gl.uniform1i(gl.getUniformLocation(progZone,'uTile'), 2);
     gl.uniform1i(gl.getUniformLocation(progZone,'uMask'), 3);
     gl.uniform1i(gl.getUniformLocation(progZone,'uMaskBlur'), 4);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uDepth'), 5);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uHasDepth'), hasDepth ? 1 : 0);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uDepthFarHigh'), (hasDepth && ai && ai.depthFarHigh === false) ? 0 : 1);
 
     // Params
     const params = zone.material?.params || {};
@@ -1104,7 +1126,7 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-_renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);
+    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -1140,6 +1162,11 @@ const tmp = src; src = dst; dst = tmp;
   async function exportPNG(state, opts={}){
     if(!gl) throw new Error('WebGL compositor not initialized');
     if(!state?.assets?.photoBitmap || !photoTex) throw new Error('No photo loaded');
+
+    const ai = state && state.ai ? state.ai : null;
+    if(ai){
+      try{ _ensureAIDepthTexture(ai); }catch(_){ /*no-op*/ }
+    }
 
     const longSide = Math.max(1, photoW, photoH);
     const reqLong = clamp(opts.maxLongSide || longSide, 512, 4096);
@@ -1203,7 +1230,7 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH);
+      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai);
       const tmp = src; src = dst; dst = tmp;
     }
 

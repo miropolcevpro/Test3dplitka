@@ -412,7 +412,8 @@ async function handlePhotoFile(file){
         // Text
         ctx.fillStyle = "rgba(255,255,255,0.92)";
         ctx.font = "12px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial";
-        ctx.fillText(`AI depth: ${a.depthReady ? "ready" : "off"}   conf=${conf.toFixed(2)}   mix=${mix.toFixed(2)}`, 10, 18);
+        const farHigh = (a.depthFarHigh === false) ? "inv" : "ok";
+        ctx.fillText(`AI depth: ${a.depthReady ? "ready" : "off"}   conf=${conf.toFixed(2)}   mix=${mix.toFixed(2)}   far=${farHigh}`, 10, 18);
 
         // Arrow (planeDir). dir is normalized in image space: x right, y down (far tends to negative y).
         const cx = 120, cy = 48;
