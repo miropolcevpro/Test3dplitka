@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_23_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_24_0" />
 </head>
 <body>
   <div class="app">
@@ -28,11 +28,7 @@
 
     <main class="main">
       <aside class="leftPane" id="leftPane">
-
-          
-
-
-        <div class="panel">
+<div class="panel">
           <div class="panel__title">Сохранить и отправить</div>
           <div class="panel__body">
             <div class="row">
@@ -41,23 +37,15 @@
             </div>
             
       
-<div class="panel">
-          <div class="panel__title">Сохранить и отправить</div>
-          <div class="panel__body">
-            <div class="row">
-              <button class="btn" id="exportPngBtn">Скачать PNG</button>
-              <button class="btn btn--ghost" id="copySummaryBtn">Скопировать описание</button>
-            </div>
-
-
 
         <div class="panel panel--textures" id="texturesPanel">
           <div class="panel__title">Текстуры</div>
-          
+          <div class="panel__body panel__body--textures">
+            <div id="texturesList" class="texturesGrid"></div>
+          </div>
+        </div>
 
-
-        
-</aside>
+      </aside>
 
       <section class="canvasPane">
         <div class="canvasToolbar">
@@ -183,10 +171,7 @@
             </div>
           </div>
         </div>
-<div class="panel__body panel__body--textures">
-            <div id="texturesList" class="texturesGrid"></div>
-          </div>
-        </div>
+</div>
 <div class="row">
               <button class="btn btn--ghost" id="closePolyBtn" title="Закрыть текущий контур/вырез">Замкнуть контур</button>
             </div>
@@ -228,12 +213,12 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-    <script src="js/updater.js?v=iter2_2_23_0"></script>
-<script src="js/state.js?v=iter2_2_23_0"></script>
-  <script src="js/api.js?v=iter2_2_23_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_23_0"></script>
-  <script src="js/editor.js?v=iter2_2_23_0"></script>
-  <script src="js/app.js?v=iter2_2_23_0"></script>
+    <script src="js/updater.js?v=iter2_2_24_0"></script>
+<script src="js/state.js?v=iter2_2_24_0"></script>
+  <script src="js/api.js?v=iter2_2_24_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_24_0"></script>
+  <script src="js/editor.js?v=iter2_2_24_0"></script>
+  <script src="js/app.js?v=iter2_2_24_0"></script>
 
     <div class="field">
       <label>Контур</label>
