@@ -158,6 +158,60 @@ zone.material.textureUrl=null;}
     }catch(e){}
   }
 
+  // Left textures panel: make its height fit exactly 3 texture cards (no vertical clipping),
+  // then keep the panel anchored to the bottom-left. Does not change preview image sizes.
+  function fitLeftTexturesPanelForThree(){
+    try{
+      const left = document.getElementById("leftPane");
+      const panel = document.getElementById("texturesPanel");
+      if(!left || !panel) return;
+      if(panel.parentElement !== left) return;
+      const body = panel.querySelector(".panel__body--textures");
+      const list = document.getElementById("texturesList");
+      if(!body || !list) return;
+      const cards = list.querySelectorAll(".card");
+      if(!cards || !cards.length){
+        panel.style.removeProperty("--left-textures-panel-h");
+        return;
+      }
+      const count = Math.min(3, cards.length);
+      const cardRect = cards[0].getBoundingClientRect();
+      const cardH = Math.max(0, Math.round(cardRect.height));
+      if(!cardH){
+        panel.style.removeProperty("--left-textures-panel-h");
+        return;
+      }
+
+      const listCS = getComputedStyle(list);
+      const gap = parseFloat(listCS.rowGap || listCS.gap || "8") || 8;
+      const listNeeded = (cardH * count) + (gap * Math.max(0, count - 1));
+
+      const bodyCS = getComputedStyle(body);
+      const padTop = parseFloat(bodyCS.paddingTop) || 0;
+      const padBot = parseFloat(bodyCS.paddingBottom) || 0;
+
+      const header = panel.querySelector(".panel__title");
+      const headerH = header ? Math.round(header.getBoundingClientRect().height) : 0;
+
+      // Border compensation (panel has 1px border on top/bottom)
+      let desired = headerH + padTop + padBot + listNeeded + 2;
+
+      // If left column is smaller (e.g. small viewport), cap to available space.
+      let avail = Math.floor(left.getBoundingClientRect().height);
+      // subtract the export panel height and the column gap
+      const exp = left.querySelector(".panel:not(#texturesPanel)");
+      if(exp){
+        const gapCol = parseFloat(getComputedStyle(left).gap || "10") || 10;
+        avail = Math.max(0, avail - Math.round(exp.getBoundingClientRect().height) - gapCol);
+      }
+      if(avail > 0) desired = Math.min(desired, avail);
+
+      panel.style.setProperty("--left-textures-panel-h", desired + "px");
+    }catch(e){
+      // never break app on layout helpers
+    }
+  }
+
   function resolveTextureUrl(t){ return t.albedoUrl || t.previewUrl || null; }
 
   function renderTexturesUI(){
@@ -183,6 +237,9 @@ zone.material.textureUrl=null;}
       wrap.appendChild(card);
     }
     if(!list.length) wrap.innerHTML=`<div class="note">Нет текстур для этой формы или палитра пуста.</div>`;
+
+    // After DOM is updated, adjust the left textures panel height to show 3 cards fully.
+    requestAnimationFrame(fitLeftTexturesPanelForThree);
   }
 
   async function loadTexturesForActiveShape(){
@@ -286,7 +343,10 @@ async function handlePhotoFile(file){
     }
 
     // Recompute adaptive shape thumbnail sizing on resize (iframe layouts can clip the bottom bar).
-    window.addEventListener("resize", ()=>{ requestAnimationFrame(fitShapesToBottomMenu); });
+    window.addEventListener("resize", ()=>{
+      requestAnimationFrame(fitShapesToBottomMenu);
+      requestAnimationFrame(fitLeftTexturesPanelForThree);
+    });
 
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
     const btnPlane=el("modePlane");

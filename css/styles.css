@@ -175,8 +175,24 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 
 /* Left bottom textures: keep export on top, textures anchored bottom */
 #leftPane{display:flex;flex-direction:column;min-height:0;gap:10px;flex:0 0 190px;max-width:220px;min-width:170px}
-#leftPane #texturesPanel{margin-top:auto;display:flex;flex-direction:column;min-height:0}
-#leftPane #texturesPanel .panel__body--textures{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;padding:8px 8px}
+#leftPane #texturesPanel{margin-top:auto;display:flex;flex-direction:column;min-height:0; height: var(--left-textures-panel-h, auto);}
+/* Left textures list: use the available space and show at least 3 items fully (height is set from JS).
+   Also move the scrollbar to the LEFT side for better ergonomics in the left column. */
+#leftPane #texturesPanel .panel__body--textures{
+  flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;
+  padding:8px 8px;
+  max-height:none; /* override the global 42vh limit for the left column */
+  direction: rtl;  /* put scrollbar on the left */
+}
+/* Restore normal text/layout flow inside the list */
+#leftPane #texturesPanel #texturesList,
+#leftPane #texturesPanel .note{ direction: ltr; text-align:left; }
+
+/* Left scrollbar styling for textures */
+#leftPane #texturesPanel .panel__body--textures{scrollbar-width:thin; scrollbar-color: rgba(0,229,255,0.45) rgba(255,255,255,0.06);}
+#leftPane #texturesPanel .panel__body--textures::-webkit-scrollbar{width:10px}
+#leftPane #texturesPanel .panel__body--textures::-webkit-scrollbar-thumb{background:rgba(0,229,255,0.35);border-radius:999px;border:2px solid rgba(15,18,24,0.92)}
+#leftPane #texturesPanel .panel__body--textures::-webkit-scrollbar-track{background:rgba(255,255,255,0.06);border-radius:999px}
 #leftPane .texturesGrid{display:flex;flex-direction:column;gap:8px}
 #leftPane .texturesGrid .card{width:100%;border-radius:12px}
 #leftPane .texturesGrid .thumb{aspect-ratio:1/1;background:#0b0e14}
