@@ -1,1 +1,1 @@
-mvp-iter2.2.35-ultra-depth-model-url
+mvp-iter2.2.36-ultra-depth-ort-loader-fix

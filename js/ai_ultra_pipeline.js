@@ -79,17 +79,20 @@
   }
 
   // -------- ORT loader (local-first, CDN fallback)
+  const USE_LOCAL_ORT = !!(S && S.state && S.state.ai && S.state.ai.models && S.state.ai.models.useLocalOrt);
   const ORT_SCRIPT_CANDIDATES = [
-    // local (recommended: keep ORT JS + WASM from the same version)
-    { url: "assets/ai/ort/ort.all.min.js", wasmBase: "assets/ai/ort/" },
-
-    // CDN fallbacks (pinned; MUST match wasmBase version)
+    // CDN (default). Pinned versions; wasmBase MUST match JS bundle version.
     { url: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.min.js",
       wasmBase: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/" },
 
     { url: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/ort.all.min.js",
       wasmBase: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/" }
   ];
+
+  if(USE_LOCAL_ORT){
+    // Optional local override (kept off by default to avoid 404 noise in production).
+    ORT_SCRIPT_CANDIDATES.unshift({ url: "assets/ai/ort/ort.all.min.js", wasmBase: "assets/ai/ort/" });
+  }
 
   // Default depth model URL. Can be overridden via state.ai.models.depthUrl.
   // Team-provided model in Yandex Object Storage (Depth Anything V2 ViT-B outdoor dynamic).
@@ -109,11 +112,7 @@
   }
 
   async function _loadScriptOnce(url){
-    // Avoid console 404 noise for missing local assets: check existence before injecting <script>.
-    if(_isRelativeUrl(url)){
-      const ok = await _headExists(url);
-      if(!ok) return false;
-    }
+    // Load script once; no preflight HEAD to avoid noisy 404 logs on GitHub Pages.
     return new Promise((resolve,reject)=>{
       const s = document.createElement("script");
       s.src = url;
