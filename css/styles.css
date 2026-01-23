@@ -79,7 +79,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 
 /* Shapes row: keep image size policy (contain) but make the frame fit the preview (no empty bars)
    by adapting thumbnail aspect-ratio per image. */
-.hscroll--shapes .card{width:180px;height:auto;padding:0}
+.hscroll--shapes .card{width:var(--shape-card-w,180px);height:auto;padding:0}
 .hscroll--shapes .card__label{display:none !important}
 .hscroll--shapes .title,.hscroll--shapes .badge{display:none !important}
 .hscroll--shapes .thumb{height:auto !important;aspect-ratio:var(--shape-ar, 4/3) !important}
@@ -128,7 +128,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
   .topbar{position:sticky;top:0}
   .sidePane{order:2}
   .canvasPane{order:1}
-  .hscroll--shapes .card{width:150px;height:auto}
+  .hscroll--shapes .card{width:var(--shape-card-w,150px);height:auto}
   .hscroll--textures .card{width:200px;height:150px}
 }
 

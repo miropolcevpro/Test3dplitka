@@ -104,6 +104,58 @@ zone.material.textureUrl=null;}
       });
       wrap.appendChild(card);
     }
+    // After DOM is updated, adaptively size shape cards so the strip fits without clipping.
+    requestAnimationFrame(fitShapesToBottomMenu);
+  }
+
+
+  // Ensure the shapes strip never gets visually clipped by the bottom bar height in fixed-layout iframe contexts.
+  // We preserve the "frame hugs the image" logic (aspect-ratio per preview), and only adaptively reduce the overall
+  // preview size (card width), so the thumbnails fully fit into the allocated bottom area.
+  function fitShapesToBottomMenu(){
+    try{
+      const list = el("shapesList");
+      const bottomMenu = document.querySelector(".bottomMenu");
+      if(!list || !bottomMenu) return;
+
+      // Measure available height for thumbnails inside the bottom menu.
+      const titleEl = bottomMenu.querySelector(".bottomTitle");
+      const titleH = titleEl ? titleEl.getBoundingClientRect().height : 0;
+
+      const cs = getComputedStyle(bottomMenu);
+      const padTop = parseFloat(cs.paddingTop || "0") || 0;
+      const padBottom = parseFloat(cs.paddingBottom || "0") || 0;
+
+      // Reserve some space for gaps, the scrollbar, and breathing room.
+      const reserved = 28; // px
+      const avail = Math.max(90, bottomMenu.clientHeight - padTop - padBottom - titleH - reserved);
+
+      // Clamp the target thumbnail height to keep a stable look across screens.
+      const targetH = Math.max(96, Math.min(156, avail));
+
+      // Adapt card width per intrinsic aspect ratio so that resulting thumb height <= targetH.
+      const cards = list.querySelectorAll(".card");
+      cards.forEach((card)=>{
+        let ar = 0;
+        try{
+          const arStr = getComputedStyle(card).getPropertyValue("--shape-ar").trim();
+          ar = parseFloat(arStr);
+        }catch(e){}
+        if(!isFinite(ar) || ar <= 0){
+          const img = card.querySelector("img");
+          if(img && img.naturalWidth && img.naturalHeight){
+            ar = img.naturalWidth / img.naturalHeight;
+          }
+        }
+        if(!isFinite(ar) || ar <= 0) ar = 4/3;
+
+        let w = Math.round(targetH * ar);
+        // Keep reasonable bounds so it stays usable and consistent with existing layout.
+        w = Math.max(120, Math.min(180, w));
+
+        card.style.setProperty("--shape-card-w", w + "px");
+      });
+    }catch(e){}
   }
 
   function resolveTextureUrl(t){ return t.albedoUrl || t.previewUrl || null; }
@@ -232,6 +284,9 @@ async function handlePhotoFile(file){
         }
       }, { passive:false });
     }
+
+    // Recompute adaptive shape thumbnail sizing on resize (iframe layouts can clip the bottom bar).
+    window.addEventListener("resize", ()=>{ requestAnimationFrame(fitShapesToBottomMenu); });
 
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
     const btnPlane=el("modePlane");
