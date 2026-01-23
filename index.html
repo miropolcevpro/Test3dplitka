@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_37_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_38_0" />
 </head>
 <body>
   <div class="app">
@@ -67,6 +67,11 @@
         <div class="canvasWrap" id="canvasWrap">
           <canvas id="glCanvas"></canvas>
           <canvas id="editorCanvas"></canvas>
+
+          <div class="aiDebugOverlay" id="aiDebugOverlay" aria-hidden="true">
+            <canvas id="aiDebugCanvas" width="240" height="76"></canvas>
+            <canvas id="aiDepthThumb" width="96" height="96"></canvas>
+          </div>
 
           <div class="uploadOverlay" id="uploadOverlay">
             <div class="uploadOverlay__box">
@@ -206,12 +211,12 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/state.js?v=iter2_2_37_0"></script>
-  <script src="js/updater.js?v=iter2_2_37_0"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_37_0"></script>
-  <script src="js/api.js?v=iter2_2_37_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_37_0"></script>
-  <script src="js/editor.js?v=iter2_2_37_0"></script>
-  <script src="js/app.js?v=iter2_2_37_0"></script>
+  <script src="js/state.js?v=iter2_2_38_0"></script>
+  <script src="js/updater.js?v=iter2_2_38_0"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_38_0"></script>
+  <script src="js/api.js?v=iter2_2_38_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_38_0"></script>
+  <script src="js/editor.js?v=iter2_2_38_0"></script>
+  <script src="js/app.js?v=iter2_2_38_0"></script>
 </body>
 </html>

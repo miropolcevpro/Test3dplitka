@@ -207,3 +207,9 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .chkline{display:flex;align-items:center;gap:8px;user-select:none;}
 .chkline input{margin:0;}
 .note--compact{margin-top:6px;font-size:12px;opacity:.85;line-height:1.2;}
+
+
+/* AI Debug Overlay (Patch 3.1) — hidden by default, enabled via ?aidebug=1 or Ctrl+Shift+D */
+.aiDebugOverlay{position:absolute;left:10px;top:10px;display:none;gap:10px;align-items:flex-start;z-index:5;padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.45);backdrop-filter:blur(6px)}
+.aiDebugOverlay canvas{display:block;border-radius:10px;border:1px solid rgba(255,255,255,0.10);background:rgba(0,0,0,0.20)}
+.aiDebugOverlay--on{display:flex}

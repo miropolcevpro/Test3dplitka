@@ -374,6 +374,111 @@ async function handlePhotoFile(file){
     window.addEventListener("ai:depthReady", renderAiStatus);
     renderAiStatus();
 
+    // AI debug overlay (Patch 3.1)
+    // Enable via URL param ?aidebug=1 or Ctrl+Shift+D. Hidden by default to avoid UX changes.
+    const aiDbgWrap = document.getElementById("aiDebugOverlay");
+    const aiDbgCanvas = document.getElementById("aiDebugCanvas");
+    const aiDepthThumb = document.getElementById("aiDepthThumb");
+
+    function _aiMixFromConf(conf){
+      // Must match webgl_compositor.js
+      const c0 = 0.18, c1 = 0.55;
+      const t = Math.max(0, Math.min(1, (conf - c0) / ((c1 - c0) || 1e-6)));
+      return t*t*(3 - 2*t);
+    }
+
+    function setAiDebugOverlayEnabled(v){
+      state.ai = state.ai || {};
+      state.ai.debugOverlay = !!v;
+      if(aiDbgWrap){
+        aiDbgWrap.classList.toggle("aiDebugOverlay--on", !!v);
+        aiDbgWrap.setAttribute("aria-hidden", v ? "false" : "true");
+      }
+      drawAiDebugOverlay();
+    }
+
+    function drawAiDebugOverlay(){
+      if(!(state.ai && state.ai.debugOverlay)) return;
+      const a = state.ai || {};
+      const conf = isFinite(a.confidence) ? a.confidence : 0;
+      const mix = isFinite(a._lastMix) ? a._lastMix : _aiMixFromConf(conf);
+      const dir = a.planeDir || null;
+
+      if(aiDbgCanvas){
+        const ctx = aiDbgCanvas.getContext("2d");
+        const W = aiDbgCanvas.width|0, H = aiDbgCanvas.height|0;
+        ctx.clearRect(0,0,W,H);
+
+        // Text
+        ctx.fillStyle = "rgba(255,255,255,0.92)";
+        ctx.font = "12px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial";
+        ctx.fillText(`AI depth: ${a.depthReady ? "ready" : "off"}   conf=${conf.toFixed(2)}   mix=${mix.toFixed(2)}`, 10, 18);
+
+        // Arrow (planeDir). dir is normalized in image space: x right, y down (far tends to negative y).
+        const cx = 120, cy = 48;
+        ctx.strokeStyle = "rgba(255,255,255,0.85)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3, 0, Math.PI*2);
+        ctx.stroke();
+
+        if(dir && isFinite(dir.x) && isFinite(dir.y)){
+          const scale = 28;
+          const ex = cx + dir.x * scale;
+          const ey = cy + dir.y * scale;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(ex, ey);
+          ctx.stroke();
+
+          // Arrow head
+          const ang = Math.atan2(ey-cy, ex-cx);
+          const ah = 7;
+          ctx.beginPath();
+          ctx.moveTo(ex, ey);
+          ctx.lineTo(ex - ah*Math.cos(ang - 0.6), ey - ah*Math.sin(ang - 0.6));
+          ctx.lineTo(ex - ah*Math.cos(ang + 0.6), ey - ah*Math.sin(ang + 0.6));
+          ctx.closePath();
+          ctx.fillStyle = "rgba(255,255,255,0.85)";
+          ctx.fill();
+
+          ctx.fillStyle = "rgba(255,255,255,0.75)";
+          ctx.fillText(`dir=(${dir.x.toFixed(2)}, ${dir.y.toFixed(2)})`, 10, 66);
+        }else{
+          ctx.fillStyle = "rgba(255,255,255,0.65)";
+          ctx.fillText("dir=(n/a)", 10, 66);
+        }
+      }
+
+      if(aiDepthThumb){
+        const ctx2 = aiDepthThumb.getContext("2d");
+        const W2 = aiDepthThumb.width|0, H2 = aiDepthThumb.height|0;
+        ctx2.clearRect(0,0,W2,H2);
+        if(a.depthMap && a.depthMap.canvas){
+          try{ ctx2.drawImage(a.depthMap.canvas, 0, 0, W2, H2); }catch(_){}
+        }
+      }
+    }
+
+    // URL flag
+    try{
+      const qs = new URLSearchParams(location.search);
+      if(qs.get("aidebug")==="1"){ setAiDebugOverlayEnabled(true); }
+    }catch(_){}
+
+    window.addEventListener("ai:ready", drawAiDebugOverlay);
+    window.addEventListener("ai:depthReady", drawAiDebugOverlay);
+    window.addEventListener("ai:status", drawAiDebugOverlay);
+    window.addEventListener("ai:error", drawAiDebugOverlay);
+
+    // Ctrl+Shift+D toggles debug overlay
+    window.addEventListener("keydown",(e)=>{
+      if(e.ctrlKey && e.shiftKey && (e.key==="D" || e.key==="d")){
+        setAiDebugOverlayEnabled(!(state.ai && state.ai.debugOverlay));
+        e.preventDefault();
+      }
+    });
+
     // Horizontal wheel scrolling for the shapes strip (keep orientation horizontal, allow mouse wheel).
     const shapesStrip = document.getElementById("shapesList");
     if(shapesStrip){

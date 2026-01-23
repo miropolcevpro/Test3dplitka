@@ -14,6 +14,11 @@
 
 window.PhotoPaveCompositor = (function(){
   const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+  const lerp = (a,b,t)=>a + (b-a)*t;
+  const smoothstep = (e0,e1,x)=>{
+    const t = clamp((x - e0) / ((e1 - e0) || 1e-6), 0, 1);
+    return t*t*(3 - 2*t);
+  };
   const EPS = 1e-9;
 
   let canvas = null;
@@ -681,17 +686,74 @@ function _inferQuadFromContour(contour, params, w, h){
   const dy = yMax - yMin;
   if(!isFinite(dy) || dy < 2) return null;
 
-  // Patch 3: optional AI-guided quad inference.
-  // If AI provides a dominant plane direction (in normalized image space) with decent confidence,
-  // infer near/far along that direction (instead of always assuming "far is up").
+  // Patch 3.1: AI-guided quad inference with confidence mixing.
+  // We always compute a stable default quad (horizontal scanlines),
+  // then (optionally) compute an AI-oriented quad and blend between them.
+  // This makes the effect observable while remaining safe: low confidence => near-zero influence.
+
   let nearL = null, nearR = null, farL = null, farR = null;
   let usedAi = false;
+
+  // Default: scanlines slightly inside the hull to avoid vertex-only intersections.
+  const inset = Math.max(4, dy * 0.12);
+  let yNear = yMax - inset;
+  let yFar  = yMin + inset;
+  if(yNear <= yFar + 1) {
+    yNear = yMax - Math.max(2, dy*0.25);
+    yFar  = yMin + Math.max(2, dy*0.25);
+    if(yNear <= yFar + 1) return null;
+  }
+
+  function xRangeAtY(y){
+    const xs = [];
+    for(let i=0;i<poly.length-1;i++){
+      const a=poly[i], b=poly[i+1];
+      // Skip horizontal edges
+      if(Math.abs(b.y - a.y) < 1e-9) continue;
+      const y0=a.y, y1=b.y;
+      const ymin=Math.min(y0,y1), ymax=Math.max(y0,y1);
+      // Strict-ish containment to reduce double-hits at vertices
+      if(y < ymin || y > ymax) continue;
+      const t = (y - a.y) / (b.y - a.y);
+      if(t < 0 || t > 1) continue;
+      const x = a.x + t*(b.x - a.x);
+      if(isFinite(x)) xs.push(x);
+    }
+    if(xs.length < 2) return null;
+    xs.sort((p,q)=>p-q);
+    return {min: xs[0], max: xs[xs.length-1]};
+  }
+
+  let rNear = xRangeAtY(yNear);
+  let rFar  = xRangeAtY(yFar);
+
+  // If we miss due to numeric edge cases, relax inset
+  if(!rNear || !rFar){
+    const inset2 = Math.max(2, dy * 0.06);
+    yNear = yMax - inset2;
+    yFar  = yMin + inset2;
+    rNear = xRangeAtY(yNear);
+    rFar  = xRangeAtY(yFar);
+    if(!rNear || !rFar) return null;
+  }
+
+  // Baseline (default) endpoints
+  const baseNearL = {x: rNear.min, y: yNear};
+  const baseNearR = {x: rNear.max, y: yNear};
+  const baseFarL  = {x: rFar.min,  y: yFar};
+  const baseFarR  = {x: rFar.max,  y: yFar};
+
+  // Optional AI quad (near/far cuts along dominant plane direction).
+  let aiNearL=null, aiNearR=null, aiFarL=null, aiFarR=null;
+  let aiMix = 0;
+
   try{
     const aiDirN = params && params._aiPlaneDir ? params._aiPlaneDir : null;
     const aiConf = params && isFinite(params._aiConfidence) ? params._aiConfidence : 0;
-    if(aiDirN && aiConf >= 0.35 && isFinite(aiDirN.x) && isFinite(aiDirN.y)){
-      // Convert normalized dir (0..1 space) into photo-pixel space direction.
-      // Use photoW/photoH to account for aspect.
+    aiMix = params && isFinite(params._aiMix) ? params._aiMix : smoothstep(0.18, 0.55, aiConf);
+
+    if(aiDirN && aiMix > 0.001 && isFinite(aiDirN.x) && isFinite(aiDirN.y)){
+      // Convert normalized dir into photo-pixel direction (aspect-aware).
       const dxp = aiDirN.x * Math.max(1, photoW||1);
       const dyp = aiDirN.y * Math.max(1, photoH||1);
       let dm = Math.hypot(dxp, dyp);
@@ -722,11 +784,10 @@ function _inferQuadFromContour(contour, params, w, h){
               const a=poly[i], b=poly[i+1];
               const da = (a.x*d.x + a.y*d.y) - t;
               const db = (b.x*d.x + b.y*d.y) - t;
-              // If edge is entirely on one side, skip.
               if((da > 0 && db > 0) || (da < 0 && db < 0)) continue;
               const denom = (da - db);
               if(Math.abs(denom) < 1e-9) continue;
-              const u = da / denom; // between 0..1
+              const u = da / denom;
               if(u < 0 || u > 1) continue;
               const x = a.x + u*(b.x - a.x);
               const y = a.y + u*(b.y - a.y);
@@ -740,7 +801,7 @@ function _inferQuadFromContour(contour, params, w, h){
           let sNear = segAtT(tNear);
           let sFar  = segAtT(tFar);
 
-          // If we miss due to numeric edge cases, relax inset
+          // Relax inset if needed
           if(!sNear || !sFar){
             const inset2 = Math.max(2, dt * 0.06);
             tNear = tMax - inset2;
@@ -750,69 +811,29 @@ function _inferQuadFromContour(contour, params, w, h){
           }
 
           if(sNear && sFar){
-            nearL = {x: sNear.min.x, y: sNear.min.y};
-            nearR = {x: sNear.max.x, y: sNear.max.y};
-            farL  = {x: sFar.min.x,  y: sFar.min.y};
-            farR  = {x: sFar.max.x,  y: sFar.max.y};
-            usedAi = true;
+            aiNearL = {x: sNear.min.x, y: sNear.min.y};
+            aiNearR = {x: sNear.max.x, y: sNear.max.y};
+            aiFarL  = {x: sFar.min.x,  y: sFar.min.y};
+            aiFarR  = {x: sFar.max.x,  y: sFar.max.y};
           }
         }
       }
     }
   }catch(_){ /* no-op */ }
 
-  if(!usedAi){
-    // Default: scanlines slightly inside the hull to avoid vertex-only intersections.
-    const inset = Math.max(4, dy * 0.12);
-    let yNear = yMax - inset;
-    let yFar  = yMin + inset;
-    if(yNear <= yFar + 1) {
-      yNear = yMax - Math.max(2, dy*0.25);
-      yFar  = yMin + Math.max(2, dy*0.25);
-      if(yNear <= yFar + 1) return null;
-    }
-
-    function xRangeAtY(y){
-      const xs = [];
-      for(let i=0;i<poly.length-1;i++){
-        const a=poly[i], b=poly[i+1];
-        // Skip horizontal edges
-        if(Math.abs(b.y - a.y) < 1e-9) continue;
-        const y0=a.y, y1=b.y;
-        const ymin=Math.min(y0,y1), ymax=Math.max(y0,y1);
-        // Strict-ish containment to reduce double-hits at vertices
-        if(y < ymin || y > ymax) continue;
-        const t = (y - a.y) / (b.y - a.y);
-        if(t < 0 || t > 1) continue;
-        const x = a.x + t*(b.x - a.x);
-        if(isFinite(x)) xs.push(x);
-      }
-      if(xs.length < 2) return null;
-      xs.sort((p,q)=>p-q);
-      return {min: xs[0], max: xs[xs.length-1]};
-    }
-
-    let rNear = xRangeAtY(yNear);
-    let rFar  = xRangeAtY(yFar);
-
-    // If we miss due to numeric edge cases, relax inset
-    if(!rNear || !rFar){
-      const inset2 = Math.max(2, dy * 0.06);
-      yNear = yMax - inset2;
-      yFar  = yMin + inset2;
-      rNear = xRangeAtY(yNear);
-      rFar  = xRangeAtY(yFar);
-      if(!rNear || !rFar) return null;
-    }
-
-    // Construct near/far segment endpoints in image-space
-    nearL = {x: rNear.min, y: yNear};
-    nearR = {x: rNear.max, y: yNear};
-    farL  = {x: rFar.min,  y: yFar};
-    farR  = {x: rFar.max,  y: yFar};
+  // Blend baseline and AI quad (if available)
+  if(aiNearL && aiNearR && aiFarL && aiFarR && aiMix > 0.001){
+    nearL = {x: lerp(baseNearL.x, aiNearL.x, aiMix), y: lerp(baseNearL.y, aiNearL.y, aiMix)};
+    nearR = {x: lerp(baseNearR.x, aiNearR.x, aiMix), y: lerp(baseNearR.y, aiNearR.y, aiMix)};
+    farL  = {x: lerp(baseFarL.x,  aiFarL.x,  aiMix), y: lerp(baseFarL.y,  aiFarL.y,  aiMix)};
+    farR  = {x: lerp(baseFarR.x,  aiFarR.x,  aiMix), y: lerp(baseFarR.y,  aiFarR.y,  aiMix)};
+    usedAi = true;
+  }else{
+    nearL = baseNearL; nearR = baseNearR; farL = baseFarL; farR = baseFarR;
+    usedAi = false;
   }
 
-  // Guard against super-thin quads
+// Guard against super-thin quads
   if(Math.abs(nearR.x - nearL.x) < 2 || Math.abs(farR.x - farL.x) < 2) return null;
 
   // User controls: keep them gentle and monotonic
@@ -1052,11 +1073,16 @@ let invH = null;
 // Patch 3: if AI inferred a dominant plane direction with decent confidence, pass it to quad inference.
 const baseParams = zone.material?.params||{};
 let quadParams = baseParams;
-if(ai && ai.enabled !== false && ai.planeDir && (ai.confidence||0) >= 0.35){
+if(ai && ai.enabled !== false && ai.planeDir){
+  const conf = isFinite(ai.confidence) ? ai.confidence : 0;
+  const mix = smoothstep(0.18, 0.55, conf);
   quadParams = Object.assign({}, baseParams, {
     _aiPlaneDir: ai.planeDir,
-    _aiConfidence: ai.confidence||0
+    _aiConfidence: conf,
+    _aiMix: mix
   });
+  // Expose for debug overlay (read-only).
+  try{ ai._lastMix = mix; }catch(_){/*noop*/}
 }
 const quad = _inferQuadFromContour(zone.contour, quadParams, w, h);
 if(quad){
