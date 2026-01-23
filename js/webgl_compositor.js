@@ -37,6 +37,47 @@ window.PhotoPaveCompositor = (function(){
   const maskCache = new Map(); // key -> {maskTex, blurTex, w,h, ts}
   const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
 
+  // Ultra AI resources (Patch 2)
+  let aiDepthTex = null;
+  let aiDepthKey = null;
+  let aiDepthW = 0, aiDepthH = 0;
+
+  function _destroyTex(t){
+    try{ if(t) gl.deleteTexture(t); }catch(_){/*noop*/}
+  }
+
+  function _ensureAIDepthTexture(ai){
+    // We only "deliver" depth map to GL here (upload as texture) without using it in shaders yet.
+    const dm = ai && ai.depthMap ? ai.depthMap : null;
+    const key = dm && (dm.photoHash || (ai && ai.photoHash) || '');
+    if(!dm || !dm.canvas){
+      if(aiDepthTex){ _destroyTex(aiDepthTex); aiDepthTex=null; aiDepthKey=null; }
+      return;
+    }
+    if(aiDepthTex && aiDepthKey === key && aiDepthW === dm.width && aiDepthH === dm.height) return;
+
+    // Recreate texture if changed
+    if(aiDepthTex){ _destroyTex(aiDepthTex); aiDepthTex=null; }
+    aiDepthKey = key;
+    aiDepthW = dm.width|0;
+    aiDepthH = dm.height|0;
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Upload RGBA canvas (depth packed as grayscale RGBA)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, dm.canvas);
+
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    aiDepthTex = tex;
+  }
+
+
 
   // Small reusable 2D canvases for mask raster
   const _maskCanvas = document.createElement('canvas');
@@ -393,6 +434,9 @@ window.PhotoPaveCompositor = (function(){
     canvas.width = w;
     canvas.height = h;
     _ensureTargets(w,h);
+
+    // Patch 2: if depthMap is available, upload it to a dedicated GL texture (no-op visually).
+    if(ai){ _ensureAIDepthTexture(ai); }
     gl.viewport(0,0,w,h);
   }
 
@@ -855,6 +899,8 @@ function _blendModeId(blend){
   }
 
   async function render(state){
+    const ai = state && state.ai ? state.ai : null; // reserved for Ultra AI (Patch 1), no-op for now
+
     if(!gl) return;
     const API = window.PhotoPaveAPI;
     if(!state?.assets?.photoBitmap || !photoTex){
@@ -866,6 +912,12 @@ function _blendModeId(blend){
     }
     const w = canvas.width, h = canvas.height;
     _ensureTargets(w,h);
+
+
+    // Patch 2: if AI depth map is available, upload it as a GL texture (no visual effect yet).
+    if(ai){
+      try{ _ensureAIDepthTexture(ai); }catch(_){ /* no-op */ }
+    }
 
     // Start composite with the photo.
     // photoTex is a DOM-backed upload (top-left origin) -> needs flipY during copy

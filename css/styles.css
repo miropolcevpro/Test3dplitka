@@ -201,3 +201,9 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 
 /* Ensure textures are not shown on right even if stray markup exists */
 .sidePane .panel__body--textures{display:none !important}
+
+
+/* Ultra AI toggle (Patch 1) */
+.chkline{display:flex;align-items:center;gap:8px;user-select:none;}
+.chkline input{margin:0;}
+.note--compact{margin-top:6px;font-size:12px;opacity:.85;line-height:1.2;}

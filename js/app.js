@@ -275,6 +275,14 @@ async function handlePhotoFile(file){
     ED.setMode("contour");
     // Resize canvas to the new photo size to avoid any aspect distortion
     if(ED.resize) ED.resize(); else ED.render();
+
+    // Ultra AI (skeleton): run once after photo load. Does not affect rendering in Patch 1.
+    try{
+      if(window.AIUltraPipeline && typeof window.AIUltraPipeline.onPhotoLoaded==="function"){
+        window.AIUltraPipeline.onPhotoLoaded({ file, bitmap: resized, width: nw, height: nh });
+      }
+    }catch(e){ console.warn("[AI] onPhotoLoaded failed:", e); }
+
   }
 
   function syncSettingsUI(){
@@ -329,6 +337,42 @@ async function handlePhotoFile(file){
       });
       updateContourBtn();
     }
+
+
+    // Ultra AI toggle (skeleton)
+    const aiChk = document.getElementById("aiUltraChk");
+    const aiStatusEl = document.getElementById("aiStatusText");
+    function renderAiStatus(){
+      if(!aiStatusEl) return;
+      const a = state.ai || {};
+      const st = a.status || "idle";
+      const q = a.quality || "basic";
+      const tier = a.device && a.device.tier ? a.device.tier : "";
+      const wg = (a.device && a.device.webgpu) ? "WebGPU" : "no WebGPU";
+      const depth = (a.depthMap && a.depthReady) ? "depth" : "";
+      let txt = `AI: ${st}`;
+      if(q) txt += ` • ${q}`;
+      if(tier) txt += ` • ${tier}`;
+      txt += ` • ${wg}`;
+      if(depth) txt += ` • ${depth}`;
+      aiStatusEl.textContent = txt;
+    }
+    if(aiChk){
+      aiChk.checked = (state.ai && state.ai.enabled !== false);
+      aiChk.addEventListener("change", ()=>{
+        state.ai = state.ai || {};
+        state.ai.enabled = aiChk.checked;
+        if(window.AIUltraPipeline && typeof window.AIUltraPipeline.setEnabled==="function"){
+          window.AIUltraPipeline.setEnabled(aiChk.checked);
+        }
+        renderAiStatus();
+      });
+    }
+    window.addEventListener("ai:status", renderAiStatus);
+    window.addEventListener("ai:ready", renderAiStatus);
+    window.addEventListener("ai:error", renderAiStatus);
+    window.addEventListener("ai:depthReady", renderAiStatus);
+    renderAiStatus();
 
     // Horizontal wheel scrolling for the shapes strip (keep orientation horizontal, allow mouse wheel).
     const shapesStrip = document.getElementById("shapesList");
