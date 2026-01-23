@@ -142,14 +142,14 @@ async function handlePhotoFile(file){
   }
 
   function syncSettingsUI(){
-    const z=S.getActiveZone(); if(!z) return;
+    const z=S.getActiveZone(); sanitizeZoneMaterial(z); if(!z) return;
     el("scaleRange").value=z.material.params.scale??1.0;
     el("rotRange").value=z.material.params.rotation??0;
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
     el("opacityRange").value=z.material.params.opacity??1.0;
     const oc=el("opaqueFillChk"); if(oc) oc.checked=!!(z.material.params.opaqueFill);
-    const bs=el("blendSelect"); if(bs && oc){ bs.disabled=oc.checked; if(oc.checked) bs.value="source-over"; }
-    const bs2=el("blendSelect"); if(bs2){ bs2.value = (oc && oc.checked) ? "source-over" : (z.material.params.blendMode??"source-over"); }
+if(bs && oc){ bs.disabled=oc.checked; if(oc.checked) bs.value="source-over"; }
+if(bs2){ bs2.value = (oc && oc.checked) ? "source-over" : (z.material.params.blendMode??"source-over"); }
     el("perspectiveRange").value=z.material.params.perspective??0.75;
     el("horizonRange").value=z.material.params.horizon??0.0;
   }
@@ -272,8 +272,7 @@ async function handlePhotoFile(file){
       oc.addEventListener("change",()=>{
         const z=S.getActiveZone(); if(!z) return;
         z.material.params.opaqueFill=!!oc.checked;
-        const bs=el("blendSelect");
-        if(bs){
+if(bs){
           bs.disabled=oc.checked;
           if(oc.checked){
             bs.value="source-over";
@@ -283,10 +282,7 @@ async function handlePhotoFile(file){
         ED.render();
       });
     }
-el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("blendSelect").value;ED.render();});
-
-    
-    el("perspectiveRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.perspective=parseFloat(el("perspectiveRange").value);ED.render();});
+el("perspectiveRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.perspective=parseFloat(el("perspectiveRange").value);ED.render();});
     el("horizonRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.horizon=parseFloat(el("horizonRange").value);ED.render();});
 el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
     el("copySummaryBtn").addEventListener("click",async ()=>{const t=makeSummaryText();await navigator.clipboard.writeText(t).catch(()=>{});API.setStatus("Описание скопировано");});
