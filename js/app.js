@@ -67,6 +67,21 @@
       const card=document.createElement("div");
       card.className="card"+(shapeId===state.catalog.activeShapeId?" card--active":"");
       card.innerHTML=`<div class="thumb">${preview?`<img src="${escapeAttr(preview)}" alt="${escapeAttr(title)}"/>`:""}</div>`;
+
+      // Adapt the thumbnail frame to the intrinsic image aspect ratio to remove empty bars,
+      // without changing the image fitting policy (still object-fit: contain).
+      const img = card.querySelector("img");
+      const applyShapeAr = () => {
+        try{
+          if(!img || !img.naturalWidth || !img.naturalHeight) return;
+          const ar = img.naturalWidth / img.naturalHeight;
+          if(isFinite(ar) && ar > 0) card.style.setProperty("--shape-ar", String(ar));
+        }catch(e){}
+      };
+      if(img){
+        if(img.complete) applyShapeAr();
+        img.addEventListener("load", applyShapeAr, { once: true });
+      }
       card.addEventListener("click",async ()=>{
         pushHistory();
         state.catalog.activeShapeId=shapeId;
@@ -202,6 +217,20 @@ async function handlePhotoFile(file){
         ED.render();
       });
       updateContourBtn();
+    }
+
+    // Horizontal wheel scrolling for the shapes strip (keep orientation horizontal, allow mouse wheel).
+    const shapesStrip = document.getElementById("shapesList");
+    if(shapesStrip){
+      shapesStrip.addEventListener("wheel", (e)=>{
+        // Only translate vertical wheel to horizontal scroll when user is not already doing horizontal.
+        const dy = e.deltaY || 0;
+        const dx = e.deltaX || 0;
+        if(Math.abs(dy) > Math.abs(dx)){
+          shapesStrip.scrollLeft += dy;
+          e.preventDefault();
+        }
+      }, { passive:false });
     }
 
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});

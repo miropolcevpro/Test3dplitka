@@ -71,16 +71,18 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .bottomSection{display:flex;flex-direction:column;gap:6px}
 .bottomTitle{font-size:12px;color:var(--muted);letter-spacing:.02em;padding:0 4px}
 
-.hscroll{display:flex;gap:10px;overflow-x:auto;overflow-y:hidden;padding:6px 4px 10px 4px;scrollbar-width:thin}
-.hscroll::-webkit-scrollbar{height:8px}
+.hscroll{display:flex;gap:10px;overflow-x:auto;overflow-y:hidden;padding:6px 4px 10px 4px;scrollbar-width:thin;scrollbar-gutter:stable both-edges}
+/* Keep the horizontal scrollbar ("ползунок") visible and easy to grab in iframe contexts */
+.hscroll::-webkit-scrollbar{height:10px}
 .hscroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.18);border-radius:999px}
 .hscroll .card{flex:0 0 auto}
 
-/* Shapes row: larger cards, no empty padding, thumbnails must fit fully */
-.hscroll--shapes .card{width:180px;height:126px;padding:0}
+/* Shapes row: keep image size policy (contain) but make the frame fit the preview (no empty bars)
+   by adapting thumbnail aspect-ratio per image. */
+.hscroll--shapes .card{width:180px;height:auto;padding:0}
 .hscroll--shapes .card__label{display:none !important}
 .hscroll--shapes .title,.hscroll--shapes .badge{display:none !important}
-.hscroll--shapes .thumb{height:100% !important;aspect-ratio:auto}
+.hscroll--shapes .thumb{height:auto !important;aspect-ratio:var(--shape-ar, 4/3) !important}
 .hscroll--shapes .thumb img{object-fit:contain}
 
 /* Textures grid in the right sidebar */
@@ -126,7 +128,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
   .topbar{position:sticky;top:0}
   .sidePane{order:2}
   .canvasPane{order:1}
-  .hscroll--shapes .card{width:150px;height:104px}
+  .hscroll--shapes .card{width:150px;height:auto}
   .hscroll--textures .card{width:200px;height:150px}
 }
 
