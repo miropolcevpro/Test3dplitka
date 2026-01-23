@@ -362,6 +362,59 @@
     }
   }
 
+  function _sampleDepthBilinear(depth, w, h, x, y){
+    // depth: Float32Array (0..1), x/y in pixel coords
+    if(!depth || w<=1 || h<=1) return NaN;
+    const fx = Math.max(0, Math.min(w-1, x));
+    const fy = Math.max(0, Math.min(h-1, y));
+    const x0 = Math.floor(fx), y0 = Math.floor(fy);
+    const x1 = Math.min(w-1, x0+1), y1 = Math.min(h-1, y0+1);
+    const tx = fx - x0, ty = fy - y0;
+    const i00 = y0*w + x0;
+    const i10 = y0*w + x1;
+    const i01 = y1*w + x0;
+    const i11 = y1*w + x1;
+    const d00 = depth[i00], d10 = depth[i10], d01 = depth[i01], d11 = depth[i11];
+    if(!isFinite(d00)||!isFinite(d10)||!isFinite(d01)||!isFinite(d11)) return NaN;
+    const a = d00*(1-tx) + d10*tx;
+    const b = d01*(1-tx) + d11*tx;
+    return a*(1-ty) + b*ty;
+  }
+
+  function _stabilizePlaneDirSign(depthNorm, w, h, dir, depthFarHigh){
+    // Ensure that +dir consistently points towards "far" in terms of depth.
+    // Without this, eigen/gradient sign ambiguity can flip between runs, causing texture inversion.
+    if(!dir || !isFinite(dir.x) || !isFinite(dir.y)) return dir;
+    const dx = dir.x * w;
+    const dy = dir.y * h;
+    const dm = Math.hypot(dx, dy);
+    if(!isFinite(dm) || dm < 1e-6) return dir;
+    const ux = dx / dm;
+    const uy = dy / dm;
+
+    // Sample around a near-ground anchor (lower-middle of the frame)
+    const cx = w * 0.5;
+    const cy = h * 0.72;
+    const L = Math.max(6, Math.min(w, h) * 0.16);
+    const dPlus  = _sampleDepthBilinear(depthNorm, w, h, cx + ux*L, cy + uy*L);
+    const dMinus = _sampleDepthBilinear(depthNorm, w, h, cx - ux*L, cy - uy*L);
+    if(!isFinite(dPlus) || !isFinite(dMinus)){
+      // Fallback: keep a consistent "upward" tendency
+      if(dir.y > 0) return { x: -dir.x, y: -dir.y };
+      return dir;
+    }
+
+    const diff = dPlus - dMinus;
+    // If far=high, diff should be positive for correct sign. If far=low, diff should be negative.
+    const want = depthFarHigh ? 1 : -1;
+    if(Math.abs(diff) > 0.02 && (diff * want) < 0){
+      return { x: -dir.x, y: -dir.y };
+    }
+    // Small/ambiguous gradients: avoid downward flip
+    if(dir.y > 0) return { x: -dir.x, y: -dir.y };
+    return dir;
+  }
+
   async function _ensureDepthSession(ort, preferProvider){
     const modelUrl = (state.ai && state.ai.models && state.ai.models.depthUrl) ? state.ai.models.depthUrl : DEFAULT_DEPTH_MODEL_URL;
 
@@ -504,7 +557,9 @@
       // Patch 3 groundwork: infer a dominant plane direction from depth (conservative confidence).
       // Compositor may use this to orient the perspective along the real scene direction.
       const est = _estimatePlaneDirFromDepth(depthNorm, ow, oh);
-      ai.planeDir = est.dir;
+      // Stabilize sign: +dir should reliably point towards "far" to avoid random inversion
+      // when toggling Ultra / re-running the pipeline.
+      ai.planeDir = _stabilizePlaneDirSign(depthNorm, ow, oh, est.dir, ai.depthFarHigh);
       ai.confidence = Math.max(ai.confidence||0, est.confidence||0);
 
       ai.timings.depthTotalMs = Math.round(nowMs() - t0);

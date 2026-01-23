@@ -42,6 +42,10 @@ window.PhotoPaveCompositor = (function(){
   const maskCache = new Map(); // key -> {maskTex, blurTex, w,h, ts}
   const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
 
+  // Track AI mode signature to avoid reusing a homography computed under a different
+  // Ultra configuration (can manifest as a sudden vertical inversion when toggling).
+  let _lastAIModeKey = null;
+
   // Ultra AI resources (Patch 2)
   let aiDepthTex = null;
   let aiDepthKey = null;
@@ -503,6 +507,9 @@ window.PhotoPaveCompositor = (function(){
   function _makeTileTexture(img){
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
+    // Do not rely on global pixelStore state: Ultra stages may upload other canvases.
+    // Force a consistent orientation for tile uploads to avoid sporadic flips.
+    try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); }catch(_){/*noop*/}
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -1107,6 +1114,21 @@ function _blendModeId(blend){
     if(ai){
       try{ _ensureAIDepthTexture(ai); }catch(_){ /* no-op */ }
       try{ _ensureAIOcclusionTexture(ai); }catch(_){ /* no-op */ }
+
+      // If Ultra configuration changes (toggle on/off, new dir sign, etc.) do not reuse
+      // a cached inverse homography computed for a different mode.
+      const d = ai.planeDir;
+      const k = [
+        (ai.enabled === false) ? 0 : 1,
+        ai.depthReady ? 1 : 0,
+        ai.depthFarHigh ? 1 : 0,
+        d ? (Math.round((d.x||0)*100)/100) : 0,
+        d ? (Math.round((d.y||0)*100)/100) : 0
+      ].join('|');
+      if(_lastAIModeKey !== k){
+        _lastAIModeKey = k;
+        try{ lastGoodInvH.clear(); }catch(_){/*noop*/}
+      }
     }
 
     // Start composite with the photo.
