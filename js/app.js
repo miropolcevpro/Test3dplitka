@@ -31,7 +31,9 @@
       div.addEventListener("click",()=>{pushHistory();state.ui.activeCutoutId=c.id;renderCutoutsUI();ED.render();});
       wrap.appendChild(div);
     }
-    if(!(zone.cutouts||[]).length) wrap.innerHTML=`<div class="note">Нет вырезов. Нажмите “Добавить вырез”.</div>`;
+    // Keep the cutouts list clean: when there are no cutouts, render nothing (no extra helper text).
+    // This avoids UI clutter while preserving stable DOM bindings.
+    if(!(zone.cutouts||[]).length) return;
   }
 
   function renderZonesUI(){

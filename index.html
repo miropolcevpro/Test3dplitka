@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_29_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_30_0" />
 </head>
 <body>
   <div class="app">
@@ -137,10 +137,7 @@
               <button id="toggleContourBtn" type="button" class="btn btn--ghost">Скрыть контур</button>
             </div>
 
-            <div class="note">
-              Итерация 1: текстура тайлится в координатах изображения и клипится по контуру+вырезам (без перспективы).
-              Следующая итерация: перспективная укладка по плоскости пола (homography/WebGL) без изменения UI/данных.
-            </div>
+            
           </div>
         </div>
 
@@ -175,9 +172,7 @@
 
             <div id="cutoutsList" class="list"></div>
 
-            <div class="note">
-              Плоскость пола определяется автоматически по контуру (без отдельного шага). Зон и вырезов может быть много.
-            </div>
+            
           </div>
         </div>
 
@@ -189,9 +184,7 @@
               <button class="btn btn--ghost" id="tgBtn">Telegram</button>
               <button class="btn btn--ghost" id="shareBtn">Поделиться</button>
             </div>
-            <div class="note">
-              MVP: отправка менеджеру — через deeplink с текстом; изображение прикрепляется пользователем из скачанного файла.
-            </div>
+            
           </div>
         </div>
       </aside>
@@ -204,11 +197,11 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/state.js?v=iter2_2_29_0"></script>
-  <script src="js/updater.js?v=iter2_2_29_0"></script>
-  <script src="js/api.js?v=iter2_2_29_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_29_0"></script>
-  <script src="js/editor.js?v=iter2_2_29_0"></script>
-  <script src="js/app.js?v=iter2_2_29_0"></script>
+  <script src="js/state.js?v=iter2_2_30_0"></script>
+  <script src="js/updater.js?v=iter2_2_30_0"></script>
+  <script src="js/api.js?v=iter2_2_30_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_30_0"></script>
+  <script src="js/editor.js?v=iter2_2_30_0"></script>
+  <script src="js/app.js?v=iter2_2_30_0"></script>
 </body>
 </html>
