@@ -72,12 +72,13 @@
         state.catalog.activeShapeId=shapeId;
         const zone=S.getActiveZone();
         if(zone){zone.material.shapeId=shapeId;zone.material.textureId=null;
-    // Auto-hide contour after texture is applied (visualization mode)
+    // Auto-hide contour after texture is applied (if contour already closed)
     try{
       const zone = (typeof getActiveZone==="function") ? getActiveZone() : null;
       if(zone && zone.closed && zone.points && zone.points.length >= 3){
         state.ui = state.ui || {};
         state.ui.showContour = false;
+        if(typeof updateContourBtn==="function") updateContourBtn();
       }
     }catch(e){}
 zone.material.textureUrl=null;}
@@ -186,7 +187,7 @@ async function handlePhotoFile(file){
   }
 
   function bindUI(){
-  // Contour visibility toggle (visualization overlay)
+  // Contour visibility toggle (overlay)
   const toggleContourBtn = document.getElementById("toggleContourBtn");
   function updateContourBtn(){
     if(!toggleContourBtn) return;
@@ -197,13 +198,12 @@ async function handlePhotoFile(file){
     toggleContourBtn.addEventListener("click", () => {
       state.ui = state.ui || {};
       state.ui.showContour = !(state.ui.showContour === false);
-      // toggle
       state.ui.showContour = !state.ui.showContour;
       updateContourBtn();
       editor.render();
     });
+    updateContourBtn();
   }
-  try{ updateContourBtn(); }catch(e){}
 
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
     const btnPlane=el("modePlane");
@@ -249,8 +249,8 @@ async function handlePhotoFile(file){
     if(ovBtn){ovBtn.addEventListener("click",()=>el("photoInput").click());}
     const cw=document.getElementById("canvasWrap");
     if(cw){
-  if(cw) cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
-  if(cw) cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
+      cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
+      cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
     }
 
         el("resetProjectBtn").addEventListener("click",()=>{
