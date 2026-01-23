@@ -818,9 +818,10 @@ function _inferQuadFromContour(contour, params, w, h){
     aiMix = params && isFinite(params._aiMix) ? params._aiMix : smoothstep(0.18, 0.55, aiConf);
 
     if(aiDirN && aiMix > 0.001 && isFinite(aiDirN.x) && isFinite(aiDirN.y)){
-      // Convert normalized dir into photo-pixel direction (aspect-aware).
-      const dxp = aiDirN.x * Math.max(1, photoW||1);
-      const dyp = aiDirN.y * Math.max(1, photoH||1);
+      // aiDirN is already normalized in image space with aspect compensation applied
+      // by the AI pipeline; do not rescale by photoW/photoH (avoids accidental 90°/flip artifacts).
+      const dxp = aiDirN.x;
+      const dyp = aiDirN.y;
       let dm = Math.hypot(dxp, dyp);
       if(isFinite(dm) && dm > 1e-6){
         const d = { x: dxp/dm, y: dyp/dm };
@@ -941,8 +942,9 @@ function _inferQuadFromContour(contour, params, w, h){
   // Ensure far remains "in front" of near along the inferred depth direction.
   // Default behavior uses image-space Y (y grows downward). For AI-guided quads, use projection on ai direction.
   if(usedAi && params && params._aiPlaneDir && isFinite(params._aiPlaneDir.x) && isFinite(params._aiPlaneDir.y)){
-    const dxp = params._aiPlaneDir.x * Math.max(1, photoW||1);
-    const dyp = params._aiPlaneDir.y * Math.max(1, photoH||1);
+    // _aiPlaneDir is already in image space; keep it unit-length in the same metric as contour points.
+    const dxp = params._aiPlaneDir.x;
+    const dyp = params._aiPlaneDir.y;
     let dm = Math.hypot(dxp, dyp);
     if(isFinite(dm) && dm > 1e-6){
       const d = { x: dxp/dm, y: dyp/dm };
