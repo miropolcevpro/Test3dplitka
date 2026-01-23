@@ -879,19 +879,6 @@ if(state.ui.mode==="contour"&&zone){
     if(isCloseToFirst(zone.contour,pt)){
       pushHistory();
       zone.closed=true;
-  // Auto-hide contour after closing contour if texture already selected
-  try{
-    const st = window.PhotoPaveState && window.PhotoPaveState.state;
-    if(st){
-      const z = (typeof getActiveZone==="function") ? getActiveZone() : null;
-      const zone2 = z || zone;
-      if(zone2 && zone2.material && zone2.material.textureId){
-        st.ui = st.ui || {};
-        st.ui.showContour = false;
-      }
-    }
-  }catch(e){}
-
       render();
       return;
     }
