@@ -80,16 +80,38 @@
 
   // -------- ORT loader (local-first, CDN fallback)
   const ORT_SCRIPT_CANDIDATES = [
-    // local (recommended: keep ort + wasm files from the same version)
-    "assets/ai/ort/ort.min.js",
-    // CDN fallbacks (pinned)
-    "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/ort.min.js",
-    "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.min.js"
+    // local (recommended: keep ORT JS + WASM from the same version)
+    { url: "assets/ai/ort/ort.all.min.js", wasmBase: "assets/ai/ort/" },
+
+    // CDN fallbacks (pinned; MUST match wasmBase version)
+    { url: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.min.js",
+      wasmBase: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/" },
+
+    { url: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/ort.all.min.js",
+      wasmBase: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/" }
   ];
 
   const DEFAULT_DEPTH_MODEL_URL = "assets/ai/models/depth_ultra.onnx";
 
-  function _loadScriptOnce(url){
+  function _isRelativeUrl(url){
+    return !/^https?:\/\//i.test(url);
+  }
+
+  async function _headExists(url){
+    try{
+      const res = await fetch(url, { method: "HEAD", cache: "no-store" });
+      return !!res.ok;
+    }catch(_){
+      return false;
+    }
+  }
+
+  async function _loadScriptOnce(url){
+    // Avoid console 404 noise for missing local assets: check existence before injecting <script>.
+    if(_isRelativeUrl(url)){
+      const ok = await _headExists(url);
+      if(!ok) return false;
+    }
     return new Promise((resolve,reject)=>{
       const s = document.createElement("script");
       s.src = url;
@@ -107,10 +129,24 @@
 
     _ortReadyPromise = (async ()=>{
       let lastErr = null;
-      for(const url of ORT_SCRIPT_CANDIDATES){
+      for(const cand of ORT_SCRIPT_CANDIDATES){
+        const url = cand.url;
         try{
-          await _loadScriptOnce(url);
-          if(window.ort && window.ort.InferenceSession) return window.ort;
+          const loaded = await _loadScriptOnce(url);
+          if(!loaded) continue;
+          if(window.ort && window.ort.InferenceSession){
+          try{
+            // Ensure WASM binaries are loaded from the same build/version as the JS bundle.
+            if(window.ort.env && window.ort.env.wasm){
+              window.ort.env.wasm.wasmPaths = cand.wasmBase;
+              // Avoid threaded WASM on hosts without cross-origin isolation.
+              if(typeof self !== "undefined" && !self.crossOriginIsolated){
+                window.ort.env.wasm.numThreads = 1;
+              }
+            }
+          }catch(_){/* noop */}
+          return window.ort;
+        }
           lastErr = new Error("ORT script loaded but window.ort is missing: "+url);
         }catch(e){
           lastErr = e;
@@ -238,7 +274,7 @@
     state.ai = state.ai || {};
     const ai = state.ai;
     if(ai.enabled === false) return;
-    if(!(ai.device && ai.device.webgpu)) return; // Patch 2: WebGPU-first
+    // Patch 2+: prefer WebGPU when available; otherwise use WASM fallback (slower).
     if(ai.quality !== "ultra") return;
 
     const bmp = info?.bitmap;
@@ -248,6 +284,19 @@
     ai.timings = ai.timings || {};
 
     try{
+      const depthUrl = (ai.models && ai.models.depthUrl) ? ai.models.depthUrl : DEFAULT_DEPTH_MODEL_URL;
+      // If local model file is missing, skip depth stage to avoid console 404 noise.
+      if(_isRelativeUrl(depthUrl)){
+        const ok = await _headExists(depthUrl);
+        if(!ok){
+          ai.depthReady = false;
+          ai.depthStatus = "missing_model";
+          ai.depthMap = null;
+          ai.timings.depthMs = nowMs() - t0;
+          return;
+        }
+      }
+
       const ort = await ensureOrtLoaded();
 
       // Prefer WebGPU. If it fails at session creation or run, we fallback to wasm (still safe, but can be slower).
@@ -328,7 +377,7 @@
       // Depth errors should not stop the pipeline: mark and continue.
       ai.depthReady = false;
       ai.depthMap = null;
-      console.warn("[AI] depth error:", msg);
+      if(ai.debug){ console.warn("[AI] depth error:", msg); }
     }
   }
 

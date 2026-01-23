@@ -434,9 +434,6 @@ window.PhotoPaveCompositor = (function(){
     canvas.width = w;
     canvas.height = h;
     _ensureTargets(w,h);
-
-    // Patch 2: if depthMap is available, upload it to a dedicated GL texture (no-op visually).
-    if(ai){ _ensureAIDepthTexture(ai); }
     gl.viewport(0,0,w,h);
   }
 

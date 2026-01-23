@@ -2,6 +2,10 @@
 window.PhotoPaveAPI=(function(){
   const {state}=window.PhotoPaveState;
   const setStatus=(t)=>{const el=document.getElementById("statusText");if(el)el.textContent=t||"";};
+  async function _headExists(url){
+    try{ const r=await fetch(url,{method:"HEAD",cache:"no-store"}); return !!r.ok; }catch(_){ return false; }
+  }
+
   async function fetchJson(url,opts={}){
     // opts may include headers, method, body
 
@@ -126,18 +130,31 @@ function absFromStorageMaybe(p){
   }
   async function loadPalette(shapeId){
   setStatus("Загрузка палитры…");
+  state.catalog.paletteMissing = state.catalog.paletteMissing || {};
+  if(state.catalog.paletteMissing[shapeId]){
+    setStatus("Палитра недоступна");
+    return {palette:null,textures:[]};
+  }
   // Many deployments protect /api/palettes with JWT (401 missing_token).
   // For this public website widget we prefer reading palettes directly from Object Storage.
   const s3Url=state.api.storageBase.replace(/\/$/,"")+"/palettes/"+encodeURIComponent(shapeId)+".json";
   const apiUrl=state.api.apiBase+"/api/palettes/"+encodeURIComponent(shapeId);
   let pal=null;
   try{
+    // Avoid console noise on missing palette keys: HEAD-check first.
+    const has = await _headExists(s3Url);
+    if(!has) throw new Error("palette_missing");
     pal=await fetchJson(s3Url);
   }catch(eS3){
-    try{ pal=await fetchJson(apiUrl); }
-    catch(eApi){ console.warn("Palette load failed", eS3, eApi); pal=null; }
+    // Optional gateway fallback (often returns 401 missing_token). Disabled by default.
+    if(state.api && state.api.allowApiPalette){
+      try{ pal=await fetchJson(apiUrl); }
+      catch(_eApi){ pal=null; }
+    }else{
+      pal=null;
+    }
   }
-  if(!pal){ state.catalog.palettesByShape[shapeId]=null; state.catalog.texturesByShape[shapeId]=[]; setStatus("Палитра не найдена"); return {palette:null,textures:[]}; }
+  if(!pal){ state.catalog.paletteMissing[shapeId]=true; state.catalog.palettesByShape[shapeId]=null; state.catalog.texturesByShape[shapeId]=[]; setStatus("Текстуры для этой формы временно недоступны"); return {palette:null,textures:[]}; }
 
   state.catalog.palettesByShape[shapeId]=pal;
   const tex=normalizePaletteTextures(pal).map(t=>({
