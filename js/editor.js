@@ -821,6 +821,11 @@ function polyPath(points){
   }
 
   function onPointerDown(ev){
+  try{
+    const st = window.PhotoPaveState && window.PhotoPaveState.state;
+    if(st){ st.ui = st.ui || {}; st.ui.showContour = true; }
+  }catch(e){}
+
   state.ui.isPointerDown=true;
   try{ canvas.setPointerCapture(ev.pointerId); }catch(_){}
   const pt=eventToImgPt(ev);

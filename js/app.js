@@ -71,7 +71,18 @@
         pushHistory();
         state.catalog.activeShapeId=shapeId;
         const zone=S.getActiveZone();
-        if(zone){zone.material.shapeId=shapeId;zone.material.textureId=null;zone.material.textureUrl=null;}
+        if(zone){zone.material.shapeId=shapeId;zone.material.textureId=null;
+// Auto-hide contour after texture is applied to a closed contour (visualization mode)
+try{
+  const z = state.zones && state.activeZoneId ? state.zones[state.activeZoneId] : (state.activeZone || null);
+  const zone = z || (typeof getActiveZone==="function" ? getActiveZone() : null);
+  if(zone && zone.points && zone.points.length >= 3 && zone.closed){
+    state.ui = state.ui || {};
+    state.ui.showContour = false;
+    if(typeof updateContourBtn==="function") updateContourBtn();
+  }
+}catch(e){}
+zone.material.textureUrl=null;}
         renderShapesUI();
         await loadTexturesForActiveShape();
         renderZonesUI();
@@ -148,6 +159,22 @@ async function handlePhotoFile(file){
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
     el("opacityRange").value=z.material.params.opacity??1.0;
     const oc=el("opaqueFillChk"); if(oc) oc.checked=!!(z.material.params.opaqueFill);
+
+const toggleContourBtn = document.getElementById("toggleContourBtn");
+function updateContourBtn(){
+  if(!toggleContourBtn) return;
+  const on = !!(state.ui && state.ui.showContour);
+  toggleContourBtn.textContent = on ? "Скрыть контур" : "Показать контур";
+}
+if(toggleContourBtn){
+  toggleContourBtn.addEventListener("click", () => {
+    state.ui = state.ui || {};
+    state.ui.showContour = !state.ui.showContour;
+    updateContourBtn();
+    editor.render();
+  });
+}
+
     const bs=el("blendSelect"); if(bs && oc){ bs.disabled=oc.checked; if(oc.checked) bs.value="source-over"; }
     const bs2=el("blendSelect"); if(bs2){ bs2.value = (oc && oc.checked) ? "source-over" : (z.material.params.blendMode??"source-over"); }
     el("perspectiveRange").value=z.material.params.perspective??0.75;
