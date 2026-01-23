@@ -187,23 +187,22 @@ async function handlePhotoFile(file){
   }
 
   function bindUI(){
-  // Contour visibility toggle (overlay)
-  const toggleContourBtn = document.getElementById("toggleContourBtn");
-  function updateContourBtn(){
-    if(!toggleContourBtn) return;
-    const on = !(state.ui && state.ui.showContour === false);
-    toggleContourBtn.textContent = on ? "Скрыть контур" : "Показать контур";
-  }
-  if(toggleContourBtn){
-    toggleContourBtn.addEventListener("click", () => {
-      state.ui = state.ui || {};
-      state.ui.showContour = !(state.ui && state.ui.showContour === false);
-      state.ui.showContour = !state.ui.showContour;
+    // Contour visibility toggle (overlay)
+    const toggleContourBtn = document.getElementById("toggleContourBtn");
+    const isContourShown = () => !(state.ui && state.ui.showContour === false);
+    function updateContourBtn(){
+      if(!toggleContourBtn) return;
+      toggleContourBtn.textContent = isContourShown() ? "Скрыть контур" : "Показать контур";
+    }
+    if(toggleContourBtn){
+      toggleContourBtn.addEventListener("click", () => {
+        state.ui = state.ui || {};
+        state.ui.showContour = !isContourShown();
+        updateContourBtn();
+        ED.render();
+      });
       updateContourBtn();
-      editor.render();
-    });
-    updateContourBtn();
-  }
+    }
 
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
     const btnPlane=el("modePlane");

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_24_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_25_0" />
 </head>
 <body>
   <div class="app">
@@ -21,22 +21,22 @@
 
     <div class="stepper" id="stepper">
       <div class="step step--active" data-step="photo">1 Фото</div>
-            <div class="step" data-step="zones">2 Зоны</div>
+      <div class="step" data-step="zones">2 Зоны</div>
       <div class="step" data-step="cutouts">3 Вырезы</div>
       <div class="step" data-step="export">4 Сохранить</div>
     </div>
 
     <main class="main">
       <aside class="leftPane" id="leftPane">
-<div class="panel">
+        <div class="panel">
           <div class="panel__title">Сохранить и отправить</div>
           <div class="panel__body">
             <div class="row">
               <button class="btn" id="exportPngBtn">Скачать PNG</button>
               <button class="btn btn--ghost" id="copySummaryBtn">Скопировать описание</button>
             </div>
-            
-      
+          </div>
+        </div>
 
         <div class="panel panel--textures" id="texturesPanel">
           <div class="panel__title">Текстуры</div>
@@ -44,14 +44,13 @@
             <div id="texturesList" class="texturesGrid"></div>
           </div>
         </div>
-
       </aside>
 
       <section class="canvasPane">
         <div class="canvasToolbar">
           <div class="toolGroup">
             <button class="btn btn--ghost" id="modePhoto">Фото</button>
-                        <button class="btn btn--ghost" id="modeContour">Контур</button>
+            <button class="btn btn--ghost" id="modeContour">Контур</button>
             <button class="btn btn--ghost" id="modeCutout">Вырез</button>
             <button class="btn btn--ghost" id="modeView">Просмотр</button>
           </div>
@@ -65,10 +64,10 @@
           <div class="hint" id="hintText"></div>
         </div>
 
-        
         <div class="canvasWrap" id="canvasWrap">
           <canvas id="glCanvas"></canvas>
           <canvas id="editorCanvas"></canvas>
+
           <div class="uploadOverlay" id="uploadOverlay">
             <div class="uploadOverlay__box">
               <div class="uploadOverlay__title">Загрузите фото своего двора для визуализации мощения</div>
@@ -84,12 +83,9 @@
             <div id="shapesList" class="hscroll hscroll--shapes"></div>
           </div>
         </div>
-
       </section>
 
       <aside class="sidePane">
-
-
         <div class="panel">
           <div class="panel__title">Фото</div>
           <div class="panel__body">
@@ -98,12 +94,8 @@
               <button class="btn" id="replacePhotoBtn">Заменить</button>
               <button class="btn btn--danger" id="resetProjectBtn">Сброс проекта</button>
             </div>
-            
-
-
-
-        
-
+          </div>
+        </div>
 
         <div class="panel">
           <div class="panel__title">Настройки наложения (активная зона)</div>
@@ -128,19 +120,11 @@
               <span>Режим наложения</span>
               <select id="blendSelect" style="display:none">
                 <option value="source-over">Normal</option>
-                
               </select>
             </label>
 
-            
-
             <label class="field">
               <span>Перспектива (влево — инверсия)</span>
-              <!--
-                Диапазон расширен до отрицательных значений.
-                Значение &lt; 0 используется как "инверсия направления" для 3D-плоскости/тайла.
-                По модулю значение влияет на силу перспективы как и раньше.
-              -->
               <input type="range" min="-1" max="1" step="0.01" id="perspectiveRange" />
             </label>
             <label class="field">
@@ -148,12 +132,17 @@
               <input type="range" min="-1" max="1" step="0.01" id="horizonRange" />
             </label>
 
-<div class="note">
+            <div class="field">
+              <label>Контур</label>
+              <button id="toggleContourBtn" type="button" class="btn btn--ghost">Скрыть контур</button>
+            </div>
+
+            <div class="note">
               Итерация 1: текстура тайлится в координатах изображения и клипится по контуру+вырезам (без перспективы).
               Следующая итерация: перспективная укладка по плоскости пола (homography/WebGL) без изменения UI/данных.
             </div>
-          
-
+          </div>
+        </div>
 
         <div class="panel">
           <div class="panel__title">Зоны мощения</div>
@@ -164,25 +153,26 @@
               <button class="btn btn--danger" id="delZoneBtn">Удалить</button>
             </div>
 
-            
-
-<div class="note">
+            <div class="note">
               Для стабильности фото приводится к размеру ≤ 3072px по длинной стороне (интерактивный режим).
             </div>
-          </div>
-        </div>
-</div>
-<div class="row">
+
+            <div class="row">
               <button class="btn btn--ghost" id="closePolyBtn" title="Закрыть текущий контур/вырез">Замкнуть контур</button>
             </div>
+
             <div id="zonesList" class="list"></div>
+          </div>
+        </div>
 
-            <div class="hr"></div>
-
+        <div class="panel">
+          <div class="panel__title">Вырезы</div>
+          <div class="panel__body">
             <div class="row">
               <button class="btn" id="addCutoutBtn">Добавить вырез</button>
               <button class="btn btn--danger" id="delCutoutBtn">Удалить вырез</button>
             </div>
+
             <div id="cutoutsList" class="list"></div>
 
             <div class="note">
@@ -190,9 +180,11 @@
             </div>
           </div>
         </div>
-</div>
-        </div>
-<div class="row">
+
+        <div class="panel">
+          <div class="panel__title">Поделиться</div>
+          <div class="panel__body">
+            <div class="row">
               <button class="btn btn--ghost" id="waBtn">WhatsApp</button>
               <button class="btn btn--ghost" id="tgBtn">Telegram</button>
               <button class="btn btn--ghost" id="shareBtn">Поделиться</button>
@@ -202,7 +194,6 @@
             </div>
           </div>
         </div>
-
       </aside>
     </main>
 
@@ -213,17 +204,11 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-    <script src="js/updater.js?v=iter2_2_24_0"></script>
-<script src="js/state.js?v=iter2_2_24_0"></script>
-  <script src="js/api.js?v=iter2_2_24_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_24_0"></script>
-  <script src="js/editor.js?v=iter2_2_24_0"></script>
-  <script src="js/app.js?v=iter2_2_24_0"></script>
-
-    <div class="field">
-      <label>Контур</label>
-      <button id="toggleContourBtn" type="button" class="btn">Скрыть контур</button>
-    </div>
-    
+  <script src="js/state.js?v=iter2_2_25_0"></script>
+  <script src="js/updater.js?v=iter2_2_25_0"></script>
+  <script src="js/api.js?v=iter2_2_25_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_25_0"></script>
+  <script src="js/editor.js?v=iter2_2_25_0"></script>
+  <script src="js/app.js?v=iter2_2_25_0"></script>
 </body>
 </html>

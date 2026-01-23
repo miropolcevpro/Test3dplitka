@@ -3,7 +3,9 @@
 // forces a reload with a cache-busting query param.
 (function () {
   try {
-    var localVer = (window.state && state.build && state.build.version) ? String(state.build.version) : '';
+    var st = (window.PhotoPaveState && window.PhotoPaveState.state) ? window.PhotoPaveState.state : null;
+    var localVer = (st && st.build && st.build.version) ? String(st.build.version) : '';
+
     var url = new URL(window.location.href);
     var already = url.searchParams.get('v') || '';
 

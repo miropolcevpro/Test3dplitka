@@ -704,6 +704,8 @@ function polyPath(points){
 
   function drawZonesOverlay(){
     ctx.save();
+    const show = !(state.ui && state.ui.showContour === false);
+    if(!show && state.ui.mode==="view"){ ctx.restore(); return; }
     for(const zone of state.zones){
       if(!zone.contour||zone.contour.length<2)continue;
       const isActive=zone.id===state.ui.activeZoneId;
@@ -753,6 +755,8 @@ function polyPath(points){
     if(!DASH_PREVIEW) return;
     if(state.ui.isPointerDown) return;
     if(!hoverCanvas) return;
+    const show = !(state.ui && state.ui.showContour === false);
+    if(!show && state.ui.mode==="view") return;
     const poly=getOpenPolyForMode();
     if(!poly || poly.closed) return;
     const pts=poly.points;
