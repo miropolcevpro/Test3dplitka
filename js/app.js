@@ -72,16 +72,14 @@
         state.catalog.activeShapeId=shapeId;
         const zone=S.getActiveZone();
         if(zone){zone.material.shapeId=shapeId;zone.material.textureId=null;
-// Auto-hide contour after texture is applied to a closed contour (visualization mode)
-try{
-  const z = state.zones && state.activeZoneId ? state.zones[state.activeZoneId] : (state.activeZone || null);
-  const zone = z || (typeof getActiveZone==="function" ? getActiveZone() : null);
-  if(zone && zone.points && zone.points.length >= 3 && zone.closed){
-    state.ui = state.ui || {};
-    state.ui.showContour = false;
-    if(typeof updateContourBtn==="function") updateContourBtn();
-  }
-}catch(e){}
+    // Auto-hide contour after texture is applied (visualization mode)
+    try{
+      const zone = (typeof getActiveZone==="function") ? getActiveZone() : null;
+      if(zone && zone.closed && zone.points && zone.points.length >= 3){
+        state.ui = state.ui || {};
+        state.ui.showContour = false;
+      }
+    }catch(e){}
 zone.material.textureUrl=null;}
         renderShapesUI();
         await loadTexturesForActiveShape();
@@ -159,24 +157,8 @@ async function handlePhotoFile(file){
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
     el("opacityRange").value=z.material.params.opacity??1.0;
     const oc=el("opaqueFillChk"); if(oc) oc.checked=!!(z.material.params.opaqueFill);
-
-const toggleContourBtn = document.getElementById("toggleContourBtn");
-function updateContourBtn(){
-  if(!toggleContourBtn) return;
-  const on = !!(state.ui && state.ui.showContour);
-  toggleContourBtn.textContent = on ? "Скрыть контур" : "Показать контур";
-}
-if(toggleContourBtn){
-  toggleContourBtn.addEventListener("click", () => {
-    state.ui = state.ui || {};
-    state.ui.showContour = !state.ui.showContour;
-    updateContourBtn();
-    editor.render();
-  });
-}
-
-    const bs=el("blendSelect"); if(bs && oc){ bs.disabled=oc.checked; if(oc.checked) bs.value="source-over"; }
-    const bs2=el("blendSelect"); if(bs2){ bs2.value = (oc && oc.checked) ? "source-over" : (z.material.params.blendMode??"source-over"); }
+    const bs=el("null"); if(bs && oc){ bs.disabled=oc.checked; if(oc.checked) bs.value="source-over"; }
+    const bs2=el("null"); if(bs2){ bs2.value = (oc && oc.checked) ? "source-over" : (z.material.params.blendMode??"source-over"); }
     el("perspectiveRange").value=z.material.params.perspective??0.75;
     el("horizonRange").value=z.material.params.horizon??0.0;
   }
@@ -204,6 +186,25 @@ if(toggleContourBtn){
   }
 
   function bindUI(){
+  // Contour visibility toggle (visualization overlay)
+  const toggleContourBtn = document.getElementById("toggleContourBtn");
+  function updateContourBtn(){
+    if(!toggleContourBtn) return;
+    const on = !(state.ui && state.ui.showContour === false);
+    toggleContourBtn.textContent = on ? "Скрыть контур" : "Показать контур";
+  }
+  if(toggleContourBtn){
+    toggleContourBtn.addEventListener("click", () => {
+      state.ui = state.ui || {};
+      state.ui.showContour = !(state.ui.showContour === false);
+      // toggle
+      state.ui.showContour = !state.ui.showContour;
+      updateContourBtn();
+      editor.render();
+    });
+  }
+  try{ updateContourBtn(); }catch(e){}
+
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
     const btnPlane=el("modePlane");
     if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});}
@@ -248,8 +249,8 @@ if(toggleContourBtn){
     if(ovBtn){ovBtn.addEventListener("click",()=>el("photoInput").click());}
     const cw=document.getElementById("canvasWrap");
     if(cw){
-      cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
-      cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
+  if(cw) cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
+  if(cw) cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
     }
 
         el("resetProjectBtn").addEventListener("click",()=>{
@@ -299,7 +300,7 @@ if(toggleContourBtn){
       oc.addEventListener("change",()=>{
         const z=S.getActiveZone(); if(!z) return;
         z.material.params.opaqueFill=!!oc.checked;
-        const bs=el("blendSelect");
+        const bs=el("null");
         if(bs){
           bs.disabled=oc.checked;
           if(oc.checked){
@@ -310,7 +311,7 @@ if(toggleContourBtn){
         ED.render();
       });
     }
-el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("blendSelect").value;ED.render();});
+el("null").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("null").value;ED.render();});
 
     
     el("perspectiveRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.perspective=parseFloat(el("perspectiveRange").value);ED.render();});
