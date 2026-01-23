@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_15c_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_15d_0" />
 </head>
 <body>
   <div class="app">
@@ -143,7 +143,11 @@
             </label>
             <label class="field">
               <span>Режим наложения</span>
-</label>
+              <select id="blendSelect">
+                <option value="source-over">Normal</option>
+                
+              </select>
+            </label>
 
             
 
@@ -165,11 +169,6 @@
               Итерация 1: текстура тайлится в координатах изображения и клипится по контуру+вырезам (без перспективы).
               Следующая итерация: перспективная укладка по плоскости пола (homography/WebGL) без изменения UI/данных.
             </div>
-<div class="field">
-  <label>Контур</label>
-  <button id="toggleContourBtn" type="button" class="btn">Скрыть контур</button>
-</div>
-
           </div>
         </div>
 
@@ -201,11 +200,17 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-    <script src="js/updater.js?v=iter2_2_15c_0"></script>
-<script src="js/state.js?v=iter2_2_15c_0"></script>
-  <script src="js/api.js?v=iter2_2_15c_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_15c_0"></script>
-  <script src="js/editor.js?v=iter2_2_15c_0"></script>
-  <script src="js/app.js?v=iter2_2_15c_0"></script>
+    <script src="js/updater.js?v=iter2_2_15d_0"></script>
+<script src="js/state.js?v=iter2_2_15d_0"></script>
+  <script src="js/api.js?v=iter2_2_15d_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_15d_0"></script>
+  <script src="js/editor.js?v=iter2_2_15d_0"></script>
+  <script src="js/app.js?v=iter2_2_15d_0"></script>
+
+    <div class="field">
+      <label>Контур</label>
+      <button id="toggleContourBtn" type="button" class="btn">Скрыть контур</button>
+    </div>
+    
 </body>
 </html>

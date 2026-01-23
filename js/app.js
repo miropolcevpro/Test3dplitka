@@ -28,7 +28,7 @@
       const div=document.createElement("div");
       div.className="listItem"+(c.id===state.ui.activeCutoutId?" listItem--active":"");
       div.innerHTML=`<div class="listItem__meta"><div class="listItem__title">${escapeHtml(c.name)}</div><div class="listItem__sub">${(c.polygon?.length||0)} точек</div></div>`;
-      div && div.addEventListener("click",()=>{pushHistory();state.ui.activeCutoutId=c.id;renderCutoutsUI();ED.render();});
+      div.addEventListener("click",()=>{pushHistory();state.ui.activeCutoutId=c.id;renderCutoutsUI();ED.render();});
       wrap.appendChild(div);
     }
     if(!(zone.cutouts||[]).length) wrap.innerHTML=`<div class="note">Нет вырезов. Нажмите “Добавить вырез”.</div>`;
@@ -45,7 +45,7 @@
           <div class="listItem__sub">${z.material.textureId?("Материал: "+escapeHtml(z.material.textureId)):"Материал: не выбран"}</div>
         </div>
         <div><label class="badge"><input type="checkbox" ${z.enabled?"checked":""}/> видно</label></div>`;
-      div && div.addEventListener("click",(e)=>{
+      div.addEventListener("click",(e)=>{
         if(e.target && e.target.type==="checkbox") return;
         pushHistory();
         state.ui.activeZoneId=z.id;
@@ -67,17 +67,18 @@
       const card=document.createElement("div");
       card.className="card"+(shapeId===state.catalog.activeShapeId?" card--active":"");
       card.innerHTML=`<div class="thumb">${preview?`<img src="${escapeAttr(preview)}" alt="${escapeAttr(title)}"/>`:""}</div>`;
-      card && card.addEventListener("click",async ()=>{
+      card.addEventListener("click",async ()=>{
         pushHistory();
         state.catalog.activeShapeId=shapeId;
         const zone=S.getActiveZone();
         if(zone){zone.material.shapeId=shapeId;zone.material.textureId=null;
-    // Auto-hide contour after texture applied
+    // AUTO_HIDE_CONTOUR_ON_TEXTURE
     try{
-      const zone = (typeof getActiveZone==="function") ? getActiveZone() : null;
-      if(zone && zone.closed && zone.points && zone.points.length>=3){
+      const z = (typeof getActiveZone==="function") ? getActiveZone() : null;
+      if(z && z.closed){
         state.ui = state.ui || {};
         state.ui.showContour = false;
+        if(typeof updateContourBtn==="function") updateContourBtn();
       }
     }catch(e){}
 zone.material.textureUrl=null;}
@@ -104,7 +105,7 @@ zone.material.textureUrl=null;}
       const card=document.createElement("div");
       card.className="card"+(active?" card--active":"");
       card.innerHTML=`<div class="thumb">${thumb?`<img src="${thumb}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(t.title||t.textureId||"")}</span><span class="badge">${escapeHtml(t.textureId||"")}</span></div>`;
-      card && card.addEventListener("click",()=>{
+      card.addEventListener("click",()=>{
         if(!zone) return;
         pushHistory();
         zone.material.shapeId=shapeId;
@@ -193,25 +194,27 @@ async function handlePhotoFile(file){
     const on = !(state.ui && state.ui.showContour === false);
     toggleContourBtn.textContent = on ? "Скрыть контур" : "Показать контур";
   }
-  toggleContourBtn && toggleContourBtn.addEventListener("click", () => {
-    state.ui = state.ui || {};
-    state.ui.showContour = !(state.ui.showContour === false);
-    state.ui.showContour = !state.ui.showContour;
+  if(toggleContourBtn){
+    toggleContourBtn.addEventListener("click", () => {
+      state.ui = state.ui || {};
+      state.ui.showContour = !(state.ui && state.ui.showContour === false);
+      state.ui.showContour = !state.ui.showContour;
+      updateContourBtn();
+      editor.render();
+    });
     updateContourBtn();
-    editor.render();
-  });
-  try{ updateContourBtn(); }catch(e){}
+  }
 
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
     const btnPlane=el("modePlane");
-    if(btnPlane){btnPlane && btnPlane.addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});}
+    if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});}
     el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});
     el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");syncCloseButtonUI();});
     el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");syncCloseButtonUI();});
 
     el("undoBtn").addEventListener("click",()=>{if(undo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
     el("redoBtn").addEventListener("click",()=>{if(redo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
-    window && window.addEventListener("keydown",(e)=>{
+    window.addEventListener("keydown",(e)=>{
       if(e.ctrlKey&&e.key.toLowerCase()==="z"){if(undo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
       if(e.ctrlKey&&(e.key.toLowerCase()==="y"||(e.shiftKey&&e.key.toLowerCase()==="z"))){if(redo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
     });
@@ -221,7 +224,7 @@ async function handlePhotoFile(file){
 
     const closeBtn=el("closePolyBtn");
     if(closeBtn){
-      closeBtn && closeBtn.addEventListener("click",()=>{
+      closeBtn.addEventListener("click",()=>{
         const z=S.getActiveZone();
         if(!z) return;
         // Explicit close helps on mobile, where tapping the first point may be finicky.
@@ -243,11 +246,11 @@ async function handlePhotoFile(file){
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
     el("replacePhotoBtn").addEventListener("click",()=>el("photoInput").click());
     const ovBtn=document.getElementById("uploadOverlayBtn");
-    if(ovBtn){ovBtn && ovBtn.addEventListener("click",()=>el("photoInput").click());}
+    if(ovBtn){ovBtn.addEventListener("click",()=>el("photoInput").click());}
     const cw=document.getElementById("canvasWrap");
     if(cw){
-      cw && cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
-      cw && cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
+      cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
+      cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
     }
 
         el("resetProjectBtn").addEventListener("click",()=>{
@@ -294,7 +297,7 @@ async function handlePhotoFile(file){
     el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.opacity=parseFloat(el("opacityRange").value);ED.render();});
     const oc=el("opaqueFillChk");
     if(oc){
-      oc && oc.addEventListener("change",()=>{
+      oc.addEventListener("change",()=>{
         const z=S.getActiveZone(); if(!z) return;
         z.material.params.opaqueFill=!!oc.checked;
         const bs=el("blendSelect");
