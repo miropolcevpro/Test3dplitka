@@ -1363,7 +1363,9 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
 
     // Premium FX uniforms (client-only, Safari-safe)
-    const a0 = (state.ai || {});
+    // NOTE: _renderZonePass is called with `ai` (derived from render(state).ai). Avoid referencing
+    // a free `state` symbol here; it is not in scope and would crash the premium path.
+    const a0 = (ai || {});
     const premFx = (a0.enabled === false) ? 0.0 : ((a0.premiumFxEnabled === false) ? 0.0 : 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPremiumFx'), premFx);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPremiumLod'), (typeof a0.premiumFxLod === 'number' ? a0.premiumFxLod : 4.0));
