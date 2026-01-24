@@ -1313,9 +1313,12 @@ function _blendModeId(blend){
     // Params
     const params = zone.material?.params || {};
     const opaqueFill = !!params.opaqueFill;
-    // Negative perspective value is used as a user-facing "invert depth" control.
+    // Negative perspective value was previously used as a user-facing "invert depth" control.
+    // Product rule (premium/3D): paving is always bottom->up, so depth inversion is disabled when forceBottomUp is on.
     const perspRaw = Number(params.perspective ?? 0.75);
-    gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), (perspRaw < 0 ? 1 : 0));
+    const forceBottomUp = !!(ai && ai.calib3d && ai.calib3d.forceBottomUp);
+    const vflip = (!forceBottomUp && perspRaw < 0) ? 1 : 0;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), (cam3d ? 0 : vflip));
     gl.uniform1i(gl.getUniformLocation(progZone,'uOpaqueFill'), (opaqueFill ? 1 : 0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), Math.max(0.0001, params.scale ?? 1.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uRotation'), (params.rotation ?? 0.0));
@@ -1639,6 +1642,38 @@ if(quad){
     }
   }
 }
+
+
+// Bottom->Up Guard (premium invariant):
+// Ensure the inferred mapping keeps near (bottom edge) at v≈0 and far (top edge) at v≈1.
+// In rare numeric edge cases this prevents an accidental vertical inversion.
+// If detected, we flip the plane V-axis consistently in both Hm and invH.
+try{
+  if(Hm && invH && quad && quad.length===4){
+    const midNear = {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5};
+    const midFar  = {x:(quad[2].x+quad[3].x)*0.5, y:(quad[2].y+quad[3].y)*0.5};
+    const _applyInv = (M, p)=>{
+      const x=p.x, y=p.y;
+      const u = M[0]*x + M[1]*y + M[2];
+      const v = M[3]*x + M[4]*y + M[5];
+      const w = M[6]*x + M[7]*y + M[8];
+      if(!isFinite(w) || Math.abs(w)<1e-9) return {u:0,v:0,ok:false};
+      return {u:u/w, v:v/w, ok:true};
+    };
+    const uNear = _applyInv(invH, midNear);
+    const uFar  = _applyInv(invH, midFar);
+    if(uNear.ok && uFar.ok && uNear.v > uFar.v){
+      // Flip V in plane coords: M = [[1,0,0],[0,-1,1],[0,0,1]] (involution)
+      const F = [1,0,0, 0,-1,1, 0,0,1];
+      // Hm maps plane->pixel, so Hm' = Hm * F
+      Hm = _mul3x3(Hm, F);
+      // invH maps pixel->plane, so invH' = F * invH
+      invH = _mul3x3(F, invH);
+    }
+  }
+}catch(_){ /*no-op*/ }
+
+
 if(!invH){
   const last = lastGoodInvH.get(zone.id);
   if(last) invH = last;
@@ -1655,14 +1690,26 @@ let cam3d = null;
 try{
   const c3 = ai && ai.calib3d;
   const res = c3 && c3.result;
-  const K0 = res && res.ok && res.K ? res.K : null;
-  const enable3d = (c3 && c3.enabled === true && c3.status === "ready" && res && res.ok && (c3.use3DRenderer !== false));
-  if(enable3d && Hm && K0){
-    const sAvg = (sx + sy) * 0.5;
-    const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
-    cam3d = _decomposeHomographyToRT(Hm, Kr);
+  const want3d = !!(c3 && c3.enabled === true && (c3.use3DRenderer !== false));
+  if(want3d && Hm){
+    // If the user completed manual lines, use their intrinsics; otherwise use a robust fallback.
+    let K0 = (res && res.ok && res.K) ? res.K : null;
+    const allowFallback = !(c3 && c3.allowFallbackK === false);
+    if(!K0 && allowFallback){
+      const W = Math.max(1, w);
+      const H = Math.max(1, h);
+      // Fallback intrinsics: center principal point + focal proportional to image size.
+      K0 = { f: 0.95 * Math.max(W, H), cx: 0.5 * W, cy: 0.5 * H };
+    }
+    if(K0 && isFinite(K0.f) && K0.f > 2){
+      const sAvg = (sx + sy) * 0.5;
+      const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
+      cam3d = _decomposeHomographyToRT(Hm, Kr);
+    }
   }
 }catch(_){ cam3d = null; }
+
+
 
     _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai, cam3d);
 const tmp = src; src = dst; dst = tmp;
@@ -1772,6 +1819,37 @@ if(quad){
   }
 }
 
+
+// Bottom->Up Guard (premium invariant):
+// Ensure the inferred mapping keeps near (bottom edge) at v≈0 and far (top edge) at v≈1.
+// In rare numeric edge cases this prevents an accidental vertical inversion.
+// If detected, we flip the plane V-axis consistently in both Hm and invH.
+try{
+  if(Hm && invH && quad && quad.length===4){
+    const midNear = {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5};
+    const midFar  = {x:(quad[2].x+quad[3].x)*0.5, y:(quad[2].y+quad[3].y)*0.5};
+    const _applyInv = (M, p)=>{
+      const x=p.x, y=p.y;
+      const u = M[0]*x + M[1]*y + M[2];
+      const v = M[3]*x + M[4]*y + M[5];
+      const w = M[6]*x + M[7]*y + M[8];
+      if(!isFinite(w) || Math.abs(w)<1e-9) return {u:0,v:0,ok:false};
+      return {u:u/w, v:v/w, ok:true};
+    };
+    const uNear = _applyInv(invH, midNear);
+    const uFar  = _applyInv(invH, midFar);
+    if(uNear.ok && uFar.ok && uNear.v > uFar.v){
+      // Flip V in plane coords: M = [[1,0,0],[0,-1,1],[0,0,1]] (involution)
+      const F = [1,0,0, 0,-1,1, 0,0,1];
+      // Hm maps plane->pixel, so Hm' = Hm * F
+      Hm = _mul3x3(Hm, F);
+      // invH maps pixel->plane, so invH' = F * invH
+      invH = _mul3x3(F, invH);
+    }
+  }
+}catch(_){ /*no-op*/ }
+
+
 if(!invH){
   const last = lastGoodInvH.get(zone.id);
   if(last) invH = last;
@@ -1788,12 +1866,22 @@ let cam3d = null;
 try{
   const c3 = ai && ai.calib3d;
   const res = c3 && c3.result;
-  const K0 = res && res.ok && res.K ? res.K : null;
-  const enable3d = (c3 && c3.enabled === true && c3.status === "ready" && res && res.ok && (c3.use3DRenderer !== false));
-  if(enable3d && Hm && K0){
-    const sAvg = (sx + sy) * 0.5;
-    const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
-    cam3d = _decomposeHomographyToRT(Hm, Kr);
+  const want3d = !!(c3 && c3.enabled === true && (c3.use3DRenderer !== false));
+  if(want3d && Hm){
+    // If the user completed manual lines, use their intrinsics; otherwise use a robust fallback.
+    let K0 = (res && res.ok && res.K) ? res.K : null;
+    const allowFallback = !(c3 && c3.allowFallbackK === false);
+    if(!K0 && allowFallback){
+      const W = Math.max(1, outW);
+      const H = Math.max(1, outH);
+      // Fallback intrinsics: center principal point + focal proportional to image size.
+      K0 = { f: 0.95 * Math.max(W, H), cx: 0.5 * W, cy: 0.5 * H };
+    }
+    if(K0 && isFinite(K0.f) && K0.f > 2){
+      const sAvg = (sx + sy) * 0.5;
+      const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
+      cam3d = _decomposeHomographyToRT(Hm, Kr);
+    }
   }
 }catch(_){ cam3d = null; }
 

@@ -474,7 +474,7 @@ async function handlePhotoFile(file){
 
     function _ensureCalib3DState(){
       state.ai = state.ai || {};
-      state.ai.calib3d = state.ai.calib3d || {enabled:false, applyToActiveZone:true, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, status:"idle", error:null};
+      state.ai.calib3d = state.ai.calib3d || {enabled:false, use3DRenderer:true, forceBottomUp:true, allowFallbackK:true, applyToActiveZone:true, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, status:"idle", error:null};
       return state.ai.calib3d;
     }
 

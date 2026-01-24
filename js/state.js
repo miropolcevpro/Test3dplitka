@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.57-3drender-rayplane-mvp",ts:new Date().toISOString()},
+    build: { version: "mvp-iter2.2.58-3dvariantb-bottomup-lock",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -62,6 +62,10 @@ window.PhotoPaveState=(function(){
         enabled:false,
         // When true and calibration is ready, use the 3D camera ray-plane renderer in WebGL (Variant B).
         use3DRenderer:true,
+        // Strict product rule: paving always goes bottom->up; disallow depth inversion.
+        forceBottomUp:true,
+        // Allow 3D renderer to run without finished lines (uses robust fallback intrinsics).
+        allowFallbackK:true,
         applyToActiveZone:true,
         // Active line key: "A1"|"A2"|"B1"|"B2"|null
         active:null,
