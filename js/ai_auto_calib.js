@@ -57,46 +57,82 @@
     });
   }
 
-  async function ensureOpenCV(){
-    // Already loaded
-    if(window.cv && window.cv.Mat) return window.cv;
-    if(_cvReady) return _cvReady;
+  // --- OpenCV in Worker (to avoid blocking UI) ---
+let _cvWorker = null;
+let _cvWorkerReady = null;
+let _cvWorkerReqId = 1;
+const _cvWorkerPending = new Map();
 
-    _cvReady = (async()=>{
-      let lastErr=null;
-      for(const url of OPENCV_CANDIDATES){
-        try{
-          await _loadScript(url);
-          // Wait for runtime init (OpenCV sets cv.onRuntimeInitialized)
-          const cv = window.cv;
-          if(!cv) throw new Error("cv global missing after load: "+url);
-          // Some builds may initialize very quickly. Give it a microtask turn.
-          await new Promise(r=>setTimeout(r,0));
-          if(cv.Mat) return cv;
-          await new Promise((resolve,reject)=>{
-            let done=false;
-            const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("OpenCV init timeout")); }, 8000);
-            // Preserve any existing hook.
-            const prev = cv.onRuntimeInitialized;
-            cv.onRuntimeInitialized = ()=>{
-              if(done) return;
-              try{ if(typeof prev === 'function') prev(); }catch(_){/*noop*/}
-              done=true;
-              clearTimeout(t);
-              resolve(true);
-            };
-          });
-          if(window.cv && window.cv.Mat) return window.cv;
-          throw new Error("OpenCV loaded but not initialized: "+url);
-        }catch(e){
-          lastErr=e;
-        }
+function _absUrl(rel){
+  try{ return new URL(rel, document.baseURI).toString(); }catch(_){ return rel; }
+}
+
+function _getOpenCVCandidatesAbs(){
+  // Prefer local single-file build. Fallback to online sources.
+  return [
+    _absUrl("assets/vendor/opencv/opencv.js"),
+    "https://docs.opencv.org/4.x/opencv.js",
+    "https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"
+  ];
+}
+
+function ensureOpenCV(){
+  // Backwards-compatible name: now ensures worker is ready.
+  if(_cvWorkerReady) return _cvWorkerReady;
+
+  _cvWorkerReady = (async ()=>{
+    if(typeof Worker === "undefined"){
+      throw new Error("Worker not supported");
+    }
+    const workerUrl = _absUrl("js/ai_auto_calib_worker.js");
+    _cvWorker = new Worker(workerUrl);
+
+    _cvWorker.onmessage = (ev)=>{
+      const msg = ev.data || {};
+      if(msg.type === "ready"){
+        // no-op; resolve happens in init promise below
+        return;
       }
-      throw lastErr || new Error("OpenCV load failed");
-    })();
+      if(msg.type === "result" || msg.type === "error"){
+        const p = _cvWorkerPending.get(msg.id);
+        if(p){
+          _cvWorkerPending.delete(msg.id);
+          (msg.type === "result" ? p.resolve : p.reject)(msg.payload);
+        }
+        return;
+      }
+    };
 
-    return _cvReady;
-  }
+    _cvWorker.onerror = (e)=>{
+      // Reject all pending
+      for(const [id,p] of _cvWorkerPending.entries()){
+        _cvWorkerPending.delete(id);
+        p.reject(new Error("Worker error: " + (e?.message || "unknown")));
+      }
+    };
+
+    // Init worker with candidate URLs (absolute)
+    const candidates = _getOpenCVCandidatesAbs();
+    const initId = _cvWorkerReqId++;
+    const initP = new Promise((resolve,reject)=>{
+      _cvWorkerPending.set(initId, {resolve, reject});
+      const t = setTimeout(()=>{
+        _cvWorkerPending.delete(initId);
+        reject(new Error("OpenCV worker init timeout"));
+      }, 12000);
+      _cvWorkerPending.get(initId).resolve = (payload)=>{ clearTimeout(t); resolve(payload); };
+      _cvWorkerPending.get(initId).reject  = (payload)=>{ clearTimeout(t); reject(payload instanceof Error ? payload : new Error(String(payload))); };
+    });
+
+    _cvWorker.postMessage({ type:"init", id:initId, candidates });
+
+    await initP;
+    return true;
+  })();
+
+  return _cvWorkerReady;
+}
+
 
   function _downscaleToCanvas(bitmap, longSide){
     const bw = bitmap?.width || 1;
@@ -183,89 +219,72 @@
   }
 
   async function runOpenCV(bitmap){
-    const cv = await ensureOpenCV();
-    const {canvas,w,h} = _downscaleToCanvas(bitmap, 640);
+  // Run heavy CV in a Worker to avoid blocking contour editing on the main thread.
+  await ensureOpenCV();
 
-    // cv.imread can accept canvas element
-    const src = cv.imread(canvas);
-    const gray = new cv.Mat();
-    const blur = new cv.Mat();
-    const edges = new cv.Mat();
-    const lines = new cv.Mat();
-
-    try{
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.GaussianBlur(gray, blur, new cv.Size(5,5), 0, 0, cv.BORDER_DEFAULT);
-      cv.Canny(blur, edges, 50, 140);
-
-      // HoughLinesP
-      cv.HoughLinesP(edges, lines, 1, Math.PI/180, 60, 30, 10);
-
-      const out=[];
-      const arr = lines.data32S; // [x1,y1,x2,y2,...]
-      for(let i=0;i<arr.length;i+=4){
-        const x1=arr[i], y1=arr[i+1], x2=arr[i+2], y2=arr[i+3];
-        const dx=x2-x1, dy=y2-y1;
-        const len=_hypot(dx,dy);
-        if(!isFinite(len) || len < 26) continue;
-        // Filter out near-horizontal lines (too noisy for vanishing)
-        const ang = Math.abs(Math.atan2(dy,dx));
-        const sin = Math.abs(Math.sin(ang));
-        if(sin < 0.25) continue;
-        out.push({x1,y1,x2,y2,len});
-      }
-
-      const picked = _pickLongestLines(out, 70);
-      const inter=[];
-      for(let i=0;i<picked.length;i++){
-        for(let j=i+1;j<picked.length;j++){
-          const p = _intersect(picked[i], picked[j]);
-          if(p) inter.push(p);
-        }
-      }
-
-      const v = _histogramPick(inter, w, h);
-      if(!v) throw new Error("No stable vanishing point");
-
-      // Keep RAW normalized vanish (may be outside 0..1 for real scenes).
-      // We store a clamped copy for UI/debug, but derive defaults from a soft-clamped value.
-      const vanishRaw = { x: (v.x / w), y: (v.y / h) };
-      const vanish = { x: _clamp(vanishRaw.x, 0, 1), y: _clamp(vanishRaw.y, 0, 1) };
-      const horizonY = _softClamp01(vanishRaw.y);
-
-      // planeDir from bottom-center to vanish (in image space).
-      // FAR should point upward (negative y). If the estimate points downward (towards the camera)
-      // or becomes near-horizontal, flip to stabilize and prevent premium inversion.
-      let dir = _norm2({ x: (v.x - 0.5*w), y: (v.y - 0.98*h) });
-      if(!isFinite(dir.x) || !isFinite(dir.y)) dir = {x:0,y:-1};
-      if(dir.y > -0.05){
-        dir = { x: -dir.x, y: -dir.y };
-      }
-
-      // Confidence: density of the best bin vs total intersections
-      const conf = _clamp((v.count || 0) / Math.max(1, inter.length), 0, 1);
-      const controls = _deriveControlsFromVanish(vanishRaw);
-
-      return {
-        source: "opencv",
-        vanish,
-        horizonY,
-        planeDir: dir,
-        confidence: conf,
-        autoHorizon: controls.autoHorizon,
-        autoPerspective: controls.autoPerspective,
-        debug: { w, h, lines: picked.length, intersections: inter.length, binCount: v.count, vanishRaw }
-      };
-
-    }finally{
-      // Cleanup Mats
-      try{ src.delete(); }catch(_){ }
-      try{ gray.delete(); }catch(_){ }
-      try{ blur.delete(); }catch(_){ }
-      try{ edges.delete(); }catch(_){ }
-      try{ lines.delete(); }catch(_){ }
-    }
+  if(!_cvWorker){
+    throw new Error("OpenCV worker missing");
   }
+
+  const id = _cvWorkerReqId++;
+  const p = new Promise((resolve,reject)=>{
+    _cvWorkerPending.set(id, {resolve, reject});
+    const t = setTimeout(()=>{
+      _cvWorkerPending.delete(id);
+      reject(new Error("OpenCV worker run timeout"));
+    }, 6000);
+    _cvWorkerPending.get(id).resolve = (payload)=>{ clearTimeout(t); resolve(payload); };
+    _cvWorkerPending.get(id).reject  = (payload)=>{ clearTimeout(t); reject(payload instanceof Error ? payload : new Error(String(payload))); };
+  });
+
+  // Transfer bitmap to worker (zero-copy); it will be released after postMessage.
+  try{
+    _cvWorker.postMessage({ type:"run", id, longSide: 640, bitmap }, [bitmap]);
+  }catch(e){
+    // If transfer fails, fall back to a safe heuristic (do not attempt main-thread OpenCV).
+    _cvWorkerPending.delete(id);
+    throw new Error("OpenCV worker postMessage failed: " + (e?.message || e));
+  }
+
+  const payload = await p;
+if(!payload || payload.ok !== true){
+  throw new Error(payload && payload.reason ? payload.reason : "OpenCV worker returned no result");
+}
+
+// Map worker payload to the legacy result shape expected by the main pipeline.
+const vanishRaw = payload.vanishRaw || {x:0.5, y:0.35};
+const vanish = {
+  x: _clamp(vanishRaw.x, 0, 1),
+  y: _clamp(vanishRaw.y, 0, 1)
+};
+
+const horizonY = (typeof payload.horizonY === "number") ? payload.horizonY : _clamp(vanishRaw.y, 0.15, 0.85);
+
+// Auto perspective: conservative curve based on horizon and confidence.
+const conf = _clamp(typeof payload.confidence === "number" ? payload.confidence : 0, 0, 1);
+const autoP = _clamp(0.35 + 0.55*(1 - horizonY) * (0.35 + 0.65*conf), 0.15, 0.95);
+
+let dir = payload.planeDir || null;
+if(dir && typeof dir.x === "number" && typeof dir.y === "number"){
+  dir = _norm2(dir);
+  if(dir.y > -0.05) dir = {x:-dir.x, y:-dir.y};
+}else{
+  dir = null;
+}
+
+return {
+  source: "opencv_worker",
+  vanish,
+  horizonY,
+  planeDir: dir,
+  confidence: conf,
+  autoHorizon: horizonY,
+  autoPerspective: autoP,
+  debug: payload.meta || null
+};
+}
+
+
 
   function runFallback(bitmap){
     const w = bitmap?.width || 1;
