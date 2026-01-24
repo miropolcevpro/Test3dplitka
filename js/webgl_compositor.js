@@ -1304,14 +1304,12 @@ function _inferQuadFromContour(contour, params, w, h, lockExtrema){
   const _mNearR = {x: nearR.x, y: nearR.y};
   const _mFarL  = {x: farL.x,  y: farL.y};
   const _mFarR  = {x: farR.x,  y: farR.y};
-// User controls: keep them gentle and monotonic
-  // Perspective strength is |perspective|, sign is reserved for user-facing depth inversion.
-  const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1));
+// User controls (Global CamPlane contract):
+  // IMPORTANT: To eliminate "rubber" texture deformation, we must NOT deform the inferred quad
+  // with horizon/perspective here. These sliders are applied later as camera parameters only
+  // (pitch / focal). The quad remains purely contour-derived and bottom->up stable.
+  const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1)); // kept for downstream camera mapping only
   const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
-
-  const mild = 0.25 + 0.75*persp; // 0.25..1.0
-  farL = { x: nearL.x + (farL.x-nearL.x)*mild, y: nearL.y + (farL.y-nearL.y)*mild };
-  farR = { x: nearR.x + (farR.x-nearR.x)*mild, y: nearR.y + (farR.y-nearR.y)*mild };
 
   const cx = (nearL.x + nearR.x) * 0.5;
   const dyH = horizon * 0.22 * (photoH||h||1);
