@@ -290,6 +290,7 @@ window.PhotoPaveCompositor = (function(){
   uniform float uFarFade;   // 0..1
   uniform int uVFlip;       // 0/1: flip plane V (depth)
   uniform int uOpaqueFill; // 0/1: force dense fill (reduce "transparency")
+  uniform float uPlaneD;   // plane depth in UV units (for normalization)
 
   out vec4 outColor;
 
@@ -388,7 +389,7 @@ window.PhotoPaveCompositor = (function(){
 
     // Optional plane depth inversion (user control via negative perspective slider).
     if(uVFlip == 1){
-      uv.y = 1.0 - uv.y;
+      uv.y = uPlaneD - uv.y;
     }
 
     // Tile transform
@@ -409,7 +410,7 @@ window.PhotoPaveCompositor = (function(){
 
     // Far fade to reduce moire + add subtle atmospheric integration.
     // If depth is available, prefer it over uv.y, because the real "far" direction may be diagonal.
-    float farBase = clamp(uv.y, 0.0, 1.0);
+    float farBase = clamp(uv.y / max(uPlaneD, 1e-6), 0.0, 1.0);
     if(uHasDepth==1){
       float d = texture(uDepth, uvSrc).r; // 0..1 (normalized in AI pipeline)
       float farD = (uDepthFarHigh==1) ? d : (1.0 - d);
@@ -772,9 +773,12 @@ function _decomposeHomographyToRT(H, K){
   return {Kinv, R, t};
 }
 
-  function _homographyUnitSquareToQuad(q){
-    // q: 4 points in render-pixel coords in order: (0,0),(1,0),(1,1),(0,1)
-    const src = [[0,0],[1,0],[1,1],[0,1]];
+  function _homographyRectToQuad(q, srcW, srcH){
+    // q: 4 points in render-pixel coords in order: nearL, nearR, farR, farL
+    // srcW/srcH: plane rectangle size in UV units
+    const W = Math.max(1e-6, +srcW || 1.0);
+    const H = Math.max(1e-6, +srcH || 1.0);
+    const src = [[0,0],[W,0],[W,H],[0,H]];
     const A = []; const B = [];
     for(let k=0;k<4;k++){
       const u=src[k][0], v=src[k][1];
@@ -804,6 +808,10 @@ function _decomposeHomographyToRT(H, K){
     }
     const h=B;
     return [h[0],h[1],h[2], h[3],h[4],h[5], h[6],h[7],1];
+  }
+
+  function _homographyUnitSquareToQuad(q){
+    return _homographyRectToQuad(q, 1.0, 1.0);
   }
 
   function _quadSignedArea(q){
@@ -1154,7 +1162,15 @@ function _inferQuadFromContour(contour, params, w, h, lockExtrema){
 // Guard against super-thin quads
   if(Math.abs(nearR.x - nearL.x) < 2 || Math.abs(farR.x - farL.x) < 2) return null;
 
-  // User controls: keep them gentle and monotonic
+  
+  // Metric-lock snapshot BEFORE applying user horizon/perspective controls.
+  // We will keep the UV-plane size stable (W,D) regardless of horizon/perspective,
+  // so the tile geometry does not "rubber-stretch" when the user tunes the camera feel.
+  const _mNearL = {x: nearL.x, y: nearL.y};
+  const _mNearR = {x: nearR.x, y: nearR.y};
+  const _mFarL  = {x: farL.x,  y: farL.y};
+  const _mFarR  = {x: farR.x,  y: farR.y};
+// User controls: keep them gentle and monotonic
   // Perspective strength is |perspective|, sign is reserved for user-facing depth inversion.
   const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1));
   const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
@@ -1263,7 +1279,18 @@ function _inferQuadFromContour(contour, params, w, h, lockExtrema){
     {x: farR.x*sx,  y: farR.y*sy},
     {x: farL.x*sx,  y: farL.y*sy}
   ];
-  return quad;
+
+  // Stable plane metric in UV units (render-pixel derived):
+  // W = near edge length, D = depth from near-mid to far-mid (both in render coords).
+  const _mw = Math.hypot((_mNearR.x-_mNearL.x)*sx, (_mNearR.y-_mNearL.y)*sy);
+  const _mnx = (_mNearL.x + _mNearR.x) * 0.5;
+  const _mny = (_mNearL.y + _mNearR.y) * 0.5;
+  const _mfx = (_mFarL.x  + _mFarR.x)  * 0.5;
+  const _mfy = (_mFarL.y  + _mFarR.y)  * 0.5;
+  const _md = Math.hypot((_mfx-_mnx)*sx, (_mfy-_mny)*sy);
+
+  const metric = { W: Math.max(1.0, _mw), D: Math.max(1.0, _md) };
+  return { quad, metric };
 }
 
 function _blendModeId(blend){
@@ -1289,7 +1316,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, ai, cam3d){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, planeMetric, ai, cam3d){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -1333,7 +1360,15 @@ function _blendModeId(blend){
     const vflip = (!forceBottomUp && perspRaw < 0) ? 1 : 0;
     gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), (cam3d ? 0 : vflip));
     gl.uniform1i(gl.getUniformLocation(progZone,'uOpaqueFill'), (opaqueFill ? 1 : 0));
-    gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), Math.max(0.0001, params.scale ?? 1.0));
+    // Metric-lock: map plane UV in stable world units (derived from contour) to avoid tile deformation
+    const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
+    const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPlaneD'), planeD);
+    // Keep the "scale" slider semantics: approximately number of repeats across the near edge
+    const baseScale = (params.scale ?? 1.0);
+    const scaleEff = Math.max(0.0001, baseScale / planeW);
+
+    gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), scaleEff);
     gl.uniform1f(gl.getUniformLocation(progZone,'uRotation'), (params.rotation ?? 0.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uOpacity'), clamp(params.opacity ?? 1.0, 0, 1));
     gl.uniform1i(gl.getUniformLocation(progZone,'uBlendMode'), (opaqueFill ? 0 : _blendModeId(params.blendMode)));
@@ -1684,11 +1719,14 @@ try{
 }catch(_){ lockExtrema = null; }
 
 let Hm = null;
-const quad = _inferQuadFromContour(contourR, quadParams, w, h, lockExtrema);
+const quadRes = _inferQuadFromContour(contourR, quadParams, w, h, lockExtrema);
+let planeMetric = {W:1.0, D:1.0};
+const quad = quadRes && quadRes.quad ? quadRes.quad : null;
+if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    Hm = _homographyUnitSquareToQuad(qn);
+    Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
     if(Hm){
       invH = _invert3x3(Hm);
     }
@@ -1716,7 +1754,8 @@ try{
     const uFar  = _applyInv(invH, midFar);
     if(uNear.ok && uFar.ok && uNear.v > uFar.v){
       // Flip V in plane coords: M = [[1,0,0],[0,-1,1],[0,0,1]] (involution)
-      const F = [1,0,0, 0,-1,1, 0,0,1];
+      const D = (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0;
+      const F = [1,0,0, 0,-1,D, 0,0,1];
       // Hm maps plane->pixel, so Hm' = Hm * F
       Hm = _mul3x3(Hm, F);
       // invH maps pixel->plane, so invH' = F * invH
@@ -1763,7 +1802,7 @@ try{
 
 
 
-    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai, cam3d);
+    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -1860,11 +1899,14 @@ const quadParams = (ai && ai.enabled !== false && !(ai.geomLockBottomUp) && ai.p
 const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
 
 let Hm = null;
-const quad = _inferQuadFromContour(contourR, quadParams, outW, outH, null);
+const quadRes = _inferQuadFromContour(contourR, quadParams, outW, outH, null);
+let planeMetric = {W:1.0, D:1.0};
+const quad = quadRes && quadRes.quad ? quadRes.quad : null;
+if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    Hm = _homographyUnitSquareToQuad(qn);
+    Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
     if(Hm){
       invH = _invert3x3(Hm);
     }
@@ -1892,7 +1934,8 @@ try{
     const uFar  = _applyInv(invH, midFar);
     if(uNear.ok && uFar.ok && uNear.v > uFar.v){
       // Flip V in plane coords: M = [[1,0,0],[0,-1,1],[0,0,1]] (involution)
-      const F = [1,0,0, 0,-1,1, 0,0,1];
+      const D = (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0;
+      const F = [1,0,0, 0,-1,D, 0,0,1];
       // Hm maps plane->pixel, so Hm' = Hm * F
       Hm = _mul3x3(Hm, F);
       // invH maps pixel->plane, so invH' = F * invH
@@ -1937,7 +1980,7 @@ try{
   }
 }catch(_){ cam3d = null; }
 
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai, cam3d);
+      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d);
       const tmp = src; src = dst; dst = tmp;
     }
 

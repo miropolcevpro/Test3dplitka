@@ -235,12 +235,14 @@ function invert3x3(m){
 
 // Solve homography H that maps unit square (0,0),(1,0),(1,1),(0,1) to quad points (x,y) in canvas space.
 // H is 3x3, returned as flat array length 9.
-function homographyUnitSquareToQuad(q){
+function homographyRectToQuad(q, srcW, srcH){
   // Unknowns: h11 h12 h13 h21 h22 h23 h31 h32 (h33=1)
   // For each correspondence: x = (h11*u + h12*v + h13) / (h31*u + h32*v + 1)
   //                         y = (h21*u + h22*v + h23) / (h31*u + h32*v + 1)
+  const W = Math.max(1e-6, +srcW || 1.0);
+  const Hh = Math.max(1e-6, +srcH || 1.0);
   const src = [
-    [0,0],[1,0],[1,1],[0,1]
+    [0,0],[W,0],[W,Hh],[0,Hh]
   ];
   const A = []; // 8x8
   const B = []; // 8
@@ -281,6 +283,10 @@ function homographyUnitSquareToQuad(q){
     h[6],h[7],1
   ];
   return H;
+}
+
+function homographyUnitSquareToQuad(q){
+  return homographyRectToQuad(q, 1.0, 1.0);
 }
 
 function applyHomography(H, u, v){
@@ -334,29 +340,35 @@ function drawTexturedTriangle(tctx, img, s0,t0,s1,t1,s2,t2, x0,y0,x1,y1,x2,y2){
   tctx.restore();
 }
 
-function projectedUV(u,v, mat){
-  const scale = Math.max(0.1, mat.params.scale ?? 1.0);
+function projectedUV(u,v, mat, planeMetric){
+  const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
+  const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
+
+  const baseScale = Math.max(0.1, mat.params.scale ?? 1.0);
+  const scaleEff = Math.max(0.0001, baseScale / planeW);
+
   const rot = ((mat.params.rotation ?? 0) * Math.PI) / 180;
-  const baseRepeat = 6; // tiles across plane at scale=1
-  const tileCount = baseRepeat / scale;
 
-  // rotate around center for nicer control
-  const cx=0.5, cy=0.5;
-  let x=u-cx, y=v-cy;
-  const xr = x*Math.cos(rot) - y*Math.sin(rot);
-  const yr = x*Math.sin(rot) + y*Math.cos(rot);
-  u = xr + cx; v = yr + cy;
+  // Rotate in world plane around its center (keeps control predictable)
+  const cx = planeW * 0.5;
+  const cy = planeD * 0.5;
+  let x = u - cx, y = v - cy;
+  const c = Math.cos(rot), s = Math.sin(rot);
+  const xr = x*c - y*s;
+  const yr = x*s + y*c;
 
-  const uu = u * tileCount;
-  const vv = v * tileCount;
+  const uu = (xr + cx) * scaleEff;
+  const vv = (yr + cy) * scaleEff;
   return {uu, vv};
 }
 
 // Render the tiled texture projected by the floor plane homography.
 // We draw a subdivided grid in unit-square plane space, project via H to canvas, and map pattern coords per cell.
-function drawProjectedTiledPlane(tctx, H, mat, patternCanvas, gridN){
+function drawProjectedTiledPlane(tctx, H, mat, patternCanvas, gridN, planeMetric){
   // Draw on full canvas (caller must clip to zone+holes)
   const N = gridN;
+  const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
+  const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
   for(let iy=0; iy<N; iy++){
     const v0 = iy / N;
     const v1 = (iy+1) / N;
@@ -365,15 +377,15 @@ function drawProjectedTiledPlane(tctx, H, mat, patternCanvas, gridN){
       const u1 = (ix+1) / N;
 
       // two triangles: (u0,v0)-(u1,v0)-(u1,v1) and (u0,v0)-(u1,v1)-(u0,v1)
-      const p00 = applyHomography(H,u0,v0);
-      const p10 = applyHomography(H,u1,v0);
-      const p11 = applyHomography(H,u1,v1);
-      const p01 = applyHomography(H,u0,v1);
+      const p00 = applyHomography(H,u0*planeW,v0*planeD);
+      const p10 = applyHomography(H,u1*planeW,v0*planeD);
+      const p11 = applyHomography(H,u1*planeW,v1*planeD);
+      const p01 = applyHomography(H,u0*planeW,v1*planeD);
 
-      const uv00 = projectedUV(u0,v0,mat);
-      const uv10 = projectedUV(u1,v0,mat);
-      const uv11 = projectedUV(u1,v1,mat);
-      const uv01 = projectedUV(u0,v1,mat);
+      const uv00 = projectedUV(u0*planeW,v0*planeD,mat,planeMetric);
+      const uv10 = projectedUV(u1*planeW,v0*planeD,mat,planeMetric);
+      const uv11 = projectedUV(u1*planeW,v1*planeD,mat,planeMetric);
+      const uv01 = projectedUV(u0*planeW,v1*planeD,mat,planeMetric);
 
       // map to pattern canvas pixels
       const wImg = mat._texW || 512;
@@ -540,14 +552,19 @@ function distCanvasFromImg(a,b){
       const rect=getImageRectInCanvas();
       // AR-like floor projection without explicit plane mode: infer a quadrilateral from the contour.
       let usePerspective=false;
-      let H=null, gridN=28;
+      let H=null, gridN=28, planeMetric=null;
       const quadImg = inferQuadFromContour(zone.contour, {params: mat.params});
       if(quadImg){
         // Keep the inferred near/near/far/far order; only normalize winding and validate.
         const quadRaw = quadImg.map(imgToCanvasPt);
         const quad = normalizeQuad(quadRaw);
         if(quad){
-          H = homographyUnitSquareToQuad(quad);
+          const planeW = Math.max(1.0, Math.hypot(quad[1].x-quad[0].x, quad[1].y-quad[0].y));
+          const midNear = {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5};
+          const midFar  = {x:(quad[2].x+quad[3].x)*0.5, y:(quad[2].y+quad[3].y)*0.5};
+          const planeD = Math.max(1.0, Math.hypot(midFar.x-midNear.x, midFar.y-midNear.y));
+          planeMetric = {W: planeW, D: planeD};
+          H = homographyRectToQuad(quad, planeW, planeD);
         }
         if(H){
           usePerspective=true;
@@ -621,7 +638,7 @@ function distCanvasFromImg(a,b){
         let planeCanvas = null;
         try{
           if(typeof WebGLPlane!=="undefined" && WebGLPlane && H){
-            planeCanvas = WebGLPlane.render(img, H, mat.params, canvas.width, canvas.height);
+            planeCanvas = WebGLPlane.render(img, H, mat.params, canvas.width, canvas.height, planeMetric);
           }
         }catch(e){ console.warn("[WebGLPlane] render failed:", e); planeCanvas=null; }
         if(planeCanvas){
@@ -632,7 +649,7 @@ function distCanvasFromImg(a,b){
           // CPU fallback
           const patternCanvas = buildPatternCanvas(img);
           const matTmp = {params: mat.params, _texW: img.width, _texH: img.height};
-          drawProjectedTiledPlane(lctx, H, matTmp, patternCanvas, gridN);
+          drawProjectedTiledPlane(lctx, H, matTmp, patternCanvas, gridN, planeMetric);
         }
       }else{
         // Fallback: simple 2D tiling (no perspective plane)

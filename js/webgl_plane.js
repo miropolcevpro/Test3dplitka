@@ -7,7 +7,7 @@ const WebGLPlane = (() => {
   let gl = null;
   let prog = null;
   let vao = null;
-  let uResolution, uInvH, uTileCount, uRot, uFade, uEnableFade;
+  let uResolution, uInvH, uScale, uPlaneW, uPlaneD, uRot, uFade, uEnableFade;
   let tex = null;
   let texKey = null;
 
@@ -31,21 +31,19 @@ const WebGLPlane = (() => {
       varying vec2 vPos;
       uniform vec2 uResolution;
       uniform mat3 uInvH;
-      uniform float uTileCount;
+
+      // Metric-lock plane definition:
+      uniform float uPlaneW;
+      uniform float uPlaneD;
+
+      // Tile frequency in world units (same semantics as compositor): repeats per plane unit.
+      uniform float uScale;
       uniform float uRot;
+
       uniform float uFade;        // 0..1 strength
       uniform float uEnableFade;  // 0 or 1
 
       uniform sampler2D uTex;
-
-      // Rotate around center of unit square (0.5, 0.5)
-      vec2 rotUV(vec2 uv, float ang){
-        float c = cos(ang);
-        float s = sin(ang);
-        vec2 p = uv - vec2(0.5);
-        vec2 r = vec2(p.x*c - p.y*s, p.x*s + p.y*c);
-        return r + vec2(0.5);
-      }
 
       void main(){
         // Convert fragment coords to canvas pixel coords with top-left origin.
@@ -58,25 +56,28 @@ const WebGLPlane = (() => {
         }
         vec2 uv = hp.xy / z;
 
-        // Only keep inside the inferred quad (unit square)
-        if(uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0){
+        // Only keep inside the inferred quad (plane rectangle)
+        float W = max(uPlaneW, 1e-6);
+        float D = max(uPlaneD, 1e-6);
+        if(uv.x < 0.0 || uv.x > W || uv.y < 0.0 || uv.y > D){
           gl_FragColor = vec4(0.0);
           return;
         }
 
-        uv = rotUV(uv, uRot);
-        vec2 tiled = uv * uTileCount;
+        float rot = uRot;
+        float c = cos(rot);
+        float s = sin(rot);
+        mat2 R = mat2(c, -s, s, c);
 
-        // Repeat
-        vec2 tuv = fract(tiled + vec2(1e-4));
+        vec2 tuv = R * (uv * max(uScale, 1e-6));
+        vec2 suv = fract(tuv + vec2(1000.0)); // stable for negatives
+        vec4 col = texture2D(uTex, suv);
 
-        vec4 col = texture2D(uTex, tuv);
-
-        // Simple "distance" fade to avoid sticker look: reduce contrast/alpha in far area.
+        // Simple fade to avoid sticker look: use normalized depth (uv.y / D)
         if(uEnableFade > 0.5){
-          float d = smoothstep(0.55, 1.0, uv.y); // far when uv.y -> 1
-          float f = mix(1.0, 0.65, d * uFade);   // fade factor
-          // Slight desaturation + alpha reduction in far zone
+          float farN = clamp(uv.y / D, 0.0, 1.0);
+          float d = smoothstep(0.55, 1.0, farN);
+          float f = mix(1.0, 0.65, d * uFade);
           float g = dot(col.rgb, vec3(0.299,0.587,0.114));
           col.rgb = mix(col.rgb, vec3(g), (d * uFade) * 0.25);
           col.rgb *= f;
@@ -114,7 +115,9 @@ const WebGLPlane = (() => {
     const aPos = gl.getAttribLocation(prog, "aPos");
     uResolution = gl.getUniformLocation(prog, "uResolution");
     uInvH = gl.getUniformLocation(prog, "uInvH");
-    uTileCount = gl.getUniformLocation(prog, "uTileCount");
+    uScale = gl.getUniformLocation(prog, "uScale");
+    uPlaneW = gl.getUniformLocation(prog, "uPlaneW");
+    uPlaneD = gl.getUniformLocation(prog, "uPlaneD");
     uRot = gl.getUniformLocation(prog, "uRot");
     uFade = gl.getUniformLocation(prog, "uFade");
     uEnableFade = gl.getUniformLocation(prog, "uEnableFade");
@@ -235,7 +238,7 @@ return true;
     return inv;
   }
 
-  function render(img, H, params, w, h){
+  function render(img, H, params, w, h, planeMetric){
     if(!ensureSize(w,h)) return null;
     gl.useProgram(prog);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -256,10 +259,14 @@ return true;
     ]);
     gl.uniformMatrix3fv(uInvH, false, invColMajor);
 
-    const scale = Math.max(0.1, (params && params.scale) ? params.scale : 1.0);
-    const baseRepeat = 6.0;
-    const tileCount = baseRepeat / scale;
-    gl.uniform1f(uTileCount, tileCount);
+    const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
+    const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
+    gl.uniform1f(uPlaneW, planeW);
+    gl.uniform1f(uPlaneD, planeD);
+
+    const baseScale = (params && typeof params.scale === "number") ? params.scale : 1.0;
+    const scaleEff = Math.max(0.0001, baseScale / planeW);
+    gl.uniform1f(uScale, scaleEff);
 
     const rot = ((params && params.rotation) ? params.rotation : 0) * Math.PI / 180;
     gl.uniform1f(uRot, rot);
