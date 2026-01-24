@@ -262,10 +262,8 @@ function homographyRectToQuad(q, srcW, srcH){
     for(let r=col+1;r<n;r++) if(Math.abs(A[r][col])>Math.abs(A[pivot][col])) pivot=r;
     if(Math.abs(A[pivot][col])<1e-12) return null;
     if(pivot!==col){
-      // NOTE: use destructuring swap; a comma expression does not swap in JS.
-      // A broken swap corrupts the homography solution and causes visible "rubber"/warping.
-      [A[col], A[pivot]] = [A[pivot], A[col]];
-      [B[col], B[pivot]] = [B[pivot], B[col]];
+      A[col],A[pivot]=A[pivot],A[col];
+      B[col],B[pivot]=B[pivot],B[col];
     }
     const div=A[col][col];
     for(let c2=col;c2<n;c2++) A[col][c2]/=div;
@@ -346,10 +344,8 @@ function projectedUV(u,v, mat, planeMetric){
   const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
   const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
 
-  // Tile frequency is defined in *plane space*.
-  // Do not renormalize by planeW/planeD (that reintroduces non-projective scaling).
-  const baseScale = Math.max(0.0001, mat.params.scale ?? 1.0);
-  const scaleEff = baseScale;
+  const baseScale = Math.max(0.1, mat.params.scale ?? 1.0);
+  const scaleEff = Math.max(0.0001, baseScale / planeW);
 
   const rot = ((mat.params.rotation ?? 0) * Math.PI) / 180;
 
@@ -563,20 +559,10 @@ function distCanvasFromImg(a,b){
         const quadRaw = quadImg.map(imgToCanvasPt);
         const quad = normalizeQuad(quadRaw);
         if(quad){
-          // IMPORTANT (Metric Lock): keep plane units stable across horizon/perspective edits.
-          // Near edge length is stable (derived from the contour). For depth, do NOT derive from
-          // the *adjusted* far edge (it changes with horizon/perspective and causes non-projective
-          // re-scaling aka "rubber"), instead use the zone's contour bounds (stable geometry).
           const planeW = Math.max(1.0, Math.hypot(quad[1].x-quad[0].x, quad[1].y-quad[0].y));
-          let minCY=Infinity, maxCY=-Infinity;
-          for(const ip of zone.contour){
-            const cp = imgToCanvasPt(ip);
-            if(cp && isFinite(cp.y)){
-              minCY = Math.min(minCY, cp.y);
-              maxCY = Math.max(maxCY, cp.y);
-            }
-          }
-          const planeD = Math.max(1.0, isFinite(minCY) && isFinite(maxCY) ? (maxCY-minCY) : planeW);
+          const midNear = {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5};
+          const midFar  = {x:(quad[2].x+quad[3].x)*0.5, y:(quad[2].y+quad[3].y)*0.5};
+          const planeD = Math.max(1.0, Math.hypot(midFar.x-midNear.x, midFar.y-midNear.y));
           planeMetric = {W: planeW, D: planeD};
           H = homographyRectToQuad(quad, planeW, planeD);
         }
