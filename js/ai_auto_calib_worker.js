@@ -160,44 +160,62 @@ async function _loadOpenCV(candidates){
   let lastErr = null;
   for(const url of candidates){
     try{
-      // Ensure Module exists for emscripten builds; preserve if already set.
-      if(!self.Module) self.Module = {};
-      // Many builds set cv.onRuntimeInitialized; but in worker we can hook Module.onRuntimeInitialized too.
+      // Prepare Module BEFORE loading the script to avoid embind/TDZ issues.
+      // Keep the object if already present (some builds rely on it).
+      const u = (()=>{ try{ return new URL(url); }catch(_){ return null; } })();
+      const baseDir = u ? (u.href.slice(0, u.href.lastIndexOf('/')+1)) : null;
+
+      // Create a fresh init latch per attempt.
+      let rtResolve, rtReject;
+      const rtP = new Promise((resolve,reject)=>{ rtResolve=resolve; rtReject=reject; });
+
+      // Preserve user Module if exists, but ensure we have hooks.
+      const prevModule = self.Module;
+      const Module = (prevModule && typeof prevModule === "object") ? prevModule : {};
+      Module.onRuntimeInitialized = ()=>{ try{ rtResolve(true); }catch(_){} };
+      // For split builds (JS+WASM), ensure wasm is resolved relative to the script location.
+      Module.locateFile = Module.locateFile || ((p)=> baseDir ? (baseDir + p) : p);
+      self.Module = Module;
+
+      // Load the script (may be heavy but runs inside worker).
       await new Promise((resolve, reject)=>{
         let done=false;
-        const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("importScripts timeout")); }, 12000);
+        const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("importScripts timeout")); }, 20000);
         try{
           importScripts(url);
-          done=true;
-          clearTimeout(t);
-          resolve(true);
+          done=true; clearTimeout(t); resolve(true);
         }catch(e){
-          done=true;
-          clearTimeout(t);
-          reject(e);
+          done=true; clearTimeout(t); reject(e);
         }
       });
-      // OpenCV attaches cv global
+
+      // Some builds expose cv immediately.
       if(self.cv && self.cv.Mat){
         return self.cv;
       }
-      // Some builds call cv.onRuntimeInitialized
+
+      // Wait for runtime init (either Module or cv hook).
       if(self.cv){
-        await new Promise((resolve,reject)=>{
-          let done=false;
-          const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("OpenCV init timeout")); }, 12000);
-          const prev = self.cv.onRuntimeInitialized;
-          self.cv.onRuntimeInitialized = ()=>{
-            if(done) return;
-            try{ if(typeof prev === "function") prev(); }catch(_){}
-            done=true; clearTimeout(t); resolve(true);
-          };
-        });
-        if(self.cv && self.cv.Mat) return self.cv;
+        const prev = self.cv.onRuntimeInitialized;
+        self.cv.onRuntimeInitialized = ()=>{
+          try{ if(typeof prev === "function") prev(); }catch(_){}
+          try{ rtResolve(true); }catch(_){}
+        };
+      }
+
+      // Await initialization with timeout.
+      await Promise.race([
+        rtP,
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error("OpenCV init timeout")), 20000))
+      ]);
+
+      if(self.cv && self.cv.Mat){
+        return self.cv;
       }
       throw new Error("cv missing after load: " + url);
     }catch(e){
       lastErr = e;
+      // Try next candidate
     }
   }
   throw lastErr || new Error("OpenCV load failed");
@@ -206,6 +224,10 @@ async function _loadOpenCV(candidates){
 self.onmessage = async (ev)=>{
   const msg = ev.data || {};
   const id = msg.id;
+
+  // Track last run id for fatal reporting
+  _lastRunId = id;
+
   try{
     if(msg.type === "init"){
       const candidates = msg.candidates || [];
@@ -213,17 +235,19 @@ self.onmessage = async (ev)=>{
       self.postMessage({type:"result", id, payload:{ok:true}});
       return;
     }
-    if(_lastRunId = id;
-    msg.type === "run"){
+
+    if(msg.type === "run"){
       if(!_cv) throw new Error("OpenCV not initialized");
       const bitmap = msg.bitmap;
       const longSide = msg.longSide || 640;
       const r = _computeVanishingFromBitmap(_cv, bitmap, longSide);
-      try{ bitmap.close && bitmap.close(); }catch(_){}
+      try{ bitmap && bitmap.close && bitmap.close(); }catch(_){}
       self.postMessage({type:"result", id, payload:r});
       return;
     }
   }catch(e){
-    self.postMessage({type:"error", id, payload: (e && e.message) ? e.message : String(e) });
+    // Convert embind errors to string safely
+    const emsg = (e && (e.message || e.stack)) ? (e.message || e.stack) : String(e);
+    self.postMessage({type:"error", id, payload: emsg});
   }
 };
