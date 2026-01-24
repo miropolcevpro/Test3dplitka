@@ -597,6 +597,14 @@
       ai.photoHash = photoHash;
       ai.timings.hashMs = Math.round(nowMs() - tHash0);
 
+      // Patch D (Auto-calibration): start vanishing/horizon calibration asynchronously.
+      // This must NEVER block the UI or the depth stage.
+      try{
+        if(ai.calib && ai.calib.enabled !== false && window.AIAutoCalib && typeof window.AIAutoCalib.run === "function"){
+          window.AIAutoCalib.run({ bitmap: info?.bitmap, photoHash }).catch(()=>{});
+        }
+      }catch(_){/* no-op */}
+
       // Probe device
       const tProbe0 = nowMs();
       const dev = await probeWebGPU();

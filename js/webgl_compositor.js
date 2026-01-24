@@ -1299,17 +1299,67 @@ function _blendModeId(blend){
 let invH = null;
 // Patch 3: if AI inferred a dominant plane direction with decent confidence, pass it to quad inference.
 const baseParams = zone.material?.params||{};
+
+// Patch D: auto-calibration overlay (vanish/horizon) for Ultra.
+// We only apply it while the user hasn't manually tuned those sliders in Ultra.
 let quadParams = baseParams;
-if(ai && ai.enabled !== false && ai.planeDir){
-  const conf = isFinite(ai.confidence) ? ai.confidence : 0;
-  const mix = smoothstep(0.18, 0.55, conf);
-  quadParams = Object.assign({}, baseParams, {
-    _aiPlaneDir: ai.planeDir,
-    _aiConfidence: conf,
-    _aiMix: mix
-  });
-  // Expose for debug overlay (read-only).
-  try{ ai._lastMix = mix; }catch(_){/*noop*/}
+if(ai && ai.enabled !== false){
+  const tuned = zone.material?._ultraTuned || {horizon:false,perspective:false};
+  const calib = ai.calib;
+
+  // Candidate plane directions:
+  const dirDepth = (ai.planeDir && isFinite(ai.planeDir.x) && isFinite(ai.planeDir.y)) ? ai.planeDir : null;
+  const dirCalib = (calib && calib.status==="ready" && calib.planeDir && isFinite(calib.planeDir.x) && isFinite(calib.planeDir.y) && (calib.confidence||0) >= 0.18)
+    ? calib.planeDir
+    : null;
+
+  // Blend directions if both exist, otherwise pick the available one.
+  let chosenDir = dirDepth || dirCalib || null;
+  if(dirDepth && dirCalib){
+    const cd = Math.max(0, Math.min(1, (ai.confidence||0)));
+    const cc = Math.max(0, Math.min(1, (calib.confidence||0)));
+    // Prefer the more confident source, but keep some influence from both to reduce flicker.
+    const t = (cc / (cc + cd + 1e-6));
+    const bx = dirDepth.x*(1-t) + dirCalib.x*t;
+    const by = dirDepth.y*(1-t) + dirCalib.y*t;
+    const bm = Math.hypot(bx, by);
+    chosenDir = (bm>1e-6 && isFinite(bm)) ? {x:bx/bm, y:by/bm} : dirDepth;
+  }
+
+  // Derive effective horizon/perspective from calibration (overlay only; does not mutate stored params).
+  let effH = baseParams.horizon;
+  let effP = baseParams.perspective;
+  let usedAuto = false;
+  if(calib && calib.status==="ready" && (calib.confidence||0) >= 0.18){
+    if(!tuned.horizon && isFinite(calib.autoHorizon)){
+      effH = calib.autoHorizon;
+      usedAuto = true;
+    }
+    if(!tuned.perspective && isFinite(calib.autoPerspective)){
+      effP = calib.autoPerspective;
+      usedAuto = true;
+    }
+  }
+
+  // Build params overlay only if we actually have something to inject.
+  if(chosenDir || usedAuto){
+    const conf = Math.max(0, Math.min(1, (ai.confidence||0)));
+    const confAuto = Math.max(0, Math.min(1, (calib && calib.status==="ready") ? (calib.confidence||0) : 0));
+    const confMix = Math.max(conf, confAuto);
+    const mix = smoothstep(0.18, 0.55, confMix);
+    quadParams = Object.assign({}, baseParams, {
+      perspective: effP,
+      horizon: effH,
+      _aiPlaneDir: chosenDir || dirDepth || dirCalib,
+      _aiConfidence: confMix,
+      _aiMix: mix
+    });
+    // Expose for debug overlay (read-only).
+    try{
+      ai._lastMix = mix;
+      ai._calibUsed = (calib && calib.status==="ready") ? `${calib.source||"?"}:${(calib.confidence||0).toFixed(2)}` : null;
+    }catch(_){/*noop*/}
+  }
 }
 const quad = _inferQuadFromContour(zone.contour, quadParams, w, h);
 if(quad){

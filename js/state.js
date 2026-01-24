@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.45-ultra-separate-params",ts:new Date().toISOString()},
+    build: { version: "mvp-iter2.2.46-ultra-autocalib",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -27,6 +27,23 @@ window.PhotoPaveState=(function(){
       status:"idle",
       device:{webgpu:false,tier:"low",mem:null,probeMs:0,error:null},
       photoHash:null,
+
+      // Patch D (Auto-calibration): vanishing-point + horizon guidance (CV) layered on top of depth.
+      // Goal: stable, natural default perspective in Ultra so users rarely touch sliders.
+      calib:{
+        enabled:true,
+        status:"idle",          // idle|running|ready|error
+        source:null,             // "opencv"|"fallback"
+        photoHash:null,
+        // Results (normalized)
+        vanish:null,             // {x:0..1,y:0..1}
+        horizonY:null,           // 0..1
+        planeDir:null,           // {x,y} in image space, normalized
+        confidence:0,
+        // Recommended user-controls for quad inference (same ranges as sliders)
+        autoHorizon:0.0,         // -1..1
+        autoPerspective:0.85     // 0..1
+      },
       models:{
         // Depth ONNX model URL (Depth Anything V2 ViT-B outdoor dynamic).
         // Stored in Yandex Object Storage (public read + CORS required).

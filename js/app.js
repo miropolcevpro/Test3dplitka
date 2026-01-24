@@ -27,6 +27,15 @@
     // Always re-point active params based on current ultra toggle.
     const ultraOn = !!(state.ai && state.ai.enabled!==false);
     m.params = ultraOn ? m.params_ultra : m.params_base;
+
+    // Patch D: track whether the user has manually tuned horizon/perspective in Ultra.
+    // Auto-calibration is applied ONLY while these flags are false.
+    if(!m._ultraTuned || typeof m._ultraTuned !== "object"){
+      m._ultraTuned = { horizon:false, perspective:false };
+    }else{
+      if(typeof m._ultraTuned.horizon !== "boolean") m._ultraTuned.horizon = false;
+      if(typeof m._ultraTuned.perspective !== "boolean") m._ultraTuned.perspective = false;
+    }
   }
   function normalizeAllZones(){
     (state.zones||[]).forEach(ensureZoneMaterialParams);
@@ -294,7 +303,18 @@ async function handlePhotoFile(file){
 
     pushHistory();
     state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;
-    state.zones.forEach(z=>{z.contour=[];z.closed=false;z.cutouts=[];});
+    state.zones.forEach(z=>{
+      z.contour=[];z.closed=false;z.cutouts=[];
+      // Patch D: new photo -> reset Ultra manual-tune flags so auto-calibration can help by default.
+      if(z && z.material){
+        if(z.material._ultraTuned){
+          z.material._ultraTuned.horizon = false;
+          z.material._ultraTuned.perspective = false;
+        }else{
+          z.material._ultraTuned = { horizon:false, perspective:false };
+        }
+      }
+    });
     state.ui.activeCutoutId=null;
 
     API.setStatus(`Фото загружено (${nw}×${nh})`);
@@ -489,7 +509,8 @@ async function handlePhotoFile(file){
         ctx.font = "12px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial";
         const farHigh = (a.depthFarHigh === false) ? "inv" : "ok";
         const qg = a._quadGuard ? a._quadGuard : "n/a";
-        ctx.fillText(`AI depth: ${a.depthReady ? "ready" : "off"}   conf=${conf.toFixed(2)}   mix=${mix.toFixed(2)}   quad=${qg}   far=${farHigh}`, 10, 18);
+        const calibStr = (a._calibUsed) ? (`   calib=${a._calibUsed}`) : "";
+        ctx.fillText(`AI depth: ${a.depthReady ? "ready" : "off"}   conf=${conf.toFixed(2)}   mix=${mix.toFixed(2)}   quad=${qg}   far=${farHigh}${calibStr}`, 10, 18);
 
         // Arrow (planeDir). dir is normalized in image space: x right, y down (far tends to negative y).
         const cx = 120, cy = 48;
@@ -685,8 +706,24 @@ async function handlePhotoFile(file){
 el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("blendSelect").value;ED.render();});
 
     
-    el("perspectiveRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.perspective=parseFloat(el("perspectiveRange").value);ED.render();});
-    el("horizonRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.horizon=parseFloat(el("horizonRange").value);ED.render();});
+    el("perspectiveRange").addEventListener("input",()=>{
+      const z=S.getActiveZone();if(!z)return;
+      z.material.params.perspective=parseFloat(el("perspectiveRange").value);
+      // Patch D: user manual tune in Ultra disables auto-calibration overlay for that parameter.
+      if(state.ai && state.ai.enabled!==false && z.material && z.material._ultraTuned){
+        z.material._ultraTuned.perspective = true;
+      }
+      ED.render();
+    });
+    el("horizonRange").addEventListener("input",()=>{
+      const z=S.getActiveZone();if(!z)return;
+      z.material.params.horizon=parseFloat(el("horizonRange").value);
+      // Patch D: user manual tune in Ultra disables auto-calibration overlay for that parameter.
+      if(state.ai && state.ai.enabled!==false && z.material && z.material._ultraTuned){
+        z.material._ultraTuned.horizon = true;
+      }
+      ED.render();
+    });
 el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
     el("copySummaryBtn").addEventListener("click",async ()=>{const t=makeSummaryText();await navigator.clipboard.writeText(t).catch(()=>{});API.setStatus("Описание скопировано");});
     el("waBtn").addEventListener("click",()=>openMessenger("wa"));
