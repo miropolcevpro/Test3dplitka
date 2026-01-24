@@ -157,7 +157,7 @@ function absFromStorageMaybe(p){
   if(!pal){ state.catalog.paletteMissing[shapeId]=true; state.catalog.palettesByShape[shapeId]=null; state.catalog.texturesByShape[shapeId]=[]; setStatus("Текстуры для этой формы временно недоступны"); return {palette:null,textures:[]}; }
 
   state.catalog.palettesByShape[shapeId]=pal;
-  const tex=normalizePaletteTextures(pal).map(t=>({
+  const tex=normalizePaletteTextures(pal, shapeId).map(t=>({
     ...t,
     previewUrl: absFromStorageMaybe(t.previewUrl),
     albedoUrl: absFromStorageMaybe(t.albedoUrl),
@@ -210,7 +210,9 @@ function absFromStorageMaybe(p){
       }
     }
 
-    cache.set(finalUrl,{img,ts:Date.now()});
+    const entry={img,ts:Date.now()};
+    cache.set(finalUrl, entry);
+    if(url!==finalUrl) cache.set(url, entry);
     if(cache.size>14){
       const entries=[...cache.entries()].sort((a,b)=>a[1].ts-b[1].ts);
       for(let i=0;i<Math.max(1,cache.size-14);i++) cache.delete(entries[i][0]);

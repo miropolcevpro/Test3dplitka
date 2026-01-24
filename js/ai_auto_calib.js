@@ -32,7 +32,13 @@
   function _norm2(v){ const m=_hypot(v.x||0,v.y||0); return (m>1e-6&&isFinite(m)) ? {x:(v.x||0)/m,y:(v.y||0)/m} : {x:0,y:-1}; }
 
   // Optional OpenCV.js loader. If it fails, we continue with fallback.
+  // OpenCV loader candidates.
+  // Priority is LOCAL (GitHub Pages repo) for maximum stability in Tilda iframe.
+  // Recommended: ship a single-file build (WASM embedded) at:
+  //   assets/vendor/opencv/opencv.js
   const OPENCV_CANDIDATES = [
+    // Local (preferred)
+    "assets/vendor/opencv/opencv.js",
     // OpenCV official docs host (often available)
     "https://docs.opencv.org/4.x/opencv.js",
     // CDN fallback (may work depending on availability)
@@ -64,12 +70,17 @@
           // Wait for runtime init (OpenCV sets cv.onRuntimeInitialized)
           const cv = window.cv;
           if(!cv) throw new Error("cv global missing after load: "+url);
+          // Some builds may initialize very quickly. Give it a microtask turn.
+          await new Promise(r=>setTimeout(r,0));
           if(cv.Mat) return cv;
           await new Promise((resolve,reject)=>{
             let done=false;
             const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("OpenCV init timeout")); }, 8000);
+            // Preserve any existing hook.
+            const prev = cv.onRuntimeInitialized;
             cv.onRuntimeInitialized = ()=>{
               if(done) return;
+              try{ if(typeof prev === 'function') prev(); }catch(_){/*noop*/}
               done=true;
               clearTimeout(t);
               resolve(true);
@@ -152,13 +163,23 @@
     return { x: s.x/s.n, y: s.y/s.n, count: bestCount };
   }
 
+  function _softClamp01(v){
+    // Prevent extreme values when the vanishing point is outside the frame.
+    // We keep it responsive, but avoid snapping to 0/1 which causes unstable defaults.
+    const x = +v;
+    if(!isFinite(x)) return 0.5;
+    // Allow some out-of-range influence, but cap it smoothly.
+    const delta = _clamp(x - 0.5, -0.35, 0.35); // => [0.15 .. 0.85]
+    return 0.5 + delta;
+  }
+
   function _deriveControlsFromVanish(vanishNorm){
     // Heuristic mapping into existing UI ranges.
     // vanish.y < 0.5 (higher horizon) => more negative horizon shift and stronger perspective.
-    const vy = _clamp(vanishNorm.y, 0, 1);
+    const vy = _softClamp01(vanishNorm?.y);
     const autoH = _clamp((vy - 0.5) * 1.8, -1, 1);
     const autoP = _clamp(0.78 + (0.5 - vy) * 0.55, 0.45, 1.0);
-    return { autoHorizon:autoH, autoPerspective:autoP };
+    return { autoHorizon:autoH, autoPerspective:autoP, vy };
   }
 
   async function runOpenCV(bitmap){
@@ -206,15 +227,24 @@
       const v = _histogramPick(inter, w, h);
       if(!v) throw new Error("No stable vanishing point");
 
-      const vanish = { x: _clamp(v.x / w, 0, 1), y: _clamp(v.y / h, 0, 1) };
-      const horizonY = vanish.y;
+      // Keep RAW normalized vanish (may be outside 0..1 for real scenes).
+      // We store a clamped copy for UI/debug, but derive defaults from a soft-clamped value.
+      const vanishRaw = { x: (v.x / w), y: (v.y / h) };
+      const vanish = { x: _clamp(vanishRaw.x, 0, 1), y: _clamp(vanishRaw.y, 0, 1) };
+      const horizonY = _softClamp01(vanishRaw.y);
 
-      // planeDir from bottom-center to vanish
-      const dir = _norm2({ x: (v.x - 0.5*w), y: (v.y - 0.98*h) });
+      // planeDir from bottom-center to vanish (in image space).
+      // FAR should point upward (negative y). If the estimate points downward (towards the camera)
+      // or becomes near-horizontal, flip to stabilize and prevent premium inversion.
+      let dir = _norm2({ x: (v.x - 0.5*w), y: (v.y - 0.98*h) });
+      if(!isFinite(dir.x) || !isFinite(dir.y)) dir = {x:0,y:-1};
+      if(dir.y > -0.05){
+        dir = { x: -dir.x, y: -dir.y };
+      }
 
       // Confidence: density of the best bin vs total intersections
       const conf = _clamp((v.count || 0) / Math.max(1, inter.length), 0, 1);
-      const controls = _deriveControlsFromVanish(vanish);
+      const controls = _deriveControlsFromVanish(vanishRaw);
 
       return {
         source: "opencv",
@@ -224,7 +254,7 @@
         confidence: conf,
         autoHorizon: controls.autoHorizon,
         autoPerspective: controls.autoPerspective,
-        debug: { w, h, lines: picked.length, intersections: inter.length, binCount: v.count }
+        debug: { w, h, lines: picked.length, intersections: inter.length, binCount: v.count, vanishRaw }
       };
 
     }finally{

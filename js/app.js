@@ -40,6 +40,15 @@
   function normalizeAllZones(){
     (state.zones||[]).forEach(ensureZoneMaterialParams);
   }
+  // Contour visibility helpers (shared across UI + auto-hide behaviors).
+  function isContourShown(){ return !(state.ui && state.ui.showContour === false); }
+  function updateContourToggleBtn(){
+    const b = document.getElementById("toggleContourBtn");
+    if(!b) return;
+    b.textContent = isContourShown() ? "Скрыть контур" : "Показать контур";
+  }
+
+
 
   function setBuildInfo(){el("buildInfo").textContent=`${state.build.version} • ${state.build.ts}`;}
   function setActiveStep(step){
@@ -124,17 +133,19 @@
         pushHistory();
         state.catalog.activeShapeId=shapeId;
         const zone=S.getActiveZone();
-        if(zone){zone.material.shapeId=shapeId;zone.material.textureId=null;
-    // AUTO_HIDE_CONTOUR_ON_TEXTURE
-    try{
-      const z = (typeof getActiveZone==="function") ? getActiveZone() : null;
-      if(z && z.closed){
-        state.ui = state.ui || {};
-        state.ui.showContour = false;
-        if(typeof updateContourBtn==="function") updateContourBtn();
-      }
-    }catch(e){}
-zone.material.textureUrl=null;}
+        if(zone){
+          zone.material.shapeId=shapeId;
+          zone.material.textureId=null;
+          zone.material.textureUrl=null;
+          // AUTO_HIDE_CONTOUR_ON_TEXTURE
+          try{
+            if(zone.closed){
+              state.ui = state.ui || {};
+              state.ui.showContour = false;
+              updateContourToggleBtn();
+            }
+          }catch(e){}
+        }
         renderShapesUI();
         await loadTexturesForActiveShape();
         renderZonesUI();
@@ -263,7 +274,7 @@ zone.material.textureUrl=null;}
       const thumb=(t.previewUrl||url);
       const card=document.createElement("div");
       card.className="card"+(active?" card--active":"");
-      card.innerHTML=`<div class="thumb">${thumb?`<img src="${thumb}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(t.title||t.textureId||"")}</span><span class="badge">${escapeHtml(t.textureId||"")}</span></div>`;
+      card.innerHTML=`<div class="thumb">${thumb?`<img src="${escapeAttr(thumb)}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(t.title||t.textureId||"")}</span><span class="badge">${escapeHtml(t.textureId||"")}</span></div>`;
       card.addEventListener("click",()=>{
         if(!zone) return;
         pushHistory();
@@ -292,6 +303,7 @@ async function handlePhotoFile(file){
     if(!file) return;
     API.setStatus("Загрузка фото…");
     const maxSide=3072;
+    const prevBitmap = state.assets ? state.assets.photoBitmap : null;
     const bmp=await createImageBitmap(file);
     let w=bmp.width,h=bmp.height;
     let sc=1,longSide=Math.max(w,h);
@@ -299,10 +311,14 @@ async function handlePhotoFile(file){
     const nw=Math.round(w*sc),nh=Math.round(h*sc);
     const off=document.createElement("canvas");off.width=nw;off.height=nh;
     off.getContext("2d").drawImage(bmp,0,0,nw,nh);
+    try{ if(bmp && bmp.close) bmp.close(); }catch(_){ }
+
     const resized=await createImageBitmap(off);
 
     pushHistory();
     state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;
+    try{ if(prevBitmap && prevBitmap.close) prevBitmap.close(); }catch(_){ }
+
     state.zones.forEach(z=>{
       z.contour=[];z.closed=false;z.cutouts=[];
       // Patch D: new photo -> reset Ultra manual-tune flags so auto-calibration can help by default.
@@ -371,19 +387,14 @@ async function handlePhotoFile(file){
   function bindUI(){
     // Contour visibility toggle (overlay)
     const toggleContourBtn = document.getElementById("toggleContourBtn");
-    const isContourShown = () => !(state.ui && state.ui.showContour === false);
-    function updateContourBtn(){
-      if(!toggleContourBtn) return;
-      toggleContourBtn.textContent = isContourShown() ? "Скрыть контур" : "Показать контур";
-    }
     if(toggleContourBtn){
       toggleContourBtn.addEventListener("click", () => {
         state.ui = state.ui || {};
         state.ui.showContour = !isContourShown();
-        updateContourBtn();
+        updateContourToggleBtn();
         ED.render();
       });
-      updateContourBtn();
+      updateContourToggleBtn();
     }
 
 
