@@ -41,6 +41,11 @@ window.PhotoPaveCompositor = (function(){
   const tileCache = new Map(); // url -> {tex,w,h,ts}
   const maskCache = new Map(); // key -> {maskTex, blurTex, w,h, ts}
   const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
+  // Drag-stabilization: while the user drags contour points, keep the inferred "near/far" scanlines
+  // anchored to the pre-drag extrema to avoid sudden quad jumps when a different point becomes yMin/yMax.
+  // This removes visible "teleport" artifacts without freezing the contour itself.
+  const dragLockExtrema = new Map(); // zoneId -> {yMin:number,yMax:number}
+  let _lastDragZoneId = null;
 
   // Track AI mode signature to avoid reusing a homography computed under a different
   // Ultra configuration (can manifest as a sudden vertical inversion when toggling).
@@ -819,7 +824,7 @@ function _decomposeHomographyToRT(H, K){
   }
 
   
-function _inferQuadFromContour(contour, params, w, h){
+function _inferQuadFromContour(contour, params, w, h, lockExtrema){
   // Robust quad inference for "floor plane" from an arbitrary closed contour.
   // Goal: produce a stable quad even while the user drags points.
   // Strategy:
@@ -854,8 +859,16 @@ function _inferQuadFromContour(contour, params, w, h){
   const poly = hull.concat([hull[0]]);
 
   const ys = hull.map(p=>p.y);
-  const yMin = Math.min(...ys);
-  const yMax = Math.max(...ys);
+  let yMin = Math.min(...ys);
+  let yMax = Math.max(...ys);
+  // Optional drag-stabilization: keep extrema fixed during a drag gesture.
+  if(lockExtrema && isFinite(lockExtrema.yMin) && isFinite(lockExtrema.yMax)){
+    const dyLock = lockExtrema.yMax - lockExtrema.yMin;
+    if(isFinite(dyLock) && dyLock > 2){
+      yMin = lockExtrema.yMin;
+      yMax = lockExtrema.yMax;
+    }
+  }
   const dy = yMax - yMin;
   if(!isFinite(dy) || dy < 2) return null;
 
@@ -1367,6 +1380,22 @@ function _blendModeId(blend){
     const w = canvas.width, h = canvas.height;
     _ensureTargets(w,h);
 
+    // Drag-stabilization lifecycle: keep extrema lock only for the active dragged zone.
+    try{
+      const ui = state && state.ui ? state.ui : null;
+      let dragZoneId = null;
+      if(ui && ui.isPointerDown && ui.draggingPoint && (ui.draggingPoint.kind === 'contour' || ui.draggingPoint.kind === 'cutout')){
+        dragZoneId = ui.activeZoneId || null;
+      }
+      if(_lastDragZoneId && _lastDragZoneId !== dragZoneId){
+        dragLockExtrema.delete(_lastDragZoneId);
+      }
+      if(!dragZoneId && _lastDragZoneId){
+        dragLockExtrema.delete(_lastDragZoneId);
+      }
+      _lastDragZoneId = dragZoneId;
+    }catch(_){ /* no-op */ }
+
 
     // Ultra AI resources: upload depth + occlusion (if available). Safe no-ops on errors.
     if(ai){
@@ -1631,8 +1660,29 @@ effP = Math.max(0.0, Math.min(1.0, effP));
 // Work in render-buffer coordinates: scale contour from photo space -> render space.
 const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
 
+// While dragging, lock yMin/yMax to pre-drag extrema to avoid sudden near/far scanline jumps.
+let lockExtrema = null;
+try{
+  if(_lastDragZoneId && _lastDragZoneId === zone.id){
+    lockExtrema = dragLockExtrema.get(zone.id) || null;
+    if(!lockExtrema){
+      let yMin = Infinity, yMax = -Infinity;
+      for(const p of contourR){
+        const y = +p.y;
+        if(!isFinite(y)) continue;
+        if(y < yMin) yMin = y;
+        if(y > yMax) yMax = y;
+      }
+      if(isFinite(yMin) && isFinite(yMax) && (yMax - yMin) > 2){
+        lockExtrema = {yMin, yMax};
+        dragLockExtrema.set(zone.id, lockExtrema);
+      }
+    }
+  }
+}catch(_){ lockExtrema = null; }
+
 let Hm = null;
-const quad = _inferQuadFromContour(contourR, quadParams, w, h);
+const quad = _inferQuadFromContour(contourR, quadParams, w, h, lockExtrema);
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
@@ -1808,7 +1858,7 @@ const quadParams = (ai && ai.enabled !== false && !(ai.geomLockBottomUp) && ai.p
 const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
 
 let Hm = null;
-const quad = _inferQuadFromContour(contourR, quadParams, outW, outH);
+const quad = _inferQuadFromContour(contourR, quadParams, outW, outH, null);
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
