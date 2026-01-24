@@ -1333,6 +1333,61 @@ if(ai && ai.enabled !== false){
     return best;
   }
 
+  function _contourPCADir(contour){
+    if(!contour || contour.length < 3) return null;
+    let sx=0, sy=0;
+    const n = contour.length;
+    for(let i=0;i<n;i++){
+      const p = contour[i];
+      sx += (p.x||0); sy += (p.y||0);
+    }
+    const mx = sx / n, my = sy / n;
+    let a=0, b=0, c=0;
+    for(let i=0;i<n;i++){
+      const p = contour[i];
+      const dx = (p.x||0) - mx;
+      const dy = (p.y||0) - my;
+      a += dx*dx;
+      b += dx*dy;
+      c += dy*dy;
+    }
+    a/=n; b/=n; c/=n;
+    if(!isFinite(a) || !isFinite(b) || !isFinite(c)) return null;
+
+    let vx=0, vy=0;
+    if(Math.abs(b) < 1e-9){
+      if(a >= c){ vx=1; vy=0; } else { vx=0; vy=1; }
+    }else{
+      const tr = a + c;
+      const det = a*c - b*b;
+      const disc = Math.max(0, (tr*tr)/4 - det);
+      const l1 = tr/2 + Math.sqrt(disc); // largest eigenvalue
+      vx = b;
+      vy = l1 - a;
+      let m = Math.hypot(vx, vy);
+      if(m < 1e-9){
+        vx = l1 - c;
+        vy = b;
+        m = Math.hypot(vx, vy);
+        if(m < 1e-9) return null;
+      }
+      vx/=m; vy/=m;
+    }
+    const m2 = Math.hypot(vx, vy);
+    if(m2 < 1e-9 || !isFinite(m2)) return null;
+    vx/=m2; vy/=m2;
+
+    // Ensure "forward" roughly points upward in image space.
+    if(vy > 0){ vx = -vx; vy = -vy; }
+    return {x:vx, y:vy};
+  }
+
+  function _absDot(a,b){
+    if(!a||!b) return 0;
+    const d = a.x*b.x + a.y*b.y;
+    return isFinite(d) ? Math.abs(d) : 0;
+  }
+
   // Candidate plane directions:
   const dirDepth = (ai.planeDir && isFinite(ai.planeDir.x) && isFinite(ai.planeDir.y)) ? ai.planeDir : null;
   const dirCalib = (calib && calib.status==="ready" && calib.planeDir && isFinite(calib.planeDir.x) && isFinite(calib.planeDir.y) && (calib.confidence||0) >= 0.18)
@@ -1352,11 +1407,25 @@ if(ai && ai.enabled !== false){
     chosenDir = (bm>1e-6 && isFinite(bm)) ? {x:bx/bm, y:by/bm} : dirDepth;
   }
 
+
+  // Zone-PCA vanishing candidate: robust fallback when the photo has weak linear cues (grass/gravel).
+  // We only use it as a direction hint; it never mutates stored params.
+  if(pdir){
+    const agree = _absDot(chosenDir, pdir);
+    // If OpenCV calibration is weak OR strongly disagrees with the zone principal axis,
+    // prefer the zone-based direction to avoid inverted/vertical defaults.
+    const calibOk = (calib && calib.status==="ready" && (calib.confidence||0) >= 0.22);
+    const agreeOk = (agree >= 0.28);
+    if(!calibOk || !agreeOk){
+      chosenDir = pdir;
+    }
+  }
   // Contour-aligned direction gating.
   // If the inferred direction conflicts with the dominant contour direction,
   // we flip it (sign ambiguity) or reduce confidence to avoid unstable defaults.
   let alignGate = 1.0;
   const cdir = _contourDominantDir(zone.contour);
+  const pdir = _contourPCADir(zone.contour);
   if(chosenDir && cdir){
     const dp = chosenDir.x*cdir.x + chosenDir.y*cdir.y;
     if(isFinite(dp) && dp < 0){
@@ -1372,11 +1441,14 @@ if(ai && ai.enabled !== false){
   let effP = baseParams.perspective;
   let usedAuto = false;
   if(calib && calib.status==="ready" && (calib.confidence||0) >= 0.18){
-    if(!tuned.horizon && isFinite(calib.autoHorizon)){
+    const _agreeHP = pdir ? _absDot(calib.planeDir, pdir) : 1.0;
+    const _hpOk = (_agreeHP >= 0.28);
+    
+    if(_hpOk && !tuned.horizon && isFinite(calib.autoHorizon)){
       effH = calib.autoHorizon;
       usedAuto = true;
     }
-    if(!tuned.perspective && isFinite(calib.autoPerspective)){
+    if(_hpOk && !tuned.perspective && isFinite(calib.autoPerspective)){
       effP = calib.autoPerspective;
       usedAuto = true;
     }
