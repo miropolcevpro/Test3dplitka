@@ -1408,9 +1408,11 @@ if(ai && ai.enabled !== false){
   }
 
 
+  const cdir = _contourDominantDir(zone.contour);
+  const pdir = _contourPCADir(zone.contour);
+
   // Zone-PCA vanishing candidate: robust fallback when the photo has weak linear cues (grass/gravel).
   // We only use it as a direction hint; it never mutates stored params.
-  const pdir = _contourPCADir(zone.contour);
   if(pdir){
     const agree = _absDot(chosenDir, pdir);
     // If OpenCV calibration is weak OR strongly disagrees with the zone principal axis,
@@ -1425,7 +1427,6 @@ if(ai && ai.enabled !== false){
   // If the inferred direction conflicts with the dominant contour direction,
   // we flip it (sign ambiguity) or reduce confidence to avoid unstable defaults.
   let alignGate = 1.0;
-  const cdir = _contourDominantDir(zone.contour);
   if(chosenDir && cdir){
     const dp = chosenDir.x*cdir.x + chosenDir.y*cdir.y;
     if(isFinite(dp) && dp < 0){

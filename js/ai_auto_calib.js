@@ -68,12 +68,25 @@ function _absUrl(rel){
 }
 
 function _getOpenCVCandidatesAbs(){
-  // Prefer local single-file build. Fallback to online sources.
-  return [
-    _absUrl("assets/vendor/opencv/opencv.js"),
-    "https://docs.opencv.org/4.x/opencv.js",
-    "https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"
-  ];
+  // Only use a bundled, same-origin OpenCV build.
+  // Remote OpenCV builds frequently depend on extra WASM assets and/or violate
+  // iframe/CORS constraints, which can surface as noisy worker console errors.
+  return [ _absUrl("assets/vendor/opencv/opencv.js") ];
+}
+
+async function _localOpenCvExists(){
+  // Avoid starting the worker at all if OpenCV is not bundled with the app.
+  // This prevents noisy, non-actionable console errors in production.
+  const url = _absUrl("assets/vendor/opencv/opencv.js");
+  try{
+    let res = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if(res && res.ok) return true;
+    // Some hosts (or local proxies) may not support HEAD; try GET as a fallback.
+    res = await fetch(url, { method: "GET", cache: "no-store" });
+    return !!(res && res.ok);
+  }catch(_){
+    return false;
+  }
 }
 
 function ensureOpenCV(){
@@ -81,9 +94,16 @@ function ensureOpenCV(){
   if(_cvWorkerReady) return _cvWorkerReady;
 
   _cvWorkerReady = (async ()=>{
+    // If OpenCV is not bundled locally, don't attempt remote sources.
+    // We will fall back to a safe heuristic without producing console noise.
+    const okLocal = await _localOpenCvExists();
+    if(!okLocal){
+      throw new Error("OpenCV is not bundled");
+    }
     if(typeof Worker === "undefined"){
       throw new Error("Worker not supported");
     }
+
     const workerUrl = _absUrl("js/ai_auto_calib_worker.js");
     _cvWorker = new Worker(workerUrl);
 
