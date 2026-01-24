@@ -4,6 +4,98 @@
   const {state,makeZone,makeCutout,pushHistory,undo,redo}=S;
   const el=(id)=>document.getElementById(id);
   const escapeHtml=(s)=>String(s||"").replace(/[&<>'"]/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[c]));
+
+
+// Premium FX v5: auto-tune camera finish (grain/sharpen) from the loaded photo.
+// Safari-safe: runs once per photo on a small downscaled canvas; no per-frame readback.
+function autoTunePremiumFxFromPhoto(bitmap){
+  try{
+    if(!state || !state.ai) return;
+    if(state.ai.premiumFxAutoCam===false) return;
+    if(!bitmap || !bitmap.width || !bitmap.height) return;
+
+    const target=256; // small sample for iPhone Safari memory safety
+    const w=bitmap.width, h=bitmap.height;
+    const sc=target/Math.max(w,h);
+    const sw=Math.max(64, Math.round(w*sc));
+    const sh=Math.max(64, Math.round(h*sc));
+
+    const c=document.createElement("canvas");
+    c.width=sw; c.height=sh;
+    const ctx=c.getContext("2d",{ willReadFrequently:true });
+    ctx.drawImage(bitmap,0,0,sw,sh);
+    const img=ctx.getImageData(0,0,sw,sh).data;
+
+    // Compute luma (0..1)
+    const n=sw*sh;
+    const Y=new Float32Array(n);
+    for(let i=0, p=0; i<n; i++, p+=4){
+      const r=img[p]/255, g=img[p+1]/255, b=img[p+2]/255;
+      Y[i]=0.2126*r + 0.7152*g + 0.0722*b;
+    }
+
+    // 3x3 box blur (single pass) for low-frequency separation (cheap and stable)
+    const Yb=new Float32Array(n);
+    for(let y=1; y<sh-1; y++){
+      let row=y*sw;
+      for(let x=1; x<sw-1; x++){
+        const i=row+x;
+        const s=
+          Y[i] +
+          Y[i-1] + Y[i+1] +
+          Y[i-sw] + Y[i+sw] +
+          Y[i-sw-1] + Y[i-sw+1] +
+          Y[i+sw-1] + Y[i+sw+1];
+        Yb[i]=s/9;
+      }
+    }
+    // Fill borders
+    for(let x=0; x<sw; x++){ Yb[x]=Y[x]; Yb[(sh-1)*sw+x]=Y[(sh-1)*sw+x]; }
+    for(let y=0; y<sh; y++){ Yb[y*sw]=Y[y*sw]; Yb[y*sw+(sw-1)]=Y[y*sw+(sw-1)]; }
+
+    // High-pass variance (proxy for grain/noise) and gradient energy (proxy for sharpness)
+    let sumHP=0, sumHP2=0, sumG=0;
+    const eps=1e-6;
+    let cnt=0;
+    for(let y=1; y<sh-1; y++){
+      for(let x=1; x<sw-1; x++){
+        const i=y*sw+x;
+        const hp=Y[i]-Yb[i];
+        // gradient magnitude (Sobel-lite)
+        const gx=(Y[i+1]-Y[i-1]);
+        const gy=(Y[i+sw]-Y[i-sw]);
+        const g=Math.sqrt(gx*gx+gy*gy);
+        // De-emphasize strong edges when estimating grain (edges dominate hp)
+        const wEdge=1.0/(1.0 + 18.0*g);
+        sumHP += hp*wEdge;
+        sumHP2 += hp*hp*wEdge;
+        sumG += g;
+        cnt++;
+      }
+    }
+    if(cnt<100) return;
+    const meanHP=sumHP/cnt;
+    const varHP=Math.max(0, (sumHP2/cnt) - meanHP*meanHP);
+    const stdHP=Math.sqrt(varHP + eps);
+    const meanG=sumG/cnt;
+
+    // Map metrics to safe parameter ranges
+    // stdHP ~ 0.005..0.03 (typical), meanG ~ 0.01..0.06 (typical)
+    const grain = Math.min(0.75, Math.max(0.18, 0.22 + stdHP*10.0));
+    // If image is very sharp (meanG high), reduce sharpening a bit
+    const sharpenBase = 0.18 + meanG*5.0;
+    const sharpen = Math.min(0.60, Math.max(0.12, sharpenBase - Math.max(0, (meanG-0.05))*1.8));
+
+    state.ai.premiumFxCamGrain = grain;
+    state.ai.premiumFxCamSharpen = sharpen;
+    state.ai._premiumFxAutoCam = { grain, sharpen, stdHP, meanG };
+
+    console.log("[PremiumFX] auto camera:", { grain:+grain.toFixed(3), sharpen:+sharpen.toFixed(3), stdHP:+stdHP.toFixed(4), meanG:+meanG.toFixed(4) });
+  }catch(e){
+    console.warn("[PremiumFX] auto camera tune failed:", e);
+  }
+}
+
   const ESC_ATTR_MAP={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const escapeAttr=(s)=>String(s||"").replace(/[&<>"']/g,(c)=>ESC_ATTR_MAP[c]);
 
@@ -339,6 +431,9 @@ async function handlePhotoFile(file){
     // Resize canvas to the new photo size to avoid any aspect distortion
     if(ED.resize) ED.resize(); else ED.render();
 
+    // Premium FX v5: auto-tune grain/sharpen once per photo
+    autoTunePremiumFxFromPhoto(resized);
+    
     // Ultra AI (skeleton): run once after photo load. Does not affect rendering in Patch 1.
     try{
       if(window.AIUltraPipeline && typeof window.AIUltraPipeline.onPhotoLoaded==="function"){
