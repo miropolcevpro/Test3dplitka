@@ -897,6 +897,105 @@ function _inferQuadFromContour(contour, params, w, h){
     }
   }catch(_){ /* no-op */ }
 
+
+  // Patch A: Quad Alignment Guard (deterministic, prevents premium inversion/rotation)
+  // AI-derived cuts can be ambiguous in sign (near/far) and across-order (left/right) depending on cues.
+  // We enumerate consistent permutations and pick the one that best matches the baseline quad topology.
+  let _quadGuard = null;
+  if(aiNearL && aiNearR && aiFarL && aiFarR){
+    const baseQuad = [baseNearL, baseNearR, baseFarR, baseFarL]; // nearL, nearR, farR, farL
+
+    const signedArea = (q)=>{
+      let a = 0;
+      for(let i=0;i<4;i++){
+        const p0=q[i], p1=q[(i+1)%4];
+        a += (p0.x*p1.y - p1.x*p0.y);
+      }
+      return a * 0.5;
+    };
+
+    const isConvex = (q)=>{
+      let sign = 0;
+      for(let i=0;i<4;i++){
+        const a=q[i], b=q[(i+1)%4], c=q[(i+2)%4];
+        const cross = (b.x-a.x)*(c.y-b.y) - (b.y-a.y)*(c.x-b.x);
+        if(!isFinite(cross) || Math.abs(cross) < 1e-6) continue;
+        const s = cross > 0 ? 1 : -1;
+        if(sign===0) sign = s;
+        else if(s !== sign) return false;
+      }
+      return true;
+    };
+
+    const dist2 = (q0,q1)=>{
+      let d=0;
+      for(let i=0;i<4;i++){
+        const dx = (q0[i].x - q1[i].x);
+        const dy = (q0[i].y - q1[i].y);
+        d += dx*dx + dy*dy;
+      }
+      return d;
+    };
+
+    const baseSign = Math.sign(signedArea(baseQuad)) || 1;
+
+    let best = null;
+    let bestScore = Infinity;
+
+    // Enumerate 8 permutations: swap near L/R, swap far L/R, swap near<->far pairs.
+    for(let ns=0; ns<2; ns++){
+      for(let fs=0; fs<2; fs++){
+        for(let nfs=0; nfs<2; nfs++){
+          let nL = ns ? aiNearR : aiNearL;
+          let nR = ns ? aiNearL : aiNearR;
+          let fL = fs ? aiFarR  : aiFarL;
+          let fR = fs ? aiFarL  : aiFarR;
+          if(nfs){
+            const tnL=nL, tnR=nR;
+            nL=fL; nR=fR;
+            fL=tnL; fR=tnR;
+          }
+
+          const q = [nL, nR, fR, fL];
+
+          // Hard constraints + penalties
+          let penalty = 0;
+
+          // Non-degenerate widths
+          if(Math.hypot(nR.x-nL.x, nR.y-nL.y) < 2 || Math.hypot(fR.x-fL.x, fR.y-fL.y) < 2) penalty += 1e8;
+
+          // Near should be below far in image coords (y grows downward)
+          const ny = (nL.y+nR.y)*0.5;
+          const fy = (fL.y+fR.y)*0.5;
+          if(!(isFinite(ny)&&isFinite(fy))) penalty += 1e8;
+          else if(ny < fy) penalty += 1e7;
+
+          // Convexity
+          if(!isConvex(q)) penalty += 1e6;
+
+          // Winding consistency with baseline
+          const sgn = Math.sign(signedArea(q)) || 1;
+          if(sgn !== baseSign) penalty += 1e5;
+
+          const score = dist2(q, baseQuad) + penalty;
+          if(score < bestScore){
+            bestScore = score;
+            best = {q, ns, fs, nfs, score, penalty};
+          }
+        }
+      }
+    }
+
+        if(best && isFinite(bestScore) && bestScore < Infinity){
+      // best.q is [nearL, nearR, farR, farL]
+      aiNearL = {x: best.q[0].x, y: best.q[0].y};
+      aiNearR = {x: best.q[1].x, y: best.q[1].y};
+      aiFarR  = {x: best.q[2].x, y: best.q[2].y};
+      aiFarL  = {x: best.q[3].x, y: best.q[3].y};
+      _quadGuard = { ns: best.ns, fs: best.fs, nfs: best.nfs, score: best.score, penalty: best.penalty };
+    }
+  }
+
   // Blend baseline and AI quad (if available)
   if(aiNearL && aiNearR && aiFarL && aiFarR && aiMix > 0.001){
     nearL = {x: lerp(baseNearL.x, aiNearL.x, aiMix), y: lerp(baseNearL.y, aiNearL.y, aiMix)};
@@ -904,6 +1003,18 @@ function _inferQuadFromContour(contour, params, w, h){
     farL  = {x: lerp(baseFarL.x,  aiFarL.x,  aiMix), y: lerp(baseFarL.y,  aiFarL.y,  aiMix)};
     farR  = {x: lerp(baseFarR.x,  aiFarR.x,  aiMix), y: lerp(baseFarR.y,  aiFarR.y,  aiMix)};
     usedAi = true;
+
+    // Expose quad-guard decision for the AI debug overlay (only when enabled).
+    try{
+      const st = window.PhotoPaveState && window.PhotoPaveState.state;
+      if(st && st.ai && st.ai.debugOverlay){
+        if(_quadGuard){
+          st.ai._quadGuard = `ns=${_quadGuard.ns} fs=${_quadGuard.fs} nf=${_quadGuard.nfs}`;
+        }else{
+          st.ai._quadGuard = null;
+        }
+      }
+    }catch(_){/*noop*/}
   }else{
     nearL = baseNearL; nearR = baseNearR; farL = baseFarL; farR = baseFarR;
     usedAi = false;
