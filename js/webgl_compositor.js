@@ -1307,6 +1307,32 @@ if(ai && ai.enabled !== false){
   const tuned = zone.material?._ultraTuned || {horizon:false,perspective:false};
   const calib = ai.calib;
 
+  // Outdoor paving profile: prefer plane directions that are consistent with the zone contour.
+  // We do this cheaply (no CV/ML) every frame, but the math is O(n) and very small.
+  // If the alignment is weak, we confidence-gate AI influence instead of forcing a wrong orientation.
+  function _contourDominantDir(contour){
+    if(!contour || contour.length < 2) return null;
+    let best=null; let bestL=0;
+    const n = contour.length;
+    const closed = !!zone.closed;
+    const m = closed ? n : (n-1);
+    for(let i=0;i<m;i++){
+      const a = contour[i];
+      const b = contour[(i+1)%n];
+      const dx = (b.x - a.x);
+      const dy = (b.y - a.y);
+      const L = Math.hypot(dx, dy);
+      if(L > bestL && isFinite(L)){
+        bestL = L;
+        best = {x: dx/L, y: dy/L};
+      }
+    }
+    if(!best) return null;
+    // We want "forward" to roughly point upward in image space (towards negative y).
+    if(best.y > 0) best = {x:-best.x, y:-best.y};
+    return best;
+  }
+
   // Candidate plane directions:
   const dirDepth = (ai.planeDir && isFinite(ai.planeDir.x) && isFinite(ai.planeDir.y)) ? ai.planeDir : null;
   const dirCalib = (calib && calib.status==="ready" && calib.planeDir && isFinite(calib.planeDir.x) && isFinite(calib.planeDir.y) && (calib.confidence||0) >= 0.18)
@@ -1324,6 +1350,21 @@ if(ai && ai.enabled !== false){
     const by = dirDepth.y*(1-t) + dirCalib.y*t;
     const bm = Math.hypot(bx, by);
     chosenDir = (bm>1e-6 && isFinite(bm)) ? {x:bx/bm, y:by/bm} : dirDepth;
+  }
+
+  // Contour-aligned direction gating.
+  // If the inferred direction conflicts with the dominant contour direction,
+  // we flip it (sign ambiguity) or reduce confidence to avoid unstable defaults.
+  let alignGate = 1.0;
+  const cdir = _contourDominantDir(zone.contour);
+  if(chosenDir && cdir){
+    const dp = chosenDir.x*cdir.x + chosenDir.y*cdir.y;
+    if(isFinite(dp) && dp < 0){
+      chosenDir = {x:-chosenDir.x, y:-chosenDir.y};
+    }
+    const a = Math.abs(dp);
+    // Gate in [0..1] based on alignment; below ~0.15 treat as unreliable.
+    alignGate = smoothstep(0.15, 0.35, a);
   }
 
   // Derive effective horizon/perspective from calibration (overlay only; does not mutate stored params).
@@ -1345,7 +1386,9 @@ if(ai && ai.enabled !== false){
   if(chosenDir || usedAuto){
     const conf = Math.max(0, Math.min(1, (ai.confidence||0)));
     const confAuto = Math.max(0, Math.min(1, (calib && calib.status==="ready") ? (calib.confidence||0) : 0));
-    const confMix = Math.max(conf, confAuto);
+    let confMix = Math.max(conf, confAuto);
+    // Apply contour alignment confidence-gate (outdoor paving profile).
+    confMix = Math.max(0, Math.min(1, confMix * alignGate));
     const mix = smoothstep(0.18, 0.55, confMix);
     quadParams = Object.assign({}, baseParams, {
       perspective: effP,
