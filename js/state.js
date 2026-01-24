@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.44-ultra-quad-guard",ts:new Date().toISOString()},
+    build: { version: "mvp-iter2.2.45-ultra-separate-params",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -61,7 +61,13 @@ window.PhotoPaveState=(function(){
   const getActiveZone=()=>state.zones.find(z=>z.id===state.ui.activeZoneId)||null;
   const getActiveCutout=(z)=>z? (z.cutouts||[]).find(c=>c.id===state.ui.activeCutoutId)||null : null;
 
-  const makeZone=()=>({
+  const _clone=(o)=>JSON.parse(JSON.stringify(o));
+
+  const makeZone=()=>{
+    const base={scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0};
+    const ultra=_clone(base);
+    const active=(state.ai && state.ai.enabled!==false) ? ultra : base;
+    return ({
     id:uid("zone"),
     name:"Зона "+(state.zones.length+1),
     enabled:true,
@@ -72,11 +78,14 @@ window.PhotoPaveState=(function(){
       shapeId:state.catalog.activeShapeId||null,
       textureId:null,
       textureUrl:null,
-      // Defaults tuned for clear visibility on photos (like a solid fill after contour close).
-      // Users can still switch to Multiply in UI if they want a more subtle blend.
-      params:{scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0}
+      // Parameters are split between base and ultra modes to avoid cross-mode pollution.
+      // material.params always points to the active set depending on state.ai.enabled.
+      params_base:base,
+      params_ultra:ultra,
+      params:active
     }
   });
+  };
 
   const makeCutout=(n)=>({id:uid("cut"),name:n?("Вырез "+n):"Вырез",closed:false,polygon:[]});
 

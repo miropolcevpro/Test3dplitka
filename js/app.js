@@ -7,6 +7,31 @@
   const ESC_ATTR_MAP={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const escapeAttr=(s)=>String(s||"").replace(/[&<>"']/g,(c)=>ESC_ATTR_MAP[c]);
 
+  // Patch B: keep separate material params for base and ultra modes.
+  // We avoid refactoring the whole codebase by keeping z.material.params as a pointer
+  // to either params_base or params_ultra depending on state.ai.enabled.
+  const DEFAULT_MAT_PARAMS={scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0};
+  const _clone=(o)=>JSON.parse(JSON.stringify(o));
+  function ensureZoneMaterialParams(z){
+    if(!z || !z.material) return;
+    const m=z.material;
+    // Migration for older states: if only material.params exists, treat it as base.
+    if(!m.params_base && !m.params_ultra){
+      const base=_clone(m.params || DEFAULT_MAT_PARAMS);
+      m.params_base=base;
+      m.params_ultra=_clone(base);
+    }else{
+      if(!m.params_base) m.params_base=_clone(m.params || m.params_ultra || DEFAULT_MAT_PARAMS);
+      if(!m.params_ultra) m.params_ultra=_clone(m.params_base);
+    }
+    // Always re-point active params based on current ultra toggle.
+    const ultraOn = !!(state.ai && state.ai.enabled!==false);
+    m.params = ultraOn ? m.params_ultra : m.params_base;
+  }
+  function normalizeAllZones(){
+    (state.zones||[]).forEach(ensureZoneMaterialParams);
+  }
+
   function setBuildInfo(){el("buildInfo").textContent=`${state.build.version} • ${state.build.ts}`;}
   function setActiveStep(step){
     state.ui.activeStep=step;
@@ -18,6 +43,8 @@
     }else if(!state.ui.activeZoneId){
       state.ui.activeZoneId=state.zones[0].id;
     }
+    // Ensure material params are migrated and mode-pointers are correct.
+    normalizeAllZones();
   }
 
   function renderCutoutsUI(){
@@ -287,6 +314,7 @@ async function handlePhotoFile(file){
 
   function syncSettingsUI(){
     const z=S.getActiveZone(); if(!z) return;
+    ensureZoneMaterialParams(z);
     el("scaleRange").value=z.material.params.scale??1.0;
     el("rotRange").value=z.material.params.rotation??0;
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
@@ -373,6 +401,10 @@ async function handlePhotoFile(file){
         if(window.AIUltraPipeline && typeof window.AIUltraPipeline.setEnabled==="function"){
           window.AIUltraPipeline.setEnabled(aiChk.checked);
         }
+        // Patch B: re-point all zone material params so base/ultra stay independent.
+        normalizeAllZones();
+        syncSettingsUI();
+        ED.render();
         renderAiStatus();
       });
     }
@@ -551,11 +583,11 @@ async function handlePhotoFile(file){
     el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");syncCloseButtonUI();});
     el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");syncCloseButtonUI();});
 
-    el("undoBtn").addEventListener("click",()=>{if(undo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
-    el("redoBtn").addEventListener("click",()=>{if(redo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
+    el("undoBtn").addEventListener("click",()=>{if(undo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
+    el("redoBtn").addEventListener("click",()=>{if(redo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
     window.addEventListener("keydown",(e)=>{
-      if(e.ctrlKey&&e.key.toLowerCase()==="z"){if(undo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
-      if(e.ctrlKey&&(e.key.toLowerCase()==="y"||(e.shiftKey&&e.key.toLowerCase()==="z"))){if(redo()){ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
+      if(e.ctrlKey&&e.key.toLowerCase()==="z"){if(undo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
+      if(e.ctrlKey&&(e.key.toLowerCase()==="y"||(e.shiftKey&&e.key.toLowerCase()==="z"))){if(redo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
     });
 
     const btnResetPlane=el("resetPlaneBtn");
