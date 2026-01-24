@@ -281,7 +281,6 @@ window.PhotoPaveCompositor = (function(){
   uniform mat3 uRwc;        // world->camera rotation
   uniform vec3 uTwc;        // world->camera translation
   uniform float uScale;     // tile scale
-  uniform vec2  uPhase;     // texture phase lock (0..1)
   uniform float uRotation;  // degrees
   uniform float uOpacity;   // 0..1
   uniform int uBlendMode;   // 0=normal, 1=multiply
@@ -397,9 +396,7 @@ window.PhotoPaveCompositor = (function(){
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
-    // Phase lock: keep texture anchored so it does not "swim" when
-    // horizon/perspective are adjusted.
-    vec2 suv = fract(tuv + uPhase);
+    vec2 suv = fract(tuv);
     // Flip Y for uploaded tile texture (top-left origin) while preserving repeat.
     suv.y = 1.0 - suv.y;
     vec3 tile = texture(uTile, suv).rgb;
@@ -1319,7 +1316,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, planeMetric, ai, cam3d, anchorPx){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, planeMetric, ai, cam3d){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -1372,90 +1369,6 @@ function _blendModeId(blend){
     const scaleEff = Math.max(0.0001, baseScale / planeW);
 
     gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), scaleEff);
-
-    // Phase lock (anti-swim): keep texture grid anchored to a stable point on the near edge.
-    // This prevents the "rubber" feeling where the pattern slides when horizon/perspective changes.
-    let phaseX = 0.0, phaseY = 0.0;
-    try{
-      const ax = (anchorPx && isFinite(anchorPx.x)) ? anchorPx.x : null;
-      const ay = (anchorPx && isFinite(anchorPx.y)) ? anchorPx.y : null;
-      if(ax !== null && ay !== null){
-        // Compute plane coords at anchor pixel.
-        let pu = null, pv = null;
-        const want3dLocal = !!(cam3d && cam3d.Kinv && cam3d.R && cam3d.t);
-        if(want3dLocal){
-          const KinvA = cam3d.Kinv;
-          const RwcA = cam3d.R;
-          const tA = cam3d.t;
-
-          // rayCam = normalize(Kinv * [x,y,1])
-          let rx = KinvA[0]*ax + KinvA[1]*ay + KinvA[2];
-          let ry = KinvA[3]*ax + KinvA[4]*ay + KinvA[5];
-          let rz = KinvA[6]*ax + KinvA[7]*ay + KinvA[8];
-          const rlen = Math.hypot(rx, ry, rz) || 1.0;
-          rx/=rlen; ry/=rlen; rz/=rlen;
-
-          // Rcw = transpose(Rwc)
-          const Rcw00 = RwcA[0], Rcw01 = RwcA[3], Rcw02 = RwcA[6];
-          const Rcw10 = RwcA[1], Rcw11 = RwcA[4], Rcw12 = RwcA[7];
-          const Rcw20 = RwcA[2], Rcw21 = RwcA[5], Rcw22 = RwcA[8];
-
-          // camPosW = -(Rcw * t)
-          const cwx = -(Rcw00*tA[0] + Rcw01*tA[1] + Rcw02*tA[2]);
-          const cwy = -(Rcw10*tA[0] + Rcw11*tA[1] + Rcw12*tA[2]);
-          const cwz = -(Rcw20*tA[0] + Rcw21*tA[1] + Rcw22*tA[2]);
-
-          // rayW = normalize(Rcw * rayCam)
-          let rwx = (Rcw00*rx + Rcw01*ry + Rcw02*rz);
-          let rwy = (Rcw10*rx + Rcw11*ry + Rcw12*rz);
-          let rwz = (Rcw20*rx + Rcw21*ry + Rcw22*rz);
-          const rwlen = Math.hypot(rwx, rwy, rwz) || 1.0;
-          rwx/=rwlen; rwy/=rwlen; rwz/=rwlen;
-
-          const denom = rwz;
-          if(Math.abs(denom) > 1e-6){
-            const sRay = -cwz / denom;
-            if(sRay > 0.0){
-              const pxw = cwx + rwx * sRay;
-              const pyw = cwy + rwy * sRay;
-              pu = pxw; pv = pyw;
-            }
-          }
-        }
-        if(pu === null || pv === null){
-          // Fallback: invH mapping
-          const x = ax, y = ay;
-          const u = invHArr9[0]*x + invHArr9[1]*y + invHArr9[2];
-          const v = invHArr9[3]*x + invHArr9[4]*y + invHArr9[5];
-          const wq = invHArr9[6]*x + invHArr9[7]*y + invHArr9[8];
-          if(isFinite(wq) && Math.abs(wq) > 1e-9){
-            pu = u / wq;
-            pv = v / wq;
-          }
-        }
-
-        if(pu !== null && pv !== null){
-          // Apply the same v-flip rule as the shader (only relevant for non-3D legacy and when forceBottomUp is off)
-          if(vflip === 1){ pv = planeD - pv; }
-
-          // Compute tuv(anchor) = R * (uv * scale)
-          const rotRad = ((params.rotation ?? 0.0) * Math.PI) / 180.0;
-          const c = Math.cos(rotRad), s = Math.sin(rotRad);
-          const su = pu * scaleEff;
-          const sv = pv * scaleEff;
-          const tx = c*su - s*sv;
-          const ty = s*su + c*sv;
-          const fract = (q)=>{
-            if(!isFinite(q)) return 0.0;
-            const f = q - Math.floor(q);
-            return (f < 0) ? (f + 1) : f;
-          };
-          phaseX = fract(-tx);
-          phaseY = fract(-ty);
-        }
-      }
-    }catch(_){ phaseX = 0.0; phaseY = 0.0; }
-    gl.uniform2f(gl.getUniformLocation(progZone,'uPhase'), phaseX, phaseY);
     gl.uniform1f(gl.getUniformLocation(progZone,'uRotation'), (params.rotation ?? 0.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uOpacity'), clamp(params.opacity ?? 1.0, 0, 1));
     gl.uniform1i(gl.getUniformLocation(progZone,'uBlendMode'), (opaqueFill ? 0 : _blendModeId(params.blendMode)));
@@ -1889,8 +1802,7 @@ try{
 
 
 
-    const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, anchorPx);
+    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -2068,8 +1980,7 @@ try{
   }
 }catch(_){ cam3d = null; }
 
-      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, anchorPx);
+      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d);
       const tmp = src; src = dst; dst = tmp;
     }
 

@@ -69,7 +69,11 @@ const WebGLPlane = (() => {
         float s = sin(rot);
         mat2 R = mat2(c, -s, s, c);
 
-        vec2 tuv = R * (uv * max(uScale, 1e-6));
+        // Rotate around plane center (match CPU fallback) then apply tiling frequency.
+        vec2 center = vec2(W*0.5, D*0.5);
+        vec2 p = uv - center;
+        p = R * p;
+        vec2 tuv = (p + center) * max(uScale, 1e-6);
         vec2 suv = fract(tuv + vec2(1000.0)); // stable for negatives
         vec4 col = texture2D(uTex, suv);
 
@@ -264,8 +268,9 @@ return true;
     gl.uniform1f(uPlaneW, planeW);
     gl.uniform1f(uPlaneD, planeD);
 
+    // Tile frequency is defined in plane space; do not re-normalize by planeW.
     const baseScale = (params && typeof params.scale === "number") ? params.scale : 1.0;
-    const scaleEff = Math.max(0.0001, baseScale / planeW);
+    const scaleEff = Math.max(0.0001, baseScale);
     gl.uniform1f(uScale, scaleEff);
 
     const rot = ((params && params.rotation) ? params.rotation : 0) * Math.PI / 180;
