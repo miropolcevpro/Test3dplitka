@@ -4,98 +4,6 @@
   const {state,makeZone,makeCutout,pushHistory,undo,redo}=S;
   const el=(id)=>document.getElementById(id);
   const escapeHtml=(s)=>String(s||"").replace(/[&<>'"]/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[c]));
-
-
-// Premium FX v5: auto-tune camera finish (grain/sharpen) from the loaded photo.
-// Safari-safe: runs once per photo on a small downscaled canvas; no per-frame readback.
-function autoTunePremiumFxFromPhoto(bitmap){
-  try{
-    if(!state || !state.ai) return;
-    if(state.ai.premiumFxAutoCam===false) return;
-    if(!bitmap || !bitmap.width || !bitmap.height) return;
-
-    const target=256; // small sample for iPhone Safari memory safety
-    const w=bitmap.width, h=bitmap.height;
-    const sc=target/Math.max(w,h);
-    const sw=Math.max(64, Math.round(w*sc));
-    const sh=Math.max(64, Math.round(h*sc));
-
-    const c=document.createElement("canvas");
-    c.width=sw; c.height=sh;
-    const ctx=c.getContext("2d",{ willReadFrequently:true });
-    ctx.drawImage(bitmap,0,0,sw,sh);
-    const img=ctx.getImageData(0,0,sw,sh).data;
-
-    // Compute luma (0..1)
-    const n=sw*sh;
-    const Y=new Float32Array(n);
-    for(let i=0, p=0; i<n; i++, p+=4){
-      const r=img[p]/255, g=img[p+1]/255, b=img[p+2]/255;
-      Y[i]=0.2126*r + 0.7152*g + 0.0722*b;
-    }
-
-    // 3x3 box blur (single pass) for low-frequency separation (cheap and stable)
-    const Yb=new Float32Array(n);
-    for(let y=1; y<sh-1; y++){
-      let row=y*sw;
-      for(let x=1; x<sw-1; x++){
-        const i=row+x;
-        const s=
-          Y[i] +
-          Y[i-1] + Y[i+1] +
-          Y[i-sw] + Y[i+sw] +
-          Y[i-sw-1] + Y[i-sw+1] +
-          Y[i+sw-1] + Y[i+sw+1];
-        Yb[i]=s/9;
-      }
-    }
-    // Fill borders
-    for(let x=0; x<sw; x++){ Yb[x]=Y[x]; Yb[(sh-1)*sw+x]=Y[(sh-1)*sw+x]; }
-    for(let y=0; y<sh; y++){ Yb[y*sw]=Y[y*sw]; Yb[y*sw+(sw-1)]=Y[y*sw+(sw-1)]; }
-
-    // High-pass variance (proxy for grain/noise) and gradient energy (proxy for sharpness)
-    let sumHP=0, sumHP2=0, sumG=0;
-    const eps=1e-6;
-    let cnt=0;
-    for(let y=1; y<sh-1; y++){
-      for(let x=1; x<sw-1; x++){
-        const i=y*sw+x;
-        const hp=Y[i]-Yb[i];
-        // gradient magnitude (Sobel-lite)
-        const gx=(Y[i+1]-Y[i-1]);
-        const gy=(Y[i+sw]-Y[i-sw]);
-        const g=Math.sqrt(gx*gx+gy*gy);
-        // De-emphasize strong edges when estimating grain (edges dominate hp)
-        const wEdge=1.0/(1.0 + 18.0*g);
-        sumHP += hp*wEdge;
-        sumHP2 += hp*hp*wEdge;
-        sumG += g;
-        cnt++;
-      }
-    }
-    if(cnt<100) return;
-    const meanHP=sumHP/cnt;
-    const varHP=Math.max(0, (sumHP2/cnt) - meanHP*meanHP);
-    const stdHP=Math.sqrt(varHP + eps);
-    const meanG=sumG/cnt;
-
-    // Map metrics to safe parameter ranges
-    // stdHP ~ 0.005..0.03 (typical), meanG ~ 0.01..0.06 (typical)
-    const grain = Math.min(0.75, Math.max(0.18, 0.22 + stdHP*10.0));
-    // If image is very sharp (meanG high), reduce sharpening a bit
-    const sharpenBase = 0.18 + meanG*5.0;
-    const sharpen = Math.min(0.60, Math.max(0.12, sharpenBase - Math.max(0, (meanG-0.05))*1.8));
-
-    state.ai.premiumFxCamGrain = grain;
-    state.ai.premiumFxCamSharpen = sharpen;
-    state.ai._premiumFxAutoCam = { grain, sharpen, stdHP, meanG };
-
-    console.log("[PremiumFX] auto camera:", { grain:+grain.toFixed(3), sharpen:+sharpen.toFixed(3), stdHP:+stdHP.toFixed(4), meanG:+meanG.toFixed(4) });
-  }catch(e){
-    console.warn("[PremiumFX] auto camera tune failed:", e);
-  }
-}
-
   const ESC_ATTR_MAP={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const escapeAttr=(s)=>String(s||"").replace(/[&<>"']/g,(c)=>ESC_ATTR_MAP[c]);
 
@@ -431,9 +339,6 @@ async function handlePhotoFile(file){
     // Resize canvas to the new photo size to avoid any aspect distortion
     if(ED.resize) ED.resize(); else ED.render();
 
-    // Premium FX v5: auto-tune grain/sharpen once per photo
-    autoTunePremiumFxFromPhoto(resized);
-    
     // Ultra AI (skeleton): run once after photo load. Does not affect rendering in Patch 1.
     try{
       if(window.AIUltraPipeline && typeof window.AIUltraPipeline.onPhotoLoaded==="function"){
@@ -495,7 +400,6 @@ async function handlePhotoFile(file){
 
     // Ultra AI toggle (skeleton)
     const aiChk = document.getElementById("aiUltraChk");
-    const aiFxChk = document.getElementById("aiPremiumFxChk");
     const aiStatusEl = document.getElementById("aiStatusText");
 
     // Premium occlusion controls (Patch 4)
@@ -503,6 +407,17 @@ async function handlePhotoFile(file){
     const aiOccPickBtn = document.getElementById("aiOccPickBtn");
     const aiOccClearBtn = document.getElementById("aiOccClearBtn");
     const aiOccHint = document.getElementById("aiOccHint");
+
+    // Premium 3D calibration (Variant B - MVP)
+    const calib3dEnableChk = document.getElementById("calib3dEnableChk");
+    const calib3dApplyChk = document.getElementById("calib3dApplyChk");
+    const calib3dStatusText = document.getElementById("calib3dStatusText");
+    const calib3dA1Btn = document.getElementById("calib3dA1Btn");
+    const calib3dA2Btn = document.getElementById("calib3dA2Btn");
+    const calib3dB1Btn = document.getElementById("calib3dB1Btn");
+    const calib3dB2Btn = document.getElementById("calib3dB2Btn");
+    const calib3dResetBtn = document.getElementById("calib3dResetBtn");
+    const calib3dExitBtn = document.getElementById("calib3dExitBtn");
     function renderAiStatus(){
       if(!aiStatusEl) return;
       const a = state.ai || {};
@@ -518,8 +433,6 @@ async function handlePhotoFile(file){
       txt += ` • ${wg}`;
       if(depth) txt += ` • ${depth}`;
       if(occ) txt += ` • ${occ}`;
-      const fx = !(a.premiumFxEnabled === false);
-      if(fx) txt += ` • fx`;
       aiStatusEl.textContent = txt;
     }
     if(aiChk){
@@ -537,18 +450,6 @@ async function handlePhotoFile(file){
         renderAiStatus();
       });
     }
-    if(aiFxChk){
-      // Default ON
-      aiFxChk.checked = !(state.ai && state.ai.premiumFxEnabled === false);
-      aiFxChk.addEventListener("change", ()=>{
-        state.ai = state.ai || {};
-        state.ai.premiumFxEnabled = aiFxChk.checked;
-        renderAiStatus();
-        ED.render();
-      });
-    }
-
-
 
     // Occlusion toggle (enabled by default, but does nothing until user creates a mask).
     if(aiOccChk){
@@ -570,6 +471,98 @@ async function handlePhotoFile(file){
         aiOccPickBtn.classList.toggle("btn--active", !!state.ai._occPickMode);
       });
     }
+
+    function _ensureCalib3DState(){
+      state.ai = state.ai || {};
+      state.ai.calib3d = state.ai.calib3d || {enabled:false, applyToActiveZone:true, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, status:"idle", error:null};
+      return state.ai.calib3d;
+    }
+
+    function _enterCalibMode(key){
+      const c3 = _ensureCalib3DState();
+      if(c3.enabled !== true){ c3.enabled = true; if(calib3dEnableChk) calib3dEnableChk.checked = true; }
+      c3.active = key;
+      c3.status = "editing";
+      // Remember the previous mode for a clean exit
+      if(!state.ui._prevMode) state.ui._prevMode = state.ui.mode;
+      ED.setMode("calib");
+      try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+    }
+
+    function _exitCalibMode(){
+      const prev = state.ui._prevMode || "contour";
+      state.ui._prevMode = null;
+      if(state.ui.mode === "calib") ED.setMode(prev);
+      const c3 = _ensureCalib3DState();
+      c3.active = null;
+      try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+    }
+
+    function _resetCalib3D(){
+      const c3 = _ensureCalib3DState();
+      c3.lines = {A1:null,A2:null,B1:null,B2:null};
+      c3.result = null;
+      c3.status = "idle";
+      c3.error = null;
+      try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+      ED.render();
+    }
+
+    function _syncCalib3DUI(){
+      const c3 = _ensureCalib3DState();
+      if(calib3dEnableChk) calib3dEnableChk.checked = !!c3.enabled;
+      if(calib3dApplyChk) calib3dApplyChk.checked = (c3.applyToActiveZone !== false);
+      const setActive = (btn, k)=>{ if(btn) btn.classList.toggle("btn--active", c3.active===k); };
+      setActive(calib3dA1Btn, "A1");
+      setActive(calib3dA2Btn, "A2");
+      setActive(calib3dB1Btn, "B1");
+      setActive(calib3dB2Btn, "B2");
+      if(calib3dStatusText){
+        let msg = "";
+        if(c3.enabled !== true){
+          msg = "Калибровка выключена.";
+        }else if(c3.status === "ready" && c3.result && c3.result.ok){
+          const f = c3.result.K && c3.result.K.f ? Math.round(c3.result.K.f) : null;
+          msg = "Калибровка готова" + (f? (" • f≈"+f+"px") : "") + ". Параметры применены к активной зоне.";
+        }else if(c3.status === "error"){
+          msg = "Ошибка калибровки: " + (c3.error || "не удалось вычислить");
+        }else{
+          msg = "Выберите линию и поставьте 2 точки. Для вычисления нужны A1, A2, B1, B2." + (c3.active? (" Активная: "+c3.active) : "");
+        }
+        calib3dStatusText.textContent = msg;
+      }
+    }
+
+    if(calib3dEnableChk){
+      calib3dEnableChk.addEventListener("change", ()=>{
+        const c3 = _ensureCalib3DState();
+        c3.enabled = !!calib3dEnableChk.checked;
+        if(!c3.enabled){ _exitCalibMode(); }
+        _syncCalib3DUI();
+        ED.render();
+      });
+    }
+    if(calib3dApplyChk){
+      calib3dApplyChk.addEventListener("change", ()=>{
+        const c3 = _ensureCalib3DState();
+        c3.applyToActiveZone = !!calib3dApplyChk.checked;
+        _syncCalib3DUI();
+      });
+    }
+    if(calib3dA1Btn) calib3dA1Btn.addEventListener("click", ()=>_enterCalibMode("A1"));
+    if(calib3dA2Btn) calib3dA2Btn.addEventListener("click", ()=>_enterCalibMode("A2"));
+    if(calib3dB1Btn) calib3dB1Btn.addEventListener("click", ()=>_enterCalibMode("B1"));
+    if(calib3dB2Btn) calib3dB2Btn.addEventListener("click", ()=>_enterCalibMode("B2"));
+    if(calib3dResetBtn) calib3dResetBtn.addEventListener("click", _resetCalib3D);
+    if(calib3dExitBtn) calib3dExitBtn.addEventListener("click", _exitCalibMode);
+
+    window.addEventListener("calib3d:change", ()=>{
+      try{ syncSettingsUI(); }catch(_){ }
+      _syncCalib3DUI();
+    });
+
+    // Initial render
+    try{ _syncCalib3DUI(); }catch(_){ }
 
     // Clear occlusion mask
     if(aiOccClearBtn){

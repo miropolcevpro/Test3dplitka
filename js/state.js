@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.63-premium-fx-v5-auto-camera-hotfix2",ts:new Date().toISOString()},
+    build: { version: "mvp-iter2.2.56-3dcalib-lines-mvp",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -23,6 +23,12 @@ window.PhotoPaveState=(function(){
     // Ultra AI state (Patch 1/2)
     ai:{
       enabled:true,
+      // GEOMETRY LOCK (Premium stability)
+      // When true, premium mode uses the same deterministic bottom->top quad inference as the base mode.
+      // This prevents rare near/far swaps, 180° inversions, and horizon-induced "fold" artifacts
+      // caused by ambiguous AI direction estimates on weak-structure photos.
+      // Product rule: paving always starts from the bottom of the photo and goes toward the top.
+      geomLockBottomUp:true,
       quality:"basic",
       status:"idle",
       device:{webgpu:false,tier:"low",mem:null,probeMs:0,error:null},
@@ -32,6 +38,9 @@ window.PhotoPaveState=(function(){
       // Goal: stable, natural default perspective in Ultra so users rarely touch sliders.
       calib:{
         enabled:true,
+        // When false, calibration is computed for diagnostics/UI but is NOT injected into quad geometry.
+        // This keeps premium perspective/horizon behavior identical to the stable base mode.
+        applyToQuad:false,
         status:"idle",          // idle|running|ready|error
         source:null,             // "opencv"|"fallback"
         photoHash:null,
@@ -43,6 +52,23 @@ window.PhotoPaveState=(function(){
         // Recommended user-controls for quad inference (same ranges as sliders)
         autoHorizon:0.0,         // -1..1
         autoPerspective:0.85     // 0..1
+      },
+
+      // Premium (3D Variant B - MVP): Manual camera calibration by user-defined perspective lines.
+      // This is the first step toward a true 3D camera-based renderer.
+      // The calibration can be applied to the existing horizon/perspective controls as a deterministic
+      // starting point (still using the stable bottom->up geometry rules).
+      calib3d:{
+        enabled:false,
+        applyToActiveZone:true,
+        // Active line key: "A1"|"A2"|"B1"|"B2"|null
+        active:null,
+        // Lines stored in image pixel coordinates: {p1:{x,y}, p2:{x,y}}
+        lines:{ A1:null, A2:null, B1:null, B2:null },
+        // Computed result (see js/camera_calib.js)
+        result:null,
+        status:"idle", // idle|editing|ready|error
+        error:null
       },
       models:{
         // Depth ONNX model URL (Depth Anything V2 ViT-B outdoor dynamic).
@@ -61,17 +87,6 @@ window.PhotoPaveState=(function(){
       occlusionMask:null,
       // Feature toggles (UI)
       occlusionEnabled:true,
-      // Premium FX (client-only): low-frequency photo shading + edge contact shadow
-      premiumFxEnabled:true,
-      premiumFxLod:4.0,
-      premiumFxEdgeShadow:0.22,
-      premiumFxEdgeHarmonize:0.65,
-      premiumFxOccEdgeAware:1.0,
-      premiumFxCamGrain:0.45,
-      premiumFxCamSharpen:0.35,
-      premiumFxAutoCam:true,
-
-
       _occPickMode:false,
       floorHintMask:null,
       depthMap:null,

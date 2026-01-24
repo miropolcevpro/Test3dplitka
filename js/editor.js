@@ -819,9 +819,99 @@ function polyPath(points){
     }
 
     drawPlaneOverlay();
+    drawCalib3DOverlay();
     drawZonesOverlay();
     drawLivePreview();
     ctx.restore();
+  }
+
+  function drawCalib3DOverlay(){
+    try{
+      const a = state.ai;
+      const c = a && a.calib3d;
+      if(!c || c.enabled !== true) return;
+      if(!state.assets.photoW || !state.assets.photoH) return;
+      const rect = getImageRectInCanvas();
+      const lines = c.lines || {};
+
+      const drawLine = (L, label, isActive)=>{
+        if(!L || !L.p1 || !L.p2) return;
+        const p1 = imgToCanvasPt(L.p1);
+        const p2 = imgToCanvasPt(L.p2);
+        ctx.save();
+        ctx.lineWidth = Math.max(1.5, 2.0*dpr);
+        ctx.strokeStyle = isActive ? "rgba(120,200,255,0.95)" : "rgba(255,255,255,0.65)";
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+        // label
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        const lx = (p1.x+p2.x)*0.5;
+        const ly = (p1.y+p2.y)*0.5;
+        ctx.fillRect(lx-18*dpr, ly-10*dpr, 36*dpr, 20*dpr);
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.font = `${12*dpr}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, lx, ly);
+        ctx.restore();
+      };
+
+      drawLine(lines.A1, "A1", c.active==="A1");
+      drawLine(lines.A2, "A2", c.active==="A2");
+      drawLine(lines.B1, "B1", c.active==="B1");
+      drawLine(lines.B2, "B2", c.active==="B2");
+
+      // Render vanishing points and horizon if available
+      const res = c.result;
+      if(res && res.ok && res.horizonLine && res.vanishA && res.vanishB){
+        // horizon line segment clipped to canvas rect
+        const vA = imgToCanvasPt(res.vanishA);
+        const vB = imgToCanvasPt(res.vanishB);
+        ctx.save();
+        ctx.strokeStyle = "rgba(255,220,120,0.85)";
+        ctx.lineWidth = Math.max(1.0, 1.6*dpr);
+        ctx.setLineDash([6*dpr, 6*dpr]);
+        ctx.beginPath();
+        ctx.moveTo(vA.x, vA.y);
+        ctx.lineTo(vB.x, vB.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const drawVP = (p, t)=>{
+          const cp = imgToCanvasPt(p);
+          ctx.fillStyle = "rgba(255,220,120,0.95)";
+          ctx.beginPath();
+          ctx.arc(cp.x, cp.y, 4.2*dpr, 0, Math.PI*2);
+          ctx.fill();
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(cp.x-16*dpr, cp.y-18*dpr, 32*dpr, 16*dpr);
+          ctx.fillStyle = "rgba(255,255,255,0.95)";
+          ctx.font = `${11*dpr}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(t, cp.x, cp.y-10*dpr);
+        };
+        drawVP(res.vanishA, "VA");
+        drawVP(res.vanishB, "VB");
+        ctx.restore();
+      }
+
+      // UX helper when in calib mode
+      if(state.ui.mode === "calib"){
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.fillRect(rect.x+10*dpr, rect.y+10*dpr, rect.w-20*dpr, 28*dpr);
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.font = `${12*dpr}px sans-serif`;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        const active = c.active ? (`${c.active}`) : "выберите линию";
+        ctx.fillText(`Калибровка: ${active}. Клик = точка, Shift+клик = очистить линию.`, rect.x+18*dpr, rect.y+24*dpr);
+        ctx.restore();
+      }
+    }catch(e){ /* no-op */ }
   }
 
   function onPointerDown(ev){
@@ -848,6 +938,65 @@ function polyPath(points){
         .then(()=>{ try{ window.dispatchEvent(new Event("ai:occlusionReady")); }catch(_){ } render(); })
         .catch((e)=>{ console.warn("[AI] occlusion pick error", e); try{ window.dispatchEvent(new Event("ai:error")); }catch(_){ } });
       // Do not interact with contour editing while in pick mode.
+      return;
+    }
+  }catch(_){ }
+
+  // Premium 3D calibration (Variant B - MVP): capture user-defined perspective lines.
+  try{
+    const a = state.ai;
+    const c3 = a && a.calib3d;
+    if(c3 && c3.enabled === true && state.ui.mode === "calib" && c3.active){
+      const key = c3.active;
+      c3.lines = c3.lines || {A1:null,A2:null,B1:null,B2:null};
+      // Shift+click clears the active line.
+      if(ev.shiftKey){
+        c3.lines[key] = null;
+        c3.result = null;
+        c3.status = "editing";
+        c3.error = null;
+        try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+        render();
+        return;
+      }
+      const L = c3.lines[key] || {p1:null,p2:null};
+      if(!L.p1){ L.p1 = pt; }
+      else if(!L.p2){ L.p2 = pt; }
+      else { L.p1 = pt; L.p2 = null; }
+      c3.lines[key] = L;
+      c3.status = "editing";
+      c3.error = null;
+
+      // If all four lines have two points, compute calibration.
+      const ready = ["A1","A2","B1","B2"].every(k=>{
+        const x=c3.lines[k];
+        return x && x.p1 && x.p2;
+      });
+      if(ready && window.PhotoPaveCameraCalib && typeof window.PhotoPaveCameraCalib.computeFromLines === "function"){
+        const res = window.PhotoPaveCameraCalib.computeFromLines(c3.lines, state.assets.photoW, state.assets.photoH);
+        c3.result = res;
+        if(res && res.ok){
+          c3.status = "ready";
+          // Apply to active zone as deterministic defaults (still bottom->up).
+          if(c3.applyToActiveZone !== false){
+            const z = getActiveZone();
+            if(z && z.material && z.material.params){
+              z.material.params.horizon = res.autoHorizon;
+              z.material.params.perspective = res.autoPerspective;
+              // Mark as not manually tuned so it can be re-applied.
+              z.material._ultraTuned = z.material._ultraTuned || {horizon:false, perspective:false};
+              z.material._ultraTuned.horizon = false;
+              z.material._ultraTuned.perspective = false;
+            }
+          }
+        }else{
+          c3.status = "error";
+          c3.error = (res && res.reason) ? String(res.reason) : "calibration_failed";
+        }
+      }
+
+      try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+      render();
       return;
     }
   }catch(_){ }
@@ -1087,7 +1236,14 @@ if(state.ui.mode==="contour"&&zone){
     state.ui.mode=mode;
     hoverCanvas=null;
     hoverCloseCandidate=false;
-    const map={photo:"Загрузите фото или замените его.",plane:"Контур: ставьте точки по краю зоны и замкните к первой точке (магнит). Плоскость определяется автоматически. Точки можно двигать.",contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точкой. После замыкания текстура начнёт применяться.",cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",view:"Просмотр: меняйте материалы, сохраняйте результат."};
+    const map={
+      photo:"Загрузите фото или замените его.",
+      plane:"Контур: ставьте точки по краю зоны и замкните к первой точке (магнит). Плоскость определяется автоматически. Точки можно двигать.",
+      contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точке. После замыкания текстура начнёт применяться.",
+      cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",
+      view:"Просмотр: меняйте материалы, сохраняйте результат.",
+      calib:"3D‑калибровка: выберите кнопку линии (A1/A2/B1/B2), затем поставьте 2 точки на фото. A — вдоль укладки (в глубину), B — поперёк. Shift+клик очищает текущую линию."
+    };
     setHint(map[mode]||"");render();
   }
   function exportPNG(){
