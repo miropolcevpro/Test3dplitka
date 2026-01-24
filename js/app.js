@@ -474,7 +474,7 @@ async function handlePhotoFile(file){
 
     function _ensureCalib3DState(){
       state.ai = state.ai || {};
-      state.ai.calib3d = state.ai.calib3d || {enabled:false, use3DRenderer:true, forceBottomUp:true, allowFallbackK:true, applyToActiveZone:true, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, status:"idle", error:null};
+      state.ai.calib3d = state.ai.calib3d || {enabled:false, use3DRenderer:true, forceBottomUp:true, contourDefinesAxis:true, disableAiQuad:true, allowFallbackK:true, applyToActiveZone:false, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, status:"idle", error:null};
       return state.ai.calib3d;
     }
 
@@ -523,7 +523,10 @@ async function handlePhotoFile(file){
           msg = "Калибровка выключена.";
         }else if(c3.status === "ready" && c3.result && c3.result.ok){
           const f = c3.result.K && c3.result.K.f ? Math.round(c3.result.K.f) : null;
-          msg = "Калибровка готова" + (f? (" • f≈"+f+"px") : "") + ". Параметры применены к активной зоне.";
+          const applied = (c3.applyToActiveZone !== false) ? " Параметры применены к активной зоне." : "";
+          msg = "Калибровка готова" + (f? (" • f≈"+f+"px") : "") + "." + applied;
+        }else if(c3.status === "ready" && c3.result && !c3.result.ok){
+          msg = "Линии неустойчивы — используется безопасная перспектива (fallback)." + (c3.warn ? (" ("+c3.warn+")") : "");
         }else if(c3.status === "error"){
           msg = "Ошибка калибровки: " + (c3.error || "не удалось вычислить");
         }else{

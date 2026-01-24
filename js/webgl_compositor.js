@@ -1636,7 +1636,9 @@ effP = Math.max(0.0, Math.min(1.0, effP));
 
 
   // Build params overlay only if we actually have something to inject.
-  if(chosenDir || usedAuto){
+  // Variant B rule: when calib3d.contourDefinesAxis/disableAiQuad is on, do not let AI/calib override quad direction.
+  const _disableAiQuad = !!(ai && ai.calib3d && ai.calib3d.enabled === true && (ai.calib3d.disableAiQuad || ai.calib3d.contourDefinesAxis));
+  if(!_disableAiQuad && (chosenDir || usedAuto)){
     const conf = Math.max(0, Math.min(1, (ai.confidence||0)));
     const confAuto = Math.max(0, Math.min(1, (calib && calib.status==="ready") ? (calib.confidence||0) : 0));
     let confMix = Math.max(conf, confAuto);

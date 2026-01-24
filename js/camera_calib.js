@@ -26,7 +26,8 @@
     const nL = Math.hypot(a,b);
     if(nL < EPS) return null;
     a/=nL; b/=nL; c/=nL;
-    return {a,b,c};
+    const dir = {x: dx/L, y: dy/L};
+    return {a,b,c, dir};
   }
 
   function intersectLines(L1, L2){
@@ -41,7 +42,15 @@
     return {ok:true, x, y};
   }
 
-  function _softClamp01(v){
+  
+  function _absDot2(a,b){ return Math.abs((a.x*b.x + a.y*b.y)); }
+  function _sinAngleFromDirs(d1, d2){
+    if(!d1 || !d2) return 0;
+    const c = Math.max(-1, Math.min(1, d1.x*d2.x + d1.y*d2.y));
+    const s2 = Math.max(0, 1 - c*c);
+    return Math.sqrt(s2);
+  }
+function _softClamp01(v){
     const x = +v;
     if(!isFinite(x)) return 0.5;
     const delta = _clamp(x - 0.5, -0.35, 0.35);
@@ -65,13 +74,30 @@
     const B1 = lineFromPts(lines && lines.B1 && lines.B1.p1, lines && lines.B1 && lines.B1.p2);
     const B2 = lineFromPts(lines && lines.B2 && lines.B2.p1, lines && lines.B2 && lines.B2.p2);
 
+    // Reject near-parallel line pairs early to avoid huge, unstable vanishing points.
+    if(A1 && A2 && A1.dir && A2.dir){
+      const sA = _sinAngleFromDirs(A1.dir, A2.dir);
+      if(sA < 0.035) return {ok:false, reason:"vanishA:near_parallel"};
+    }
     const iA = intersectLines(A1, A2);
     if(!iA.ok) return {ok:false, reason:"vanishA:"+iA.reason};
+    if(B1 && B2 && B1.dir && B2.dir){
+      const sB = _sinAngleFromDirs(B1.dir, B2.dir);
+      if(sB < 0.035) return {ok:false, reason:"vanishB:near_parallel"};
+    }
     const iB = intersectLines(B1, B2);
     if(!iB.ok) return {ok:false, reason:"vanishB:"+iB.reason};
 
     const VA = {x:iA.x, y:iA.y};
     const VB = {x:iB.x, y:iB.y};
+
+    // Outlier guard: extremely distant vanishing points usually mean noisy/near-parallel lines.
+    const distApx = Math.hypot(VA.x - c.x, VA.y - c.y);
+    const distBpx = Math.hypot(VB.x - c.x, VB.y - c.y);
+    const distMax = 60 * Math.max(W, H);
+    if(distApx > distMax || distBpx > distMax){
+      return {ok:false, reason:"vanish:outlier"};
+    }
 
     // Estimate focal length from orthogonality constraint of vanishing points.
     // (VA - c)·(VB - c) + f^2 = 0
@@ -82,7 +108,13 @@
       // Too small/negative => inconsistent lines (not orthogonal or too noisy)
       return {ok:false, reason:"invalid_focal"};
     }
-    const f = Math.sqrt(f2);
+    let f = Math.sqrt(f2);
+    // Guard f to reasonable range (in pixels) to avoid unstable projections.
+    const fMin = 0.25 * Math.max(W, H);
+    const fMax = 6.0 * Math.max(W, H);
+    if(!(f>=fMin && f<=fMax)){
+      return {ok:false, reason:"invalid_focal_range"};
+    }
 
     // Horizon line through VA and VB: (y - VA.y) = m (x - VA.x)
     // Evaluate horizonY at x=cx for UX mapping.

@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.59-3dvariantb-drag-stabilize",ts:new Date().toISOString()},
+    build: { version:"mvp-iter2.2.60-3dvariantb-contour-axis-soft-calib",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -64,6 +64,11 @@ window.PhotoPaveState=(function(){
         use3DRenderer:true,
         // Strict product rule: paving always goes bottom->up; disallow depth inversion.
         forceBottomUp:true,
+        // Variant B rule: contour is the single source of paving axis (bottom→up) and quad geometry.
+        // Calibration lines affect only camera intrinsics (and later extrinsics), never the texture direction.
+        contourDefinesAxis:true,
+        // In Variant B, ignore AI-guided quad inference (keeps the new mode deterministic).
+        disableAiQuad:true,
         // Allow 3D renderer to run without finished lines (uses robust fallback intrinsics).
         allowFallbackK:true,
         // When true, computed calibration can be mapped into the legacy horizon/perspective sliders.

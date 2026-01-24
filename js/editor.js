@@ -973,11 +973,15 @@ function polyPath(points){
         return x && x.p1 && x.p2;
       });
       if(ready && window.PhotoPaveCameraCalib && typeof window.PhotoPaveCameraCalib.computeFromLines === "function"){
+        const prevOk = (c3.result && c3.result.ok) ? c3.result : (c3.lastGoodResult && c3.lastGoodResult.ok ? c3.lastGoodResult : null);
         const res = window.PhotoPaveCameraCalib.computeFromLines(c3.lines, state.assets.photoW, state.assets.photoH);
-        c3.result = res;
         if(res && res.ok){
+          c3.result = res;
+          c3.lastGoodResult = res;
           c3.status = "ready";
-          // Apply to active zone as deterministic defaults (still bottom->up).
+
+          // Variant B rule: calibration does not change paving direction.
+          // Optional mapping to legacy sliders is allowed, but kept OFF by default.
           if(c3.applyToActiveZone !== false){
             const z = getActiveZone();
             if(z && z.material && z.material.params){
@@ -989,9 +993,15 @@ function polyPath(points){
               z.material._ultraTuned.perspective = false;
             }
           }
+          c3.error = null;
+          c3.warn = null;
         }else{
-          c3.status = "error";
-          c3.error = (res && res.reason) ? String(res.reason) : "calibration_failed";
+          // Soft fallback: keep the last good calibration (if any) and keep the mode operational.
+          // This avoids "error mode" when lines are nearly parallel/noisy.
+          c3.result = prevOk || {ok:false, reason:(res && res.reason) ? String(res.reason) : "calibration_weak", fallback:true};
+          c3.status = "ready";
+          c3.error = null;
+          c3.warn = (res && res.reason) ? String(res.reason) : "calibration_weak";
         }
       }
 
