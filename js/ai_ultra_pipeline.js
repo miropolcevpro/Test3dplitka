@@ -648,8 +648,6 @@
   let _mpSegmenter = null;
   let _occInputCanvas = null;
   let _occCanvas = null;
-  let _occInputCtx = null;
-  let _occCtx = null;
   let _occHash = null;
 
   async function ensureInteractiveSegmenter(){
@@ -681,24 +679,14 @@
     if(!_occInputCanvas){ _occInputCanvas = document.createElement("canvas"); }
     if(!_occCanvas){ _occCanvas = document.createElement("canvas"); }
 
-    // Create 2D contexts with willReadFrequently to avoid slow readback warnings.
-    if(!_occInputCtx){
-      try{ _occInputCtx = _occInputCanvas.getContext("2d", { willReadFrequently:true }); }catch(_){ _occInputCtx = _occInputCanvas.getContext("2d"); }
-    }
-    if(!_occCtx){
-      try{ _occCtx = _occCanvas.getContext("2d", { willReadFrequently:true }); }catch(_){ _occCtx = _occCanvas.getContext("2d"); }
-    }
-
     if(_occInputCanvas.width !== w || _occInputCanvas.height !== h){
       _occInputCanvas.width = w; _occInputCanvas.height = h;
     }
     if(_occCanvas.width !== w || _occCanvas.height !== h){
       _occCanvas.width = w; _occCanvas.height = h;
       // Reset on resize
-      try{ _occCtx.clearRect(0,0,w,h); }catch(_){
-        const ctx0 = _occCanvas.getContext("2d");
-        ctx0.clearRect(0,0,w,h);
-      }
+      const ctx0 = _occCanvas.getContext("2d");
+      ctx0.clearRect(0,0,w,h);
     }
 
     return { w, h };
@@ -718,7 +706,7 @@
 
   function _blendOccMask(mode, binU8, w, h){
     // Union/subtract into persistent occlusion canvas.
-    const ctx = _occCtx || _occCanvas.getContext("2d");
+    const ctx = _occCanvas.getContext("2d");
     const img = ctx.getImageData(0,0,w,h);
     const d = img.data;
     if(mode === "sub"){
@@ -767,14 +755,14 @@
       try{ a.photoHash = await computePhotoHash(info); }catch(_){ a.photoHash = String(Date.now()); }
     }
     const dims = _ensureOccCanvases(info);
-    const ctxIn = _occInputCtx || _occInputCanvas.getContext("2d");
+    const ctxIn = _occInputCanvas.getContext("2d");
     ctxIn.clearRect(0,0,dims.w,dims.h);
     ctxIn.drawImage(info.photoBitmap, 0, 0, dims.w, dims.h);
 
     if(_occHash !== a.photoHash){
       _occHash = a.photoHash;
       // Reset per photo
-      const ctx0 = _occCtx || _occCanvas.getContext("2d");
+      const ctx0 = _occCanvas.getContext("2d");
       ctx0.clearRect(0,0,dims.w,dims.h);
     }
 

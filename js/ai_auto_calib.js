@@ -68,25 +68,12 @@ function _absUrl(rel){
 }
 
 function _getOpenCVCandidatesAbs(){
-  // Only use a bundled, same-origin OpenCV build.
-  // Remote OpenCV builds frequently depend on extra WASM assets and/or violate
-  // iframe/CORS constraints, which can surface as noisy worker console errors.
-  return [ _absUrl("assets/vendor/opencv/opencv.js") ];
-}
-
-async function _localOpenCvExists(){
-  // Avoid starting the worker at all if OpenCV is not bundled with the app.
-  // This prevents noisy, non-actionable console errors in production.
-  const url = _absUrl("assets/vendor/opencv/opencv.js");
-  try{
-    let res = await fetch(url, { method: "HEAD", cache: "no-store" });
-    if(res && res.ok) return true;
-    // Some hosts (or local proxies) may not support HEAD; try GET as a fallback.
-    res = await fetch(url, { method: "GET", cache: "no-store" });
-    return !!(res && res.ok);
-  }catch(_){
-    return false;
-  }
+  // Prefer local single-file build. Fallback to online sources.
+  return [
+    _absUrl("assets/vendor/opencv/opencv.js"),
+    "https://docs.opencv.org/4.x/opencv.js",
+    "https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"
+  ];
 }
 
 function ensureOpenCV(){
@@ -94,16 +81,9 @@ function ensureOpenCV(){
   if(_cvWorkerReady) return _cvWorkerReady;
 
   _cvWorkerReady = (async ()=>{
-    // If OpenCV is not bundled locally, don't attempt remote sources.
-    // We will fall back to a safe heuristic without producing console noise.
-    const okLocal = await _localOpenCvExists();
-    if(!okLocal){
-      throw new Error("OpenCV is not bundled");
-    }
     if(typeof Worker === "undefined"){
       throw new Error("Worker not supported");
     }
-
     const workerUrl = _absUrl("js/ai_auto_calib_worker.js");
     _cvWorker = new Worker(workerUrl);
 
@@ -113,7 +93,19 @@ function ensureOpenCV(){
         // no-op; resolve happens in init promise below
         return;
       }
-      if(msg.type === "result" || msg.type === "error"){
+      if(msg.type === "fatal"){
+  // Worker hit an unrecoverable error (e.g., OpenCV binding/runtime). Disable auto-calibration for this photo.
+  try{ _cvWorker.terminate(); }catch(_){}
+  _cvWorker = null;
+  const p = _cvWorkerPending.get(msg.id);
+  if(p){
+    _cvWorkerPending.delete(msg.id);
+    p.reject(new Error(msg.error || "OpenCV worker fatal"));
+  }
+  return;
+}
+
+if(msg.type === "result" || msg.type === "error"){
         const p = _cvWorkerPending.get(msg.id);
         if(p){
           _cvWorkerPending.delete(msg.id);
@@ -266,7 +258,8 @@ function ensureOpenCV(){
     throw new Error("OpenCV worker postMessage failed: " + (e?.message || e));
   }
 
-  const payload = await p;
+  let payload=null;
+  try{ payload = await p; }catch(e){ payload = {ok:false, error: String(e && (e.message||e))}; }
 if(!payload || payload.ok !== true){
   throw new Error(payload && payload.reason ? payload.reason : "OpenCV worker returned no result");
 }

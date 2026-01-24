@@ -1,3 +1,7 @@
+self.onunhandledrejection = (e)=>{
+  try{ self.postMessage({type:'fatal', id: _lastRunId, error: String(e && (e.reason||e.message||e))}); }catch(_){ }
+};
+
 /*
   AI Auto-calibration Worker (OpenCV.js)
   - Loads OpenCV.js (single-file preferred) in a Worker via importScripts().
@@ -8,6 +12,7 @@
   - Designed to avoid main-thread freezes in iframe/Tilda environments.
 */
 let _cv = null;
+let _lastRunId = null;
 
 function _norm2(v){
   const l = Math.hypot(v.x, v.y) || 1e-9;
@@ -208,7 +213,8 @@ self.onmessage = async (ev)=>{
       self.postMessage({type:"result", id, payload:{ok:true}});
       return;
     }
-    if(msg.type === "run"){
+    if(_lastRunId = id;
+    msg.type === "run"){
       if(!_cv) throw new Error("OpenCV not initialized");
       const bitmap = msg.bitmap;
       const longSide = msg.longSide || 640;

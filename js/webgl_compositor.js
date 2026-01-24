@@ -1408,7 +1408,22 @@ if(ai && ai.enabled !== false){
   }
 
 
-  const cdir = _contourDominantDir(zone.contour);
+// Safety: ensure chosenDir is finite and non-degenerate. If not, fall back to a stable default.
+if(!chosenDir || !isFinite(chosenDir.x) || !isFinite(chosenDir.y)){
+  chosenDir = {x:0, y:-1};
+} else {
+  const cm = Math.hypot(chosenDir.x, chosenDir.y);
+  if(!isFinite(cm) || cm < 1e-6){
+    chosenDir = {x:0, y:-1};
+  } else {
+    chosenDir = {x: chosenDir.x/cm, y: chosenDir.y/cm};
+    // Force "forward" to point upward in image space (y < 0) to avoid near/far flips.
+    if(chosenDir.y > -0.02){
+      chosenDir = {x:-chosenDir.x, y:-chosenDir.y};
+    }
+  }
+}
+
   const pdir = _contourPCADir(zone.contour);
 
   // Zone-PCA vanishing candidate: robust fallback when the photo has weak linear cues (grass/gravel).
@@ -1427,6 +1442,7 @@ if(ai && ai.enabled !== false){
   // If the inferred direction conflicts with the dominant contour direction,
   // we flip it (sign ambiguity) or reduce confidence to avoid unstable defaults.
   let alignGate = 1.0;
+  const cdir = _contourDominantDir(zone.contour);
   if(chosenDir && cdir){
     const dp = chosenDir.x*cdir.x + chosenDir.y*cdir.y;
     if(isFinite(dp) && dp < 0){
@@ -1454,6 +1470,12 @@ if(ai && ai.enabled !== false){
       usedAuto = true;
     }
   }
+// Clamp auto-derived values to safe ranges to avoid degenerate homographies.
+if(!isFinite(effH)) effH = baseParams.horizon;
+if(!isFinite(effP)) effP = baseParams.perspective;
+effH = Math.max(-0.85, Math.min(0.85, effH));
+effP = Math.max(0.0, Math.min(1.0, effP));
+
 
   // Build params overlay only if we actually have something to inject.
   if(chosenDir || usedAuto){
