@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.55-ultra-opencv-worker-hardening",ts:new Date().toISOString()},
+    build: { version: "mvp-iter2.2.55-ultra-geomlock-bottomup",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -23,6 +23,12 @@ window.PhotoPaveState=(function(){
     // Ultra AI state (Patch 1/2)
     ai:{
       enabled:true,
+      // GEOMETRY LOCK (Premium stability)
+      // When true, premium mode uses the same deterministic bottom->top quad inference as the base mode.
+      // This prevents rare near/far swaps, 180° inversions, and horizon-induced "fold" artifacts
+      // caused by ambiguous AI direction estimates on weak-structure photos.
+      // Product rule: paving always starts from the bottom of the photo and goes toward the top.
+      geomLockBottomUp:true,
       quality:"basic",
       status:"idle",
       device:{webgpu:false,tier:"low",mem:null,probeMs:0,error:null},
@@ -32,6 +38,9 @@ window.PhotoPaveState=(function(){
       // Goal: stable, natural default perspective in Ultra so users rarely touch sliders.
       calib:{
         enabled:true,
+        // When false, calibration is computed for diagnostics/UI but is NOT injected into quad geometry.
+        // This keeps premium perspective/horizon behavior identical to the stable base mode.
+        applyToQuad:false,
         status:"idle",          // idle|running|ready|error
         source:null,             // "opencv"|"fallback"
         photoHash:null,

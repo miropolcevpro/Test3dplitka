@@ -996,37 +996,6 @@ function _inferQuadFromContour(contour, params, w, h){
     }
   }
 
-  // Extra sanity for Ultra/AI quad:
-  // - Never allow a wildly different AI quad to blend with the baseline.
-  //   This was a major source of "texture flies to a corner" / unrecoverable perspective.
-  // - If AI proposes an extreme quad (often on low-texture photos like grass/gravel),
-  //   we ignore AI and fall back to the stable baseline quad.
-  if(aiNearL && aiNearR && aiFarL && aiFarR){
-    const _ptOk = (p)=>!!(p && isFinite(p.x) && isFinite(p.y) && p.x > -0.75*w && p.x < 1.75*w && p.y > -0.75*h && p.y < 1.75*h);
-    const _diag2 = (w*w + h*h) || 1;
-    const _baseQ = [baseNearL, baseNearR, baseFarR, baseFarL];
-    const _aiQ   = [aiNearL,   aiNearR,   aiFarR,   aiFarL];
-    const _dist2 = (q1,q2)=>{
-      let s=0;
-      for(let i=0;i<4;i++){
-        const dx=(q1[i].x-q2[i].x), dy=(q1[i].y-q2[i].y);
-        s += dx*dx + dy*dy;
-      }
-      return s;
-    };
-    const _d2 = _dist2(_aiQ, _baseQ);
-    if(!_ptOk(aiNearL) || !_ptOk(aiNearR) || !_ptOk(aiFarL) || !_ptOk(aiFarR) || !isFinite(_d2) || _d2 > _diag2 * 2.5){
-      aiNearL = aiNearR = aiFarL = aiFarR = null;
-      aiMix = 0;
-    }
-  }
-
-  // Snap AI blending to prevent intermediate ill-conditioned quads.
-  // Either we trust AI enough (aiMix>=0.66) or we do not use it.
-  if(isFinite(aiMix) && aiMix > 0.001){
-    aiMix = (aiMix >= 0.66) ? 1 : 0;
-  }
-
   // Blend baseline and AI quad (if available)
   if(aiNearL && aiNearR && aiFarL && aiFarR && aiMix > 0.001){
     nearL = {x: lerp(baseNearL.x, aiNearL.x, aiMix), y: lerp(baseNearL.y, aiNearL.y, aiMix)};
@@ -1334,7 +1303,11 @@ const baseParams = zone.material?.params||{};
 // Patch D: auto-calibration overlay (vanish/horizon) for Ultra.
 // We only apply it while the user hasn't manually tuned those sliders in Ultra.
 let quadParams = baseParams;
-if(ai && ai.enabled !== false){
+// Premium stability rule: when geomLockBottomUp is enabled, we intentionally DO NOT
+// inject AI direction into quad inference. The quad is inferred deterministically
+// from the contour using bottom->top scanlines (same as base mode). AI is still used
+// for depth-based fade/occlusion, but never for horizon/quad orientation.
+if(ai && ai.enabled !== false && !(ai.geomLockBottomUp)){
   const tuned = zone.material?._ultraTuned || {horizon:false,perspective:false};
   const calib = ai.calib;
 
@@ -1636,7 +1609,9 @@ const tmp = src; src = dst; dst = tmp;
 let invH = null;
 const baseParams = zone.material?.params||{};
 const conf = (ai && isFinite(ai.confidence)) ? ai.confidence : 0;
-const quadParams = (ai && ai.enabled !== false && ai.planeDir) ? Object.assign({}, baseParams, {
+// Keep export geometry identical to on-screen render.
+// If premium geometry lock is enabled, we never pass AI plane direction to quad inference.
+const quadParams = (ai && ai.enabled !== false && !(ai.geomLockBottomUp) && ai.planeDir) ? Object.assign({}, baseParams, {
   _aiPlaneDir: ai.planeDir,
   _aiConfidence: conf,
   _aiMix: smoothstep(0.18, 0.55, conf)
