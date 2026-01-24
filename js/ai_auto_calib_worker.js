@@ -13,6 +13,7 @@ self.onunhandledrejection = (e)=>{
 */
 let _cv = null;
 let _lastRunId = null;
+let _cvLoading = false;
 
 function _norm2(v){
   const l = Math.hypot(v.x, v.y) || 1e-9;
@@ -156,69 +157,69 @@ function _computeVanishingFromBitmap(cv, bitmap, longSide){
   };
 }
 
-async function _loadOpenCV(candidates){
-  let lastErr = null;
-  for(const url of candidates){
-    try{
-      // Prepare Module BEFORE loading the script to avoid embind/TDZ issues.
-      // Keep the object if already present (some builds rely on it).
-      const u = (()=>{ try{ return new URL(url); }catch(_){ return null; } })();
-      const baseDir = u ? (u.href.slice(0, u.href.lastIndexOf('/')+1)) : null;
+async function _loadOpenCV(url){
+  // IMPORTANT: do not attempt to import OpenCV multiple times inside one Worker.
+  // OpenCV.js registers embind symbols globally; repeated loads cause BindingError
+  // such as "Cannot register public name 'IntVector' twice".
 
-      // Create a fresh init latch per attempt.
-      let rtResolve, rtReject;
-      const rtP = new Promise((resolve,reject)=>{ rtResolve=resolve; rtReject=reject; });
+  if(_cv && _cv.Mat) return _cv;
+  if(_cvLoading) throw new Error('OpenCV load already in progress');
+  if(!url) throw new Error('OpenCV url is missing');
 
-      // Preserve user Module if exists, but ensure we have hooks.
-      const prevModule = self.Module;
-      const Module = (prevModule && typeof prevModule === "object") ? prevModule : {};
-      Module.onRuntimeInitialized = ()=>{ try{ rtResolve(true); }catch(_){} };
-      // For split builds (JS+WASM), ensure wasm is resolved relative to the script location.
-      Module.locateFile = Module.locateFile || ((p)=> baseDir ? (baseDir + p) : p);
-      self.Module = Module;
+  _cvLoading = true;
+  try{
+    const u = (()=>{ try{ return new URL(url); }catch(_){ return null; } })();
+    const baseDir = u ? (u.href.slice(0, u.href.lastIndexOf('/')+1)) : null;
 
-      // Load the script (may be heavy but runs inside worker).
-      await new Promise((resolve, reject)=>{
-        let done=false;
-        const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("importScripts timeout")); }, 20000);
-        try{
-          importScripts(url);
-          done=true; clearTimeout(t); resolve(true);
-        }catch(e){
-          done=true; clearTimeout(t); reject(e);
-        }
-      });
+    let rtResolve;
+    const rtP = new Promise((resolve)=>{ rtResolve=resolve; });
 
-      // Some builds expose cv immediately.
-      if(self.cv && self.cv.Mat){
-        return self.cv;
+    // Prepare Module BEFORE importScripts(opencv.js)
+    const prevModule = self.Module;
+    const Module = (prevModule && typeof prevModule === 'object') ? prevModule : {};
+    Module.onRuntimeInitialized = ()=>{ try{ rtResolve(true); }catch(_){ } };
+    Module.locateFile = Module.locateFile || ((p)=> baseDir ? (baseDir + p) : p);
+    self.Module = Module;
+
+    await new Promise((resolve, reject)=>{
+      let done=false;
+      const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error('importScripts timeout')); }, 20000);
+      try{
+        importScripts(url);
+        done=true; clearTimeout(t); resolve(true);
+      }catch(e){
+        done=true; clearTimeout(t); reject(e);
       }
+    });
 
-      // Wait for runtime init (either Module or cv hook).
-      if(self.cv){
-        const prev = self.cv.onRuntimeInitialized;
-        self.cv.onRuntimeInitialized = ()=>{
-          try{ if(typeof prev === "function") prev(); }catch(_){}
-          try{ rtResolve(true); }catch(_){}
-        };
-      }
-
-      // Await initialization with timeout.
-      await Promise.race([
-        rtP,
-        new Promise((_,reject)=>setTimeout(()=>reject(new Error("OpenCV init timeout")), 20000))
-      ]);
-
-      if(self.cv && self.cv.Mat){
-        return self.cv;
-      }
-      throw new Error("cv missing after load: " + url);
-    }catch(e){
-      lastErr = e;
-      // Try next candidate
+    // Some builds expose cv immediately.
+    if(self.cv && self.cv.Mat){
+      _cv = self.cv;
+      return _cv;
     }
+
+    // Hook cv init if available
+    if(self.cv){
+      const prev = self.cv.onRuntimeInitialized;
+      self.cv.onRuntimeInitialized = ()=>{
+        try{ if(typeof prev === 'function') prev(); }catch(_){ }
+        try{ rtResolve(true); }catch(_){ }
+      };
+    }
+
+    await Promise.race([
+      rtP,
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('OpenCV init timeout')), 20000))
+    ]);
+
+    if(self.cv && self.cv.Mat){
+      _cv = self.cv;
+      return _cv;
+    }
+    throw new Error('cv missing after load: ' + url);
+  }finally{
+    _cvLoading = false;
   }
-  throw lastErr || new Error("OpenCV load failed");
 }
 
 self.onmessage = async (ev)=>{
@@ -230,8 +231,8 @@ self.onmessage = async (ev)=>{
 
   try{
     if(msg.type === "init"){
-      const candidates = msg.candidates || [];
-      _cv = await _loadOpenCV(candidates);
+      const url = msg.url;
+      _cv = await _loadOpenCV(url);
       self.postMessage({type:"result", id, payload:{ok:true}});
       return;
     }

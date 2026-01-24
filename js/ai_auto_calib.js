@@ -32,18 +32,10 @@
   function _norm2(v){ const m=_hypot(v.x||0,v.y||0); return (m>1e-6&&isFinite(m)) ? {x:(v.x||0)/m,y:(v.y||0)/m} : {x:0,y:-1}; }
 
   // Optional OpenCV.js loader. If it fails, we continue with fallback.
-  // OpenCV loader candidates.
-  // Priority is LOCAL (GitHub Pages repo) for maximum stability in Tilda iframe.
-  // Recommended: ship a single-file build (WASM embedded) at:
-  //   assets/vendor/opencv/opencv.js
-  const OPENCV_CANDIDATES = [
-    // Local (preferred)
-    "assets/vendor/opencv/opencv.js",
-    // OpenCV official docs host (often available)
-    "https://docs.opencv.org/4.x/opencv.js",
-    // CDN fallback (may work depending on availability)
-    "https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"
-  ];
+  // NOTE: OpenCV runs in a Worker.
+  // IMPORTANT: Never attempt to load multiple OpenCV builds inside the same worker.
+  // OpenCV.js registers embind symbols globally; repeated loads cause BindingError
+  // such as "Cannot register public name 'IntVector' twice".
 
   let _cvReady = null;
   function _loadScript(url){
@@ -67,14 +59,29 @@ function _absUrl(rel){
   try{ return new URL(rel, document.baseURI).toString(); }catch(_){ return rel; }
 }
 
-function _getOpenCVCandidatesAbs(){
-  // Prefer local single-file build. Fallback to online sources.
-  return [
-    _absUrl("assets/vendor/opencv/opencv.js"),
-    "https://docs.opencv.org/4.x/opencv.js",
-    "https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"
-  ];
-}
+  async function _headOk(url){
+    try{
+      const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      return !!(r && r.ok);
+    }catch(_){
+      return false;
+    }
+  }
+
+  async function _pickOpenCvUrl(){
+    // Prefer local single-file build (recommended for Tilda iframe stability).
+    const local = _absUrl('assets/vendor/opencv/opencv.js');
+    if(await _headOk(local)) return local;
+
+    // Fallbacks (may be blocked depending on CSP/network):
+    const docs = 'https://docs.opencv.org/4.x/opencv.js';
+    if(await _headOk(docs)) return docs;
+
+    const cdn  = 'https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js';
+    if(await _headOk(cdn)) return cdn;
+
+    throw new Error('OpenCV script not found (local and fallbacks unavailable)');
+  }
 
 function ensureOpenCV(){
   // Backwards-compatible name: now ensures worker is ready.
@@ -123,8 +130,8 @@ if(msg.type === "result" || msg.type === "error"){
       }
     };
 
-    // Init worker with candidate URLs (absolute)
-    const candidates = _getOpenCVCandidatesAbs();
+    // Init worker with a SINGLE OpenCV URL (never multiple in one worker).
+    const url = await _pickOpenCvUrl();
     const initId = _cvWorkerReqId++;
     const initP = new Promise((resolve,reject)=>{
       _cvWorkerPending.set(initId, {resolve, reject});
@@ -136,7 +143,7 @@ if(msg.type === "result" || msg.type === "error"){
       _cvWorkerPending.get(initId).reject  = (payload)=>{ clearTimeout(t); reject(payload instanceof Error ? payload : new Error(String(payload))); };
     });
 
-    _cvWorker.postMessage({ type:"init", id:initId, candidates });
+    _cvWorker.postMessage({ type:"init", id:initId, url });
 
     await initP;
     return true;
