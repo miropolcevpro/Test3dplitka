@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Фото‑конструктор мощения — MVP</title>
+  <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_60_0" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__title">Фото‑конструктор мощения</div>
+        <div class="brand__subtitle">Фото‑редактор мощения (MVP)</div>
+      </div>
+      <div class="topbar__right">
+        <div class="status" id="statusText">Инициализация…</div>
+      </div>
+    </header>
+
+    <div class="stepper" id="stepper">
+      <div class="step step--active" data-step="photo">1 Фото</div>
+      <div class="step" data-step="zones">2 Зоны</div>
+      <div class="step" data-step="cutouts">3 Вырезы</div>
+      <div class="step" data-step="export">4 Сохранить</div>
+    </div>
+
+    <main class="main">
+      <aside class="leftPane" id="leftPane">
+        <div class="panel">
+          <div class="panel__title">Сохранить и отправить</div>
+          <div class="panel__body">
+            <div class="row">
+              <button class="btn" id="exportPngBtn">Скачать PNG</button>
+              <button class="btn btn--ghost" id="copySummaryBtn">Скопировать описание</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel panel--textures" id="texturesPanel">
+          <div class="panel__title">Текстуры</div>
+          <div class="panel__body panel__body--textures">
+            <div id="texturesList" class="texturesGrid"></div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="canvasPane">
+        <div class="canvasToolbar">
+          <div class="toolGroup">
+            <button class="btn btn--ghost" id="modePhoto">Фото</button>
+            <button class="btn btn--ghost" id="modeContour">Контур</button>
+            <button class="btn btn--ghost" id="modeCutout">Вырез</button>
+            <button class="btn btn--ghost" id="modeView">Просмотр</button>
+          </div>
+
+          <div class="toolGroup">
+            <button class="btn btn--ghost" id="undoBtn" title="Undo (Ctrl+Z)">Отменить действие</button>
+            <button class="btn btn--ghost" id="redoBtn" title="Redo (Ctrl+Y)">Повторить действие</button>
+            <button class="btn btn--ghost" id="resetZoneBtn">Сброс зоны</button>
+          </div>
+
+          <div class="hint" id="hintText"></div>
+        </div>
+
+        <div class="canvasWrap" id="canvasWrap">
+          <canvas id="glCanvas"></canvas>
+          <canvas id="editorCanvas"></canvas>
+
+          <div class="aiDebugOverlay" id="aiDebugOverlay" aria-hidden="true">
+            <canvas id="aiDebugCanvas" width="240" height="76"></canvas>
+            <canvas id="aiDepthThumb" width="96" height="96"></canvas>
+          </div>
+
+          <div class="uploadOverlay" id="uploadOverlay">
+            <div class="uploadOverlay__box">
+              <div class="uploadOverlay__title">Загрузите фото своего двора для визуализации мощения</div>
+              <div class="uploadOverlay__subtitle">Перетащите файл сюда или выберите с устройства. Фото будет показано полностью, без прокрутки страницы.</div>
+              <button class="btn" id="uploadOverlayBtn">Загрузить фото</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="bottomMenu">
+          <div class="bottomSection">
+            <div class="bottomTitle">Формы</div>
+            <div id="shapesList" class="hscroll hscroll--shapes"></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidePane">
+        <div class="panel">
+          <div class="panel__title">Фото</div>
+          <div class="panel__body">
+            <input type="file" id="photoInput" accept="image/*" />
+            <div class="row">
+              <button class="btn" id="replacePhotoBtn">Заменить</button>
+              <button class="btn btn--danger" id="resetProjectBtn">Сброс проекта</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Настройки наложения (активная зона)</div>
+          <div class="panel__body">
+            <label class="field">
+              <span>Размер плитки (scale)</span>
+              <input type="range" min="0.2" max="5" step="0.01" id="scaleRange" />
+            </label>
+            <label class="field">
+              <span>Поворот (rotation)</span>
+              <input type="range" min="0" max="360" step="1" id="rotRange" />
+            </label>
+            <label class="field">
+              <span>Интенсивность (opacity)</span>
+              <input type="range" min="0" max="1" step="0.01" id="opacityRange" />
+            </label>
+            <label class="field">
+              <span>Плотная заливка (100%)</span>
+              <input type="checkbox" id="opaqueFillChk" />
+            </label>
+            <label class="field">
+              <span>Режим наложения</span>
+              <select id="blendSelect" style="display:none">
+                <option value="source-over">Normal</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Перспектива (влево — инверсия)</span>
+              <input type="range" min="-1" max="1" step="0.01" id="perspectiveRange" />
+            </label>
+            <label class="field">
+              <span>Горизонт</span>
+              <input type="range" min="-1" max="1" step="0.01" id="horizonRange" />
+            </label>
+
+            <div class="field">
+              <label>Контур</label>
+              <button id="toggleContourBtn" type="button" class="btn btn--ghost">Скрыть контур</button>
+            </div>
+
+
+            <div class="field">
+              <label>Premium Ultra</label>
+              <label class="chkline">
+                <input type="checkbox" id="aiUltraChk" checked />
+                <span>Улучшенный реализм (Ultra)</span>
+              </label>
+              <div id="aiStatusText" class="note note--compact"></div>
+
+              <!-- Premium: interactive occlusion (tile under objects) -->
+              <label class="chkline" style="margin-top:8px">
+                <input type="checkbox" id="aiOccChk" checked />
+                <span>Перекрытия (объекты)</span>
+              </label>
+              <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px">
+                <button id="aiOccPickBtn" type="button" class="btn btn--ghost" title="Клик по объекту на фото, чтобы плитка не накладывалась на него">Выделить объект</button>
+                <button id="aiOccClearBtn" type="button" class="btn btn--ghost" title="Очистить все исключения">Очистить</button>
+              </div>
+              <div class="note note--compact" id="aiOccHint" style="margin-top:6px; display:none">
+                Режим выделения: клик по объекту на фото. Shift+клик — убрать выделение.
+              </div>
+
+              <div class="note" style="margin-top:10px">
+                <b>3D‑калибровка перспективы (Beta)</b><br />
+                Для профессиональной перспективы отметьте 4 линии: <i>A1+A2</i> — вдоль направления укладки (в глубину), <i>B1+B2</i> — поперёк.
+                После калибровки параметры «Перспектива/Горизонт» будут выставлены автоматически с сохранением правила: укладка всегда идёт снизу вверх.
+              </div>
+              <label class="chkline" style="margin-top:8px">
+                <input type="checkbox" id="calib3dEnableChk" />
+                <span>Включить режим калибровки</span>
+              </label>
+              <label class="chkline" style="margin-top:6px">
+                <input type="checkbox" id="calib3dApplyChk" checked />
+                <span>Применять к активной зоне</span>
+              </label>
+              <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px">
+                <button id="calib3dA1Btn" type="button" class="btn btn--ghost">Линия A1</button>
+                <button id="calib3dA2Btn" type="button" class="btn btn--ghost">Линия A2</button>
+                <button id="calib3dB1Btn" type="button" class="btn btn--ghost">Линия B1</button>
+                <button id="calib3dB2Btn" type="button" class="btn btn--ghost">Линия B2</button>
+              </div>
+              <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px">
+                <button id="calib3dResetBtn" type="button" class="btn btn--ghost">Сбросить</button>
+                <button id="calib3dExitBtn" type="button" class="btn btn--ghost">Выйти</button>
+              </div>
+              <div id="calib3dStatusText" class="note note--compact" style="margin-top:6px"></div>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Зоны мощения</div>
+          <div class="panel__body">
+            <div class="row">
+              <button class="btn" id="addZoneBtn">Добавить зону</button>
+              <button class="btn btn--ghost" id="dupZoneBtn">Дублировать</button>
+              <button class="btn btn--danger" id="delZoneBtn">Удалить</button>
+            </div>
+
+            <div class="note">
+              Для стабильности фото приводится к размеру ≤ 3072px по длинной стороне (интерактивный режим).
+            </div>
+
+            <div class="row">
+              <button class="btn btn--ghost" id="closePolyBtn" title="Закрыть текущий контур/вырез">Замкнуть контур</button>
+            </div>
+
+            <div id="zonesList" class="list"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Вырезы</div>
+          <div class="panel__body">
+            <div class="row">
+              <button class="btn" id="addCutoutBtn">Добавить вырез</button>
+              <button class="btn btn--danger" id="delCutoutBtn">Удалить вырез</button>
+            </div>
+
+            <div id="cutoutsList" class="list"></div>
+
+            
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__title">Поделиться</div>
+          <div class="panel__body">
+            <div class="row">
+              <button class="btn btn--ghost" id="waBtn">WhatsApp</button>
+              <button class="btn btn--ghost" id="tgBtn">Telegram</button>
+              <button class="btn btn--ghost" id="shareBtn">Поделиться</button>
+            </div>
+            
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <div>Photo Editor MVP • Iteration 1 • <span id="buildInfo"></span></div>
+      <div class="muted">Рекомендуется: ПК Chrome/Edge/Яндекс.Браузер. Мобильная адаптация заложена.</div>
+    </footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
+  <script src="js/state.js?v=iter2_2_60_0"></script>
+  <script src="js/updater.js?v=iter2_2_60_0"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_60_0"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_60_0"></script>
+  <script src="js/api.js?v=iter2_2_60_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_60_0"></script>
+  <script src="js/camera_calib.js?v=iter2_2_60_0"></script>
+  <script src="js/editor.js?v=iter2_2_60_0"></script>
+  <script src="js/app.js?v=iter2_2_60_0"></script>
+</body>
+</html>
