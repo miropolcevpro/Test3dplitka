@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version:"mvp-iter2.2.60-3dvariantb-contour-axis-soft-calib",ts:new Date().toISOString()},
+    build: { version:"mvp-iter2.2.62-metric-lock-no-tile-deform-buildfix",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
