@@ -78,7 +78,7 @@ window.PhotoPaveCompositor = (function(){
 
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -107,7 +107,7 @@ window.PhotoPaveCompositor = (function(){
 
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -268,6 +268,11 @@ window.PhotoPaveCompositor = (function(){
   uniform sampler2D uOcc;
   uniform int uHasOcc;
 
+  // Premium FX (client-only): use photo mipmaps for low-frequency shading + edge contact shadow
+  uniform float uPremiumFx; // 0..1
+  uniform float uPremiumLod; // mip level
+  uniform float uEdgeShadow; // 0..1
+
   uniform vec2 uResolution; // render target size in pixels
   uniform mat3 uInvH;       // image(px)->plane(uv)
   uniform float uScale;     // tile scale
@@ -322,12 +327,28 @@ window.PhotoPaveCompositor = (function(){
       alpha = targetAlpha * op;
     }
 
-    // Premium occlusion: if a mask exists, clip the tile under selected objects.
-    // The mask is in photo space, so we sample with uvSrc.
+    // Premium occlusion (Patch 5):
+    // Do NOT modify the zone alpha (it causes hard "holes" and breaks edge integration).
+    // Instead we will (1) add a subtle contact shadow on the tile near occluder edges and
+    // (2) overlay the original photo where occluders exist.
+    float occBlend = 0.0;   // 0..1, where to show the photo over the tile
+    float occContact = 0.0; // 0..1, where to darken the tile under occluder boundaries
     if(uHasOcc == 1){
       float occ = texture(uOcc, uvSrc).r; // 0..1
       float o = smoothstep(0.15, 0.60, occ);
-      alpha *= (1.0 - o);
+      occBlend = o;
+
+      // Edge detection (screen-space) on the occlusion mask.
+      // This is intentionally cheap and stable on mobile (no dependent loops).
+      vec2 texel = vec2(1.0) / max(uResolution, vec2(1.0));
+      float occR = texture(uOcc, uvSrc + vec2(texel.x, 0.0)).r;
+      float occL = texture(uOcc, uvSrc - vec2(texel.x, 0.0)).r;
+      float occU = texture(uOcc, uvSrc + vec2(0.0, texel.y)).r;
+      float occD = texture(uOcc, uvSrc - vec2(0.0, texel.y)).r;
+      float g = abs(occR - occL) + abs(occU - occD); // ~0..2
+      float e = smoothstep(0.03, 0.18, g);
+      // Apply contact shadow on the "tile side" of the edge.
+      occContact = e * (1.0 - o);
     }
 
     if(alpha <= 0.0005){
@@ -362,11 +383,32 @@ window.PhotoPaveCompositor = (function(){
     vec3 tile = texture(uTile, suv).rgb;
     vec3 tileLin = toLinear(tile);
 
-    // Photo-aware fit: modulate the material by local photo luminance
-    // This helps remove the "sticker" look.
+    // Photo-aware fit: modulate the material by photo luminance.
+    // Premium FX uses low-frequency luminance via mipmaps to avoid "noisy" shading.
     float fit = clamp(uPhotoFit, 0.0, 1.0);
-    float shade = mix(1.0, clamp(0.65 + lum * 0.75, 0.55, 1.35), fit);
+    float lumLow = lum;
+    if(uPremiumFx > 0.5){
+      vec3 pm = textureLod(uPhoto, uvSrc, max(uPremiumLod, 0.0)).rgb;
+      vec3 pmLin = toLinear(pm);
+      lumLow = dot(pmLin, vec3(0.2126, 0.7152, 0.0722));
+    }
+    float shade = mix(1.0, clamp(0.65 + lumLow * 0.75, 0.55, 1.35), fit);
     tileLin *= shade;
+
+    // Premium FX: subtle contact shadow along the feathered edge.
+    if(uPremiumFx > 0.5){
+      float e = clamp(alphaEdge, 0.0, 1.0);
+      float edge = e * (1.0 - e) * 4.0; // 0 at 0/1, 1 at 0.5
+      float sh = clamp(edge * clamp(uEdgeShadow, 0.0, 1.0), 0.0, 0.65);
+      tileLin *= (1.0 - sh);
+    }
+
+    // Premium occlusion contact: gently darken the tile near occluder boundaries
+    // to create a "contact" impression (grass/objects sitting on top of tile).
+    if(uHasOcc == 1){
+      float occSh = clamp(occContact * (0.10 + 0.65 * clamp(uEdgeShadow, 0.0, 1.0)), 0.0, 0.65);
+      tileLin *= (1.0 - occSh);
+    }
 
     // Far fade to reduce moire + add subtle atmospheric integration.
     // If depth is available, prefer it over uv.y, because the real "far" direction may be diagonal.
@@ -399,6 +441,13 @@ window.PhotoPaveCompositor = (function(){
     }else{
       // Normal
       outLin = mix(prevLin, tileLin, alpha);
+    }
+
+    // Premium occlusion overlay (Patch 5): show original photo on top of the tile
+    // where occluders exist, but only within the zone influence (alphaEdge).
+    if(uHasOcc == 1){
+      float ob = clamp(occBlend * alphaEdge, 0.0, 1.0);
+      outLin = mix(outLin, photoLin, ob);
     }
 
     outColor = vec4(toSRGB(outLin), 1.0);
@@ -461,12 +510,13 @@ window.PhotoPaveCompositor = (function(){
     }
     photoTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, photoTex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     try{
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+      gl.generateMipmap(gl.TEXTURE_2D);
     }catch(e){
       gl.bindTexture(gl.TEXTURE_2D, null);
       throw new Error('Failed to upload photo texture to WebGL.');
@@ -588,7 +638,7 @@ window.PhotoPaveCompositor = (function(){
     let tex = existingTex;
     if(!tex){ tex = gl.createTexture(); }
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -996,6 +1046,37 @@ function _inferQuadFromContour(contour, params, w, h){
     }
   }
 
+  // Extra sanity for Ultra/AI quad:
+  // - Never allow a wildly different AI quad to blend with the baseline.
+  //   This was a major source of "texture flies to a corner" / unrecoverable perspective.
+  // - If AI proposes an extreme quad (often on low-texture photos like grass/gravel),
+  //   we ignore AI and fall back to the stable baseline quad.
+  if(aiNearL && aiNearR && aiFarL && aiFarR){
+    const _ptOk = (p)=>!!(p && isFinite(p.x) && isFinite(p.y) && p.x > -0.75*w && p.x < 1.75*w && p.y > -0.75*h && p.y < 1.75*h);
+    const _diag2 = (w*w + h*h) || 1;
+    const _baseQ = [baseNearL, baseNearR, baseFarR, baseFarL];
+    const _aiQ   = [aiNearL,   aiNearR,   aiFarR,   aiFarL];
+    const _dist2 = (q1,q2)=>{
+      let s=0;
+      for(let i=0;i<4;i++){
+        const dx=(q1[i].x-q2[i].x), dy=(q1[i].y-q2[i].y);
+        s += dx*dx + dy*dy;
+      }
+      return s;
+    };
+    const _d2 = _dist2(_aiQ, _baseQ);
+    if(!_ptOk(aiNearL) || !_ptOk(aiNearR) || !_ptOk(aiFarL) || !_ptOk(aiFarR) || !isFinite(_d2) || _d2 > _diag2 * 2.5){
+      aiNearL = aiNearR = aiFarL = aiFarR = null;
+      aiMix = 0;
+    }
+  }
+
+  // Snap AI blending to prevent intermediate ill-conditioned quads.
+  // Either we trust AI enough (aiMix>=0.66) or we do not use it.
+  if(isFinite(aiMix) && aiMix > 0.001){
+    aiMix = (aiMix >= 0.66) ? 1 : 0;
+  }
+
   // Blend baseline and AI quad (if available)
   if(aiNearL && aiNearR && aiFarL && aiFarR && aiMix > 0.001){
     nearL = {x: lerp(baseNearL.x, aiNearL.x, aiMix), y: lerp(baseNearL.y, aiNearL.y, aiMix)};
@@ -1220,6 +1301,13 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
 
+    // Premium FX uniforms (client-only, Safari-safe)
+    const a0 = (state.ai || {});
+    const premFx = (a0.enabled === false) ? 0.0 : ((a0.premiumFxEnabled === false) ? 0.0 : 1.0);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPremiumFx'), premFx);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPremiumLod'), (typeof a0.premiumFxLod === 'number' ? a0.premiumFxLod : 4.0));
+    gl.uniform1f(gl.getUniformLocation(progZone,'uEdgeShadow'), (typeof a0.premiumFxEdgeShadow === 'number' ? a0.premiumFxEdgeShadow : 0.22));
+
     const invH = _mat3FromArray9(invHArr9);
     gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);
 
@@ -1303,11 +1391,7 @@ const baseParams = zone.material?.params||{};
 // Patch D: auto-calibration overlay (vanish/horizon) for Ultra.
 // We only apply it while the user hasn't manually tuned those sliders in Ultra.
 let quadParams = baseParams;
-// Premium stability rule: when geomLockBottomUp is enabled, we intentionally DO NOT
-// inject AI direction into quad inference. The quad is inferred deterministically
-// from the contour using bottom->top scanlines (same as base mode). AI is still used
-// for depth-based fade/occlusion, but never for horizon/quad orientation.
-if(ai && ai.enabled !== false && !(ai.geomLockBottomUp)){
+if(ai && ai.enabled !== false){
   const tuned = zone.material?._ultraTuned || {horizon:false,perspective:false};
   const calib = ai.calib;
 
@@ -1609,9 +1693,7 @@ const tmp = src; src = dst; dst = tmp;
 let invH = null;
 const baseParams = zone.material?.params||{};
 const conf = (ai && isFinite(ai.confidence)) ? ai.confidence : 0;
-// Keep export geometry identical to on-screen render.
-// If premium geometry lock is enabled, we never pass AI plane direction to quad inference.
-const quadParams = (ai && ai.enabled !== false && !(ai.geomLockBottomUp) && ai.planeDir) ? Object.assign({}, baseParams, {
+const quadParams = (ai && ai.enabled !== false && ai.planeDir) ? Object.assign({}, baseParams, {
   _aiPlaneDir: ai.planeDir,
   _aiConfidence: conf,
   _aiMix: smoothstep(0.18, 0.55, conf)

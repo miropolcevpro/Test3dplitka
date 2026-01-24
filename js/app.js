@@ -400,6 +400,7 @@ async function handlePhotoFile(file){
 
     // Ultra AI toggle (skeleton)
     const aiChk = document.getElementById("aiUltraChk");
+    const aiFxChk = document.getElementById("aiPremiumFxChk");
     const aiStatusEl = document.getElementById("aiStatusText");
 
     // Premium occlusion controls (Patch 4)
@@ -422,6 +423,8 @@ async function handlePhotoFile(file){
       txt += ` • ${wg}`;
       if(depth) txt += ` • ${depth}`;
       if(occ) txt += ` • ${occ}`;
+      const fx = !(a.premiumFxEnabled === false);
+      if(fx) txt += ` • fx`;
       aiStatusEl.textContent = txt;
     }
     if(aiChk){
@@ -439,6 +442,18 @@ async function handlePhotoFile(file){
         renderAiStatus();
       });
     }
+    if(aiFxChk){
+      // Default ON
+      aiFxChk.checked = !(state.ai && state.ai.premiumFxEnabled === false);
+      aiFxChk.addEventListener("change", ()=>{
+        state.ai = state.ai || {};
+        state.ai.premiumFxEnabled = aiFxChk.checked;
+        renderAiStatus();
+        ED.render();
+      });
+    }
+
+
 
     // Occlusion toggle (enabled by default, but does nothing until user creates a mask).
     if(aiOccChk){
