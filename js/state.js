@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.56-3dcalib-lines-mvp",ts:new Date().toISOString()},
+    build: { version: "mvp-iter2.2.57-3drender-rayplane-mvp",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -60,6 +60,8 @@ window.PhotoPaveState=(function(){
       // starting point (still using the stable bottom->up geometry rules).
       calib3d:{
         enabled:false,
+        // When true and calibration is ready, use the 3D camera ray-plane renderer in WebGL (Variant B).
+        use3DRenderer:true,
         applyToActiveZone:true,
         // Active line key: "A1"|"A2"|"B1"|"B2"|null
         active:null,

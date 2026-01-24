@@ -270,6 +270,11 @@ window.PhotoPaveCompositor = (function(){
 
   uniform vec2 uResolution; // render target size in pixels
   uniform mat3 uInvH;       // image(px)->plane(uv)
+  // Variant B (3D camera): ray-plane intersection renderer (uses manual calibration lines).
+  uniform int uUseCam3D;    // 0/1
+  uniform mat3 uKinv;       // pixel -> camera ray (y-down)
+  uniform mat3 uRwc;        // world->camera rotation
+  uniform vec3 uTwc;        // world->camera translation
   uniform float uScale;     // tile scale
   uniform float uRotation;  // degrees
   uniform float uOpacity;   // 0..1
@@ -335,17 +340,46 @@ window.PhotoPaveCompositor = (function(){
       return;
     }
 
-    // Projective mapping: image(px) -> plane(uv)
-    vec3 q = uInvH * vec3(fragPx, 1.0);
-    float z = q.z;
-    if(z <= 1e-5){
-      outColor = prev;
-      return;
+    // Mapping from screen pixel to plane coordinates:
+    // - Default: inverse homography (fast)
+    // - 3D camera (Variant B): cast a ray through the pixel and intersect with the plane z=0
+    vec2 uv;
+    if(uUseCam3D == 1){
+      // Camera ray in camera coordinates (y-down convention)
+      vec3 rayCam = uKinv * vec3(fragPx, 1.0);
+      rayCam = normalize(rayCam);
+
+      // Transform ray + camera center to world. Rwc maps world->camera, so Rcw = transpose(Rwc).
+      mat3 Rcw = transpose(uRwc);
+      vec3 camPosW = -(Rcw * uTwc);
+      vec3 rayW = normalize(Rcw * rayCam);
+
+      // Intersect with plane z=0 in world space
+      float denom = rayW.z;
+      if(abs(denom) < 1e-6){
+        outColor = prev;
+        return;
+      }
+      float s = -camPosW.z / denom;
+      if(s <= 0.0){
+        outColor = prev;
+        return;
+      }
+      vec3 Pw = camPosW + rayW * s;
+      uv = Pw.xy;
+    }else{
+      // Projective mapping: image(px) -> plane(uv)
+      vec3 q = uInvH * vec3(fragPx, 1.0);
+      float z = q.z;
+      if(z <= 1e-5){
+        outColor = prev;
+        return;
+      }
+      float zFade = smoothstep(0.0008, 0.006, z);
+      alpha *= zFade;
+      if(alpha <= 0.0005){ outColor = prev; return; }
+      uv = q.xy / z;
     }
-    float zFade = smoothstep(0.0008, 0.006, z);
-    alpha *= zFade;
-    if(alpha <= 0.0005){ outColor = prev; return; }
-    vec2 uv = q.xy / z;
 
     // Optional plane depth inversion (user control via negative perspective slider).
     if(uVFlip == 1){
@@ -658,6 +692,80 @@ window.PhotoPaveCompositor = (function(){
             B*invDet, E*invDet, H*invDet,
             C*invDet, F*invDet, I*invDet];
   }
+
+
+function _mul3x3(a,b){
+  // row-major 3x3 multiplication: a*b
+  return [
+    a[0]*b[0]+a[1]*b[3]+a[2]*b[6], a[0]*b[1]+a[1]*b[4]+a[2]*b[7], a[0]*b[2]+a[1]*b[5]+a[2]*b[8],
+    a[3]*b[0]+a[4]*b[3]+a[5]*b[6], a[3]*b[1]+a[4]*b[4]+a[5]*b[7], a[3]*b[2]+a[4]*b[5]+a[5]*b[8],
+    a[6]*b[0]+a[7]*b[3]+a[8]*b[6], a[6]*b[1]+a[7]*b[4]+a[8]*b[7], a[6]*b[2]+a[7]*b[5]+a[8]*b[8]
+  ];
+}
+
+function _decomposeHomographyToRT(H, K){
+  // Decompose planar homography into world->camera rotation + translation.
+  // H: row-major array9 mapping plane (X,Y,1) -> pixel (x,y,w)
+  // K: {f,cx,cy} in the SAME pixel space as H (render buffer coords, y-down)
+  if(!H || !K) return null;
+  const f = +K.f, cx = +K.cx, cy = +K.cy;
+  if(!isFinite(f) || f <= 2) return null;
+
+  // K^{-1} for canonical K = [[f,0,cx],[0,f,cy],[0,0,1]]
+  const Kinv = [
+    1/f, 0, -cx/f,
+    0, 1/f, -cy/f,
+    0, 0, 1
+  ];
+
+  const B = _mul3x3(Kinv, H);
+  const b1 = [B[0],B[3],B[6]];
+  const b2 = [B[1],B[4],B[7]];
+  const b3 = [B[2],B[5],B[8]];
+  const n1 = Math.hypot(b1[0],b1[1],b1[2]);
+  const n2 = Math.hypot(b2[0],b2[1],b2[2]);
+  if(!isFinite(n1) || !isFinite(n2) || n1 < 1e-9 || n2 < 1e-9) return null;
+
+  const s = 2 / (n1 + n2); // scale factor (average normalization)
+  let r1 = [b1[0]*s, b1[1]*s, b1[2]*s];
+  let r2 = [b2[0]*s, b2[1]*s, b2[2]*s];
+
+  // Orthonormalize r2 against r1 (Gram-Schmidt)
+  const d12 = r1[0]*r2[0] + r1[1]*r2[1] + r1[2]*r2[2];
+  r2 = [r2[0]-d12*r1[0], r2[1]-d12*r1[1], r2[2]-d12*r1[2]];
+  const nr2 = Math.hypot(r2[0],r2[1],r2[2]);
+  if(!isFinite(nr2) || nr2 < 1e-9) return null;
+  r2 = [r2[0]/nr2, r2[1]/nr2, r2[2]/nr2];
+
+  // r3 = r1 x r2
+  let r3 = [
+    r1[1]*r2[2] - r1[2]*r2[1],
+    r1[2]*r2[0] - r1[0]*r2[2],
+    r1[0]*r2[1] - r1[1]*r2[0]
+  ];
+  const nr3 = Math.hypot(r3[0],r3[1],r3[2]);
+  if(!isFinite(nr3) || nr3 < 1e-9) return null;
+  r3 = [r3[0]/nr3, r3[1]/nr3, r3[2]/nr3];
+
+  let t = [b3[0]*s, b3[1]*s, b3[2]*s];
+
+  // Ensure the plane is in front of the camera (positive z in camera space).
+  // If not, flip the solution.
+  if(t[2] < 0){
+    r1 = [-r1[0],-r1[1],-r1[2]];
+    r2 = [-r2[0],-r2[1],-r2[2]];
+    r3 = [-r3[0],-r3[1],-r3[2]];
+    t  = [-t[0], -t[1], -t[2]];
+  }
+
+  const R = [
+    r1[0], r2[0], r3[0],
+    r1[1], r2[1], r3[1],
+    r1[2], r2[2], r3[2]
+  ]; // row-major (rows are camera axes in world coords?) consistent with Xc = R*Xw + t
+
+  return {Kinv, R, t};
+}
 
   function _homographyUnitSquareToQuad(q){
     // q: 4 points in render-pixel coords in order: (0,0),(1,0),(1,1),(0,1)
@@ -1168,7 +1276,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, ai){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, ai, cam3d){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -1222,6 +1330,20 @@ function _blendModeId(blend){
 
     const invH = _mat3FromArray9(invHArr9);
     gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);
+
+    // Variant B (3D camera renderer): uniforms for ray-plane mapping
+    const use3d = !!(cam3d && cam3d.Kinv && cam3d.R && cam3d.t);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uUseCam3D'), use3d ? 1 : 0);
+    if(use3d){
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uKinv'), false, _mat3FromArray9(cam3d.Kinv));
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uRwc'), false, _mat3FromArray9(cam3d.R));
+      gl.uniform3f(gl.getUniformLocation(progZone,'uTwc'), cam3d.t[0], cam3d.t[1], cam3d.t[2]);
+    }else{
+      // Safe defaults (won't be used when uUseCam3D==0)
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uKinv'), false, _mat3FromArray9([1,0,0, 0,1,0, 0,0,1]));
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uRwc'), false, _mat3FromArray9([1,0,0, 0,1,0, 0,0,1]));
+      gl.uniform3f(gl.getUniformLocation(progZone,'uTwc'), 0,0,1);
+    }
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindVertexArray(null);
@@ -1503,13 +1625,17 @@ effP = Math.max(0.0, Math.min(1.0, effP));
     }catch(_){/*noop*/}
   }
 }
-const quad = _inferQuadFromContour(zone.contour, quadParams, w, h);
+// Work in render-buffer coordinates: scale contour from photo space -> render space.
+const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+
+let Hm = null;
+const quad = _inferQuadFromContour(contourR, quadParams, w, h);
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    const H = _homographyUnitSquareToQuad(qn);
-    if(H){
-      invH = _invert3x3(H);
+    Hm = _homographyUnitSquareToQuad(qn);
+    if(Hm){
+      invH = _invert3x3(Hm);
     }
   }
 }
@@ -1523,7 +1649,22 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai);
+    // Variant B (3D camera): if manual calibration is ready, compute a camera model that
+// reproduces the current homography via ray-plane intersection in the shader.
+let cam3d = null;
+try{
+  const c3 = ai && ai.calib3d;
+  const res = c3 && c3.result;
+  const K0 = res && res.ok && res.K ? res.K : null;
+  const enable3d = (c3 && c3.enabled === true && c3.status === "ready" && res && res.ok && (c3.use3DRenderer !== false));
+  if(enable3d && Hm && K0){
+    const sAvg = (sx + sy) * 0.5;
+    const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
+    cam3d = _decomposeHomographyToRT(Hm, Kr);
+  }
+}catch(_){ cam3d = null; }
+
+    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai, cam3d);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -1616,13 +1757,17 @@ const quadParams = (ai && ai.enabled !== false && !(ai.geomLockBottomUp) && ai.p
   _aiConfidence: conf,
   _aiMix: smoothstep(0.18, 0.55, conf)
 }) : baseParams;
-const quad = _inferQuadFromContour(zone.contour, quadParams, outW, outH);
+// Work in render-buffer coordinates: scale contour from photo space -> render space.
+const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+
+let Hm = null;
+const quad = _inferQuadFromContour(contourR, quadParams, outW, outH);
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
-    const H = _homographyUnitSquareToQuad(qn);
-    if(H){
-      invH = _invert3x3(H);
+    Hm = _homographyUnitSquareToQuad(qn);
+    if(Hm){
+      invH = _invert3x3(Hm);
     }
   }
 }
@@ -1637,7 +1782,22 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai);
+      // Variant B (3D camera): if manual calibration is ready, compute a camera model that
+// reproduces the current homography via ray-plane intersection in the shader.
+let cam3d = null;
+try{
+  const c3 = ai && ai.calib3d;
+  const res = c3 && c3.result;
+  const K0 = res && res.ok && res.K ? res.K : null;
+  const enable3d = (c3 && c3.enabled === true && c3.status === "ready" && res && res.ok && (c3.use3DRenderer !== false));
+  if(enable3d && Hm && K0){
+    const sAvg = (sx + sy) * 0.5;
+    const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
+    cam3d = _decomposeHomographyToRT(Hm, Kr);
+  }
+}catch(_){ cam3d = null; }
+
+      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, ai, cam3d);
       const tmp = src; src = dst; dst = tmp;
     }
 
