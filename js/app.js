@@ -721,7 +721,14 @@ async function handlePhotoFile(file){
         const shLine  = `sh° L:${fmt1(rL?.shearDeg)} C:${fmt1(rC?.shearDeg)} R:${fmt1(rR?.shearDeg)} | worst:${fmt1(m?.worst?.shearDeg)}`;
         const h = data.horizon || {};
         const p = data.perspective || {};
-        const meta = `pitchW:${fmt(h.pitchW)} pitch:${fmt1((h.pitchCur||0)*57.2958)}°  dist:${fmt(p.distScale)}`;
+        const g = data.guard || {};
+
+        const pitchDesDeg = (isFinite(h.pitchDes) ? (h.pitchDes*57.2958) : 0);
+        const pitchEffDeg = (isFinite(h.pitchEff) ? (h.pitchEff*57.2958) : pitchDesDeg);
+        const distDes = isFinite(p.distDes) ? p.distDes : (isFinite(p.distScale) ? p.distScale : NaN);
+        const distEff = isFinite(p.distEff) ? p.distEff : distDes;
+
+        const meta = `pitchW:${fmt(h.pitchW)} pitch(des/eff):${fmt1(pitchDesDeg)}°/${fmt1(pitchEffDeg)}°  dist(des/eff):${fmt(distDes)}/${fmt(distEff)}  stage:${g.stage||'—'}`;
 
         ctx.fillText("Near metrics (tile basis)", 6, 4);
         ctx.fillText(rhoLine, 6, 20);

@@ -160,7 +160,12 @@ window.PhotoPaveCompositor = (function(){
         const pose = _applyPitchToCam(camBase, pitchRad);
         return {
           R: pose.R,
-          t: [pose.t[0]*distScale, pose.t[1]*distScale, pose.t[2]*distScale],
+          // IMPORTANT: "distance" should primarily affect the camera height above the plane.
+          // Scaling all components of t moves the camera away along its translation direction,
+          // which often preserves the same near-field distortion while just shifting the mapping.
+          // Scaling tz is the correct lever to reduce foreshortening (approaches affine as tz→∞)
+          // without introducing any UV warp.
+          t: [pose.t[0], pose.t[1], pose.t[2]*distScale],
           Kinv: [
             1/f, 0, -cx/f,
             0, 1/f, -cyCur/f,
@@ -2451,7 +2456,10 @@ try{
           rotDeg,
           pitchDes,
           distDes: distScale,
-          distMax: 2.20,
+          // Allow the guard to increase distance beyond the user slider's max if needed.
+          // The user-facing slider still controls distDes (semantics). distMax is an internal
+          // safety lever to prevent obvious near-field "squash".
+          distMax: 6.00,
           rhoMax: 1.30,
           shearMax: 22.0
         });
@@ -2467,7 +2475,8 @@ try{
       const camPoseCur = _applyPitchToCam(camBase, pitchEff);
       cam3d = {
         R: camPoseCur.R,
-        t: [camPoseCur.t[0]*distEff, camPoseCur.t[1]*distEff, camPoseCur.t[2]*distEff],
+        // Distance affects camera height (tz) only; see _applyNearGuard.
+        t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
         Kinv: [
           1/fCur, 0, -cx/fCur,
           0, 1/fCur, -cyCur/fCur,
@@ -2480,7 +2489,7 @@ try{
       // so horizon adjustments don't fight the scale lock.
       cam3dRef = {
         R: camPoseCur.R,
-        t: [camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
+        t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
         Kinv: [
           1/fRef, 0, -cx/fRef,
           0, 1/fRef, -cyCur/fRef,
@@ -2763,7 +2772,7 @@ if(!invH){
                 rotDeg,
                 pitchDes,
                 distDes: distScale,
-                distMax: 2.20,
+                distMax: 6.00,
                 rhoMax: 1.30,
                 shearMax: 22.0
               });
@@ -2778,7 +2787,7 @@ if(!invH){
             const camPoseCur = _applyPitchToCam(camBase, pitchEff);
             cam3d = {
               R: camPoseCur.R,
-              t: [camPoseCur.t[0]*distEff, camPoseCur.t[1]*distEff, camPoseCur.t[2]*distEff],
+              t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
                 0, 1/fGuess, -cyCur/fGuess,
@@ -2788,7 +2797,7 @@ if(!invH){
             // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
             cam3dRef = {
               R: camPoseCur.R,
-              t: [camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
+              t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
                 0, 1/fGuess, -cyCur/fGuess,
@@ -2935,7 +2944,7 @@ if(!invH){
                 rotDeg,
                 pitchDes,
                 distDes: distScale,
-                distMax: 2.20,
+                distMax: 6.00,
                 rhoMax: 1.30,
                 shearMax: 22.0
               });
@@ -2948,10 +2957,10 @@ if(!invH){
 
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchEff);
-            cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0]*distEff, camPoseCur.t[1]*distEff, camPoseCur.t[2]*distEff],
+            cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
               Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
             // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
-            cam3dRef = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
+            cam3dRef = { R: camPoseCur.R, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
               Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
           }
         }
