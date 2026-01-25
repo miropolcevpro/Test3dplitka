@@ -1004,7 +1004,39 @@ function _decomposeHomographyToRT(H, K){
     return true;
   }
 
-  function _clampHorizonToFillContour(camBase, hVal, cfg){
+  
+  // Unified intrinsics computation for both on-screen and export rendering.
+  // Ensures K/cx/cy are consistent with the homography pixel space (render-buffer coords).
+  function _computeIntrinsicsUnified(Hm, w, h, sx, sy, ai){
+    let cx = 0.5 * (w||1);
+    let cy = 0.5 * (h||1);
+    const maxDim = Math.max(1, (w||1), (h||1));
+    let fGuess = _estimateFocalFromHomography(Hm, cx, cy, w, h);
+    if(!fGuess || !isFinite(fGuess) || fGuess < 2){
+      fGuess = 0.95 * maxDim;
+    }
+
+    // If manual 3D calibration lines are ready, prefer their intrinsics (scaled to this render buffer).
+    try{
+      const c3 = ai && ai.calib3d;
+      const res = c3 && c3.result;
+      if(c3 && c3.enabled === true && res && res.ok && res.K){
+        const _sx = isFinite(sx) ? sx : 1.0;
+        const _sy = isFinite(sy) ? sy : 1.0;
+        const sAvg = (_sx + _sy) * 0.5;
+        const fFrom = (+res.K.f||0) * sAvg;
+        const cxFrom = (+res.K.cx||0) * _sx;
+        const cyFrom = (+res.K.cy||0) * _sy;
+        if(isFinite(fFrom) && fFrom > 2) fGuess = fFrom;
+        if(isFinite(cxFrom)) cx = cxFrom;
+        if(isFinite(cyFrom)) cy = cyFrom;
+      }
+    }catch(_){ /* no-op */ }
+
+    return {f: fGuess, cx, cy};
+  }
+
+function _clampHorizonToFillContour(camBase, hVal, cfg){
     if(!camBase || !cfg || !cfg.bounds) return hVal;
     const sign = (hVal >= 0) ? 1 : -1;
     const target = Math.min(1.0, Math.abs(hVal));
@@ -2105,30 +2137,10 @@ let cam3d = null;
 let cam3dRef = null;
 try{
   if(Hm){
-    let cx = 0.5 * w;
-    let cy = 0.5 * h;
-    const maxDim = Math.max(1, w, h);
-
-    let fGuess = _estimateFocalFromHomography(Hm, cx, cy, w, h);
-    if(!fGuess || !isFinite(fGuess) || fGuess < 2){
-      fGuess = 0.95 * maxDim;
-    }
-
-    // If manual 3D calibration lines are ready, prefer their intrinsics (scaled to render buffer).
-    // This makes the Beta mode meaningful: the on/off difference appears only once the user set A1/A2/B1/B2.
-    try{
-      const c3 = ai && ai.calib3d;
-      const res = c3 && c3.result;
-      if(c3 && c3.enabled === true && res && res.ok && res.K){
-        const sAvg = (sx + sy) * 0.5;
-        const fFrom = (+res.K.f||0) * sAvg;
-        const cxFrom = (+res.K.cx||0) * sx;
-        const cyFrom = (+res.K.cy||0) * sy;
-        if(isFinite(fFrom) && fFrom > 2) fGuess = fFrom;
-        if(isFinite(cxFrom)) cx = cxFrom;
-        if(isFinite(cyFrom)) cy = cyFrom;
-      }
-    }catch(_){ /*no-op*/ }
+    const intr = _computeIntrinsicsUnified(Hm, w, h, sx, sy, ai);
+    let cx = intr.cx;
+    let cy = intr.cy;
+    let fGuess = intr.f;
 
     const params = zone.material?.params || {};
     // Effective values computed above (may be AI-derived), fall back to user params.
@@ -2325,20 +2337,13 @@ const tmp = src; src = dst; dst = tmp;
 
       
 let invH = null;
-const baseParams = zone.material?.params||{};
-const conf = (ai && isFinite(ai.confidence)) ? ai.confidence : 0;
-// Keep export geometry identical to on-screen render.
-// If premium geometry lock is enabled, we never pass AI plane direction to quad inference.
-const quadParams = (ai && ai.enabled !== false && !(ai.geomLockBottomUp) && ai.planeDir) ? Object.assign({}, baseParams, {
-  _aiPlaneDir: ai.planeDir,
-  _aiConfidence: conf,
-  _aiMix: smoothstep(0.18, 0.55, conf)
-}) : baseParams;
+// Global Anti-Rubber: infer ONLY a base quad from the contour (no horizon/perspective warping, no AI quad).
+// Horizon + Perspective are applied strictly as camera parameters later.
 // Work in render-buffer coordinates: scale contour from photo space -> render space.
 const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
 
 let Hm = null;
-const quadRes = _inferQuadFromContour(contourR, quadParams, outW, outH, null);
+const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
 let planeMetric = {W:1.0, D:1.0};
 const quad = quadRes && quadRes.quad ? quadRes.quad : null;
 if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
@@ -2557,24 +2562,10 @@ if(!invH){
       let cam3dRef = null;
       try{
         if(Hm){
-          let cx = 0.5*outW;
-          let cy = 0.5*outH;
-          let fGuess = _estimateFocalFromHomography(Hm, cx, cy, outW, outH);
-          if(!fGuess || !isFinite(fGuess) || fGuess < 2){ fGuess = 0.95 * Math.max(1,outW,outH); }
-
-          // If manual calibration lines are ready, use their intrinsics (scaled to export buffer).
-          const a = (state && state.ai) ? state.ai : null;
-          const c3 = a && a.calib3d;
-          const res = c3 && c3.result;
-          if(c3 && c3.enabled === true && res && res.ok && res.K){
-            const sAvg = (sx + sy) * 0.5;
-            const f0 = (+res.K.f||0) * sAvg;
-            const cx0 = (+res.K.cx||0) * sx;
-            const cy0 = (+res.K.cy||0) * sy;
-            if(isFinite(f0) && f0 > 2) fGuess = f0;
-            if(isFinite(cx0)) cx = cx0;
-            if(isFinite(cy0)) cy = cy0;
-          }
+          const intr = _computeIntrinsicsUnified(Hm, outW, outH, sx, sy, ai);
+          let cx = intr.cx;
+          let cy = intr.cy;
+          let fGuess = intr.f;
 
           const params = zone.material?.params || {};
           // Same horizon handling as on-screen: allow a wide UI range, but apply it safely

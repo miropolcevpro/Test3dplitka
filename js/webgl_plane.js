@@ -18,6 +18,13 @@ const WebGLPlane = (() => {
       || glCanvas.getContext("webgl", {alpha:true, premultipliedAlpha:false, antialias:false});
     if(!gl) return false;
 
+    // Precision capability:
+    // - WebGL2 guarantees highp in fragment shader.
+    // - WebGL1 may not support highp in fragment shader on some mobile GPUs.
+    const highpInfo = (gl && gl.getShaderPrecisionFormat) ? gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT) : null;
+    const hasHighpFrag = ((typeof WebGL2RenderingContext !== "undefined") && (gl instanceof WebGL2RenderingContext)) || (highpInfo && highpInfo.precision > 0);
+    const fragPrec = hasHighpFrag ? "highp" : "mediump";
+
     const vsSrc = `
       attribute vec2 aPos;
       varying vec2 vPos;
@@ -27,7 +34,7 @@ const WebGLPlane = (() => {
       }
     `;
     const fsSrc = `
-      precision highp float;
+      precision ${fragPrec} float;
       varying vec2 vPos;
       uniform vec2 uResolution;
       uniform mat3 uInvH;
@@ -46,9 +53,10 @@ const WebGLPlane = (() => {
       uniform sampler2D uTex;
 
       void main(){
-        // Convert fragment coords to canvas pixel coords with top-left origin.
-        vec2 frag = vec2(vPos.x * uResolution.x, (1.0 - vPos.y) * uResolution.y);
-        vec3 hp = uInvH * vec3(frag.x, frag.y, 1.0);
+        // Use normalized fragment coords in [0..1] to improve numeric stability on mediump GPUs.
+        // uInvH is pre-scaled on CPU by the current render resolution (columns 0/1 scaled by w/h).
+        vec2 fragN = vec2(vPos.x, 1.0 - vPos.y);
+        vec3 hp = uInvH * vec3(fragN.x, fragN.y, 1.0);
         float z = hp.z;
         if(abs(z) < 1e-6){
           gl_FragColor = vec4(0.0);
@@ -252,10 +260,14 @@ return true;
 
     // WebGL expects column-major for mat3 uniform when using uniformMatrix3fv with transpose=false.
     // Our inv is row-major; convert.
+    // For better precision on GPUs where fragment highp is not available, we feed the shader
+    // normalized fragment coords (0..1) and pre-scale the inverse homography by the render size.
+    // This is equivalent to using pixel coords, but keeps intermediate values small.
+    // Scaling by diag(w,h,1) corresponds to scaling the first two columns of the matrix.
     const invColMajor = new Float32Array([
-      inv[0], inv[3], inv[6],
-      inv[1], inv[4], inv[7],
-      inv[2], inv[5], inv[8]
+      inv[0] * w, inv[3] * w, inv[6] * w,
+      inv[1] * h, inv[4] * h, inv[7] * h,
+      inv[2],      inv[5],      inv[8]
     ]);
     gl.uniformMatrix3fv(uInvH, false, invColMajor);
 
