@@ -334,7 +334,7 @@ window.PhotoPaveCompositor = (function(){
           // Caller currently rebuilds cam3d from camBase + pitch/dist; to keep changes isolated,
           // we report flattenK and let caller apply it.
           return { pitchEff, distEff, metrics: bestRes.m, stage: 'flatten', flattenK: best };
-        }
+          }
       }catch(_){/*noop*/}
 
       // If we reached here, we didn't find a passing solution.
@@ -2601,14 +2601,13 @@ try{
           rhoMax: 2.00,
           shearMax: 32.0
         });
-        
-    if(guardInfo){
-      pitchEff = guardInfo.pitchEff;
-      distEff = guardInfo.distEff;
-    }
-  }
-}
-}catch(_){ guardInfo = null; }
+
+        if(guardInfo){
+          pitchEff = guardInfo.pitchEff;
+          distEff = guardInfo.distEff;
+        }
+      }
+    }catch(_){ guardInfo = null; }
 
 // C1: smooth distEff/flattenK per-zone to avoid snapping when guard switches stage.
 // pitch remains immediate (handled above) to preserve Horizon response.
