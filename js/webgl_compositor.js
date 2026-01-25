@@ -903,84 +903,8 @@ function _decomposeHomographyToRT(H, K){
     const dx = Math.hypot(px.x - p0.x, px.y - p0.y);
     const dy = Math.hypot(py.x - p0.x, py.y - p0.y);
     if(!isFinite(dx) || !isFinite(dy) || dx < 1e-9 || dy < 1e-9) return null;
-    return Math.sqrt(dx * dy);
+    return 0.5*(dx + dy);
   }
-
-  function _localMetricsAtPixel(cam, ax, ay){
-    // Local screen->plane differential at a pixel:
-    // dx,dy are plane-units per 1 screen pixel in X/Y.
-    // mpp is isotropic (geometric mean) plane-units per pixel.
-    // ratio is anisotropy between screen X and Y directions.
-    const p0 = _planePointFromCamPixel(cam, ax, ay);
-    if(!p0.ok) return null;
-    const px = _planePointFromCamPixel(cam, ax+1.0, ay);
-    const py = _planePointFromCamPixel(cam, ax, ay+1.0);
-    if(!px.ok || !py.ok) return null;
-    const dx = Math.hypot(px.x - p0.x, px.y - p0.y);
-    const dy = Math.hypot(py.x - p0.x, py.y - p0.y);
-    if(!isFinite(dx) || !isFinite(dy) || dx < 1e-9 || dy < 1e-9) return null;
-    return {dx, dy, mpp: Math.sqrt(dx*dy), ratio: dx/dy};
-  }
-
-  function _buildCamFromBase(camBase, pitch, distScale, f, cx, cy){
-    const camPose = _applyPitchToCam(camBase, pitch);
-    if(!camPose || !camPose.R || !camPose.t) return null;
-    return {
-      R: camPose.R,
-      t: [camPose.t[0]*distScale, camPose.t[1]*distScale, camPose.t[2]*distScale],
-      Kinv: [
-        1/f, 0, -cx/f,
-        0, 1/f, -cy/f,
-        0, 0, 1
-      ]
-    };
-  }
-
-  function _guardNearRubber(camBase, f, cx, cy, pitchTarget, distScaleTarget, anchorPx){
-    // Guard against near-field "rubber" by limiting how much the local mapping
-    // at the near anchor can drift from the neutral (reference) camera.
-    if(!anchorPx || !camBase) return {pitch: pitchTarget, distScale: distScaleTarget};
-    const ax = +anchorPx.x, ay = +anchorPx.y;
-    if(!isFinite(ax) || !isFinite(ay)) return {pitch: pitchTarget, distScale: distScaleTarget};
-
-    const camRef = _buildCamFromBase(camBase, 0.0, 1.0, f, cx, cy);
-    if(!camRef) return {pitch: pitchTarget, distScale: distScaleTarget};
-    const ref = _localMetricsAtPixel(camRef, ax, ay);
-    if(!ref) return {pitch: pitchTarget, distScale: distScaleTarget};
-
-    const ratioRef = ref.ratio;
-    // Conservative drift limit. Near should remain visually rigid.
-    const maxDrift = 1.10; // 10%
-    const minDrift = 1.0 / maxDrift;
-
-    function ok(pitch, distScale){
-      const cam = _buildCamFromBase(camBase, pitch, distScale, f, cx, cy);
-      if(!cam) return true;
-      const m = _localMetricsAtPixel(cam, ax, ay);
-      if(!m) return true;
-      const rel = m.ratio / ratioRef;
-      return (rel >= minDrift && rel <= maxDrift);
-    }
-
-    if(ok(pitchTarget, distScaleTarget)){
-      return {pitch: pitchTarget, distScale: distScaleTarget};
-    }
-
-    // Blend back toward neutral using binary search.
-    let lo = 0.0, hi = 1.0;
-    for(let i=0;i<10;i++){
-      const mid = 0.5*(lo+hi);
-      const pitch = pitchTarget * mid;
-      const distScale = 1.0 + (distScaleTarget - 1.0) * mid;
-      if(ok(pitch, distScale)) lo = mid; else hi = mid;
-    }
-    const a = lo;
-    return {
-      pitch: pitchTarget * a,
-      distScale: 1.0 + (distScaleTarget - 1.0) * a
-    };
-  }
-
 
 
   function _homographyRectToQuad(q, srcW, srcH){
@@ -2054,8 +1978,6 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-
 // Global camera model (all modes):
 // - Estimate a plausible focal length from the base homography.
 // - Apply user horizon/perspective as camera pitch + focal scaling.
@@ -2091,7 +2013,11 @@ try{
 
     const params = zone.material?.params || {};
     // Effective values computed above (may be AI-derived), fall back to user params.
-    const hVal = clamp((typeof effH === 'number' ? effH : (params.horizon ?? 0.0)), -0.85, 0.85);
+    // We intentionally allow a wider UI range for horizon, but we apply it in a safe way:
+    // - Pitch is kept within a conservative bound (prevents near-field "rubber" / squash).
+    // - Additional "horizon movement" is expressed as principal point shift (cy), which
+    //   changes the horizon position without introducing strong foreshortening.
+    const hVal = clamp((typeof effH === 'number' ? effH : (params.horizon ?? 0.0)), -1.0, 1.0);
     const pVal = clamp((typeof effP === 'number' ? effP : (params.perspective ?? 0.75)), 0.0, 1.0);
 
     // Perspective slider -> camera distance scaling (NOT focal).
@@ -2114,41 +2040,45 @@ try{
     // Re-solving pose for each f introduces subtle non-rigid distortions ("rubber" feel).
     const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
 
-    // Horizon slider -> camera pitch (tilt). Kept intentionally conservative.
+    // Horizon slider -> camera pitch (tilt) + principal point shift.
+    // Pitch is kept conservative to avoid near-field shape distortion.
     const pitchMax = 0.35; // ~20 degrees
     const pitchCur = hVal * pitchMax;
 
-    // Near-field anti-rubber guard: prevent anisotropic drift at the bottom anchor when sliders are pushed to extremes.
-    const g = _guardNearRubber(camBase, fGuess, cx, cy, pitchCur, distScale, anchorPx);
-    const pitchG = g.pitch;
-    const distG = g.distScale;
+    // Principal point shift: extends the effective horizon adjustment range
+    // without forcing extreme camera tilts.
+    const cyShiftMax = 0.42 * (h || 1);
+    const cyCur = clamp(cy + (hVal * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
 
     if(camBase && camBase.R && camBase.t){
       // Current camera: same pose (with optional pitch), different focal (fCur).
-      const camPoseCur = _applyPitchToCam(camBase, pitchG);
+      const camPoseCur = _applyPitchToCam(camBase, pitchCur);
       cam3d = {
         R: camPoseCur.R,
-        t: [camPoseCur.t[0]*distG, camPoseCur.t[1]*distG, camPoseCur.t[2]*distG],
+        t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
         Kinv: [
           1/fCur, 0, -cx/fCur,
-          0, 1/fCur, -cy/fCur,
+          0, 1/fCur, -cyCur/fCur,
           0, 0, 1
         ]
       };
 
       // Reference camera for anchor-scale lock: baseline UX (h=0, p=0.75).
+      // Reference camera for anchor-scale lock uses the same pose (incl. pitch) and cy shift,
+      // so horizon adjustments don't fight the scale lock.
       cam3dRef = {
-        R: camBase.R,
-        t: [camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
+        R: camPoseCur.R,
+        t: [camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
         Kinv: [
           1/fRef, 0, -cx/fRef,
-          0, 1/fRef, -cy/fRef,
+          0, 1/fRef, -cyCur/fRef,
           0, 0, 1
         ]
       };
     }
   }
 }catch(_){ cam3d = null; cam3dRef = null; }
+    const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
     _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
 const tmp = src; src = dst; dst = tmp;
     }
@@ -2337,8 +2267,6 @@ if(!invH){
       // - Infer a stable pose from base homography.
       // - Apply horizon/perspective strictly as camera pitch + distance scaling.
       // - If manual calib lines are ready, use their intrinsics as a better baseline.
-      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-
       let cam3d = null;
       let cam3dRef = null;
       try{
@@ -2363,7 +2291,9 @@ if(!invH){
           }
 
           const params = zone.material?.params || {};
-          const hVal = clamp((params.horizon ?? 0.0), -0.85, 0.85);
+          // Same horizon handling as on-screen: allow wide UI range but apply safely
+          // via conservative pitch + principal point shift (cy).
+          const hVal = clamp((params.horizon ?? 0.0), -1.0, 1.0);
           const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
 
           const perspT = (pVal - 0.5) * 2.0;
@@ -2374,16 +2304,11 @@ if(!invH){
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
           const pitchMax = 0.35;
           const pitchCur = hVal * pitchMax;
-
-          // Near-field anti-rubber guard: keep the bottom anchor locally rigid.
-          const g = _guardNearRubber(camBase, fGuess, cx, cy, pitchCur, distScale, anchorPx);
-          const pitchG = g.pitch;
-          const distG = g.distScale;
           if(camBase && camBase.R && camBase.t){
-            const camPoseCur = _applyPitchToCam(camBase, pitchG);
+            const camPoseCur = _applyPitchToCam(camBase, pitchCur);
             cam3d = {
               R: camPoseCur.R,
-              t: [camPoseCur.t[0]*distG, camPoseCur.t[1]*distG, camPoseCur.t[2]*distG],
+              t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
                 0, 1/fGuess, -cy/fGuess,
@@ -2403,6 +2328,7 @@ if(!invH){
         }
       }catch(_){ cam3d = null; cam3dRef = null; }
 
+      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
       _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
       const tmp = src; src = dst; dst = tmp;
     }
@@ -2481,8 +2407,6 @@ if(!invH){
       if(!invH){ invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1]; }
 
       // Build camera model consistent with on-screen path (pose locked, perspective->distance, horizon->pitch).
-      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-
       let cam3d = null;
       let cam3dRef = null;
       try{
@@ -2507,7 +2431,9 @@ if(!invH){
           }
 
           const params = zone.material?.params || {};
-          const hVal = clamp((params.horizon ?? 0.0), -0.85, 0.85);
+          // Same horizon handling as on-screen: allow a wide UI range, but apply it safely
+          // via conservative pitch + principal point shift (cy).
+          const hVal = clamp((params.horizon ?? 0.0), -1.0, 1.0);
           const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
           const perspT = (pVal - 0.5) * 2.0;
           const distK = 0.70;
@@ -2516,21 +2442,20 @@ if(!invH){
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
           const pitchMax = 0.35;
           const pitchCur = hVal * pitchMax;
-
-          // Near-field anti-rubber guard: keep the bottom anchor locally rigid.
-          const g = _guardNearRubber(camBase, fGuess, cx, cy, pitchCur, distScale, anchorPx);
-          const pitchG = g.pitch;
-          const distG = g.distScale;
+          const cyShiftMax = 0.42 * (outH || 1);
+          const cyCur = clamp(cy + (hVal * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
           if(camBase && camBase.R && camBase.t){
-            const camPoseCur = _applyPitchToCam(camBase, pitchG);
+            const camPoseCur = _applyPitchToCam(camBase, pitchCur);
             cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
-              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cy/fGuess, 0,0,1 ] };
-            cam3dRef = { R: camBase.R, t:[camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
-              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cy/fGuess, 0,0,1 ] };
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
+            // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
+            cam3dRef = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
           }
         }
       }catch(_){ cam3d = null; cam3dRef = null; }
 
+      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
       _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx);
       const tmp = src; src = dst; dst = tmp;
     }
@@ -2543,4 +2468,3 @@ if(!invH){
 
   return { init, setPhoto, resize, render, exportPNG, exportPNGBlob, getLimits };
 })();
-
