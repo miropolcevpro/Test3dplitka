@@ -213,8 +213,8 @@ self.onmessage = async (ev)=>{
       self.postMessage({type:"result", id, payload:{ok:true}});
       return;
     }
-    if(_lastRunId = id;
-    msg.type === "run"){
+    _lastRunId = id;
+    if(msg.type === "run"){
       if(!_cv) throw new Error("OpenCV not initialized");
       const bitmap = msg.bitmap;
       const longSide = msg.longSide || 640;

@@ -2023,7 +2023,6 @@ try{
         if(isFinite(cxFrom)) cx = cxFrom;
         if(isFinite(cyFrom)) cy = cyFrom;
       }
-      }
     }catch(_){ /*no-op*/ }
 
     const params = zone.material?.params || {};
@@ -2129,11 +2128,11 @@ try{
             }
           }
         }
+        }
       }
     }catch(_){ /*no-op*/ }
 
     // Keep focal stable to preserve tile geometry; perspective comes from distance change + anchor-scale lock.
- to preserve tile geometry; perspective comes from distance change + anchor-scale lock.
     const fCur = fGuess;
 
     // Reference camera for anchor-scale lock: baseline UX (distance=1, h=0).
