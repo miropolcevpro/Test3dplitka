@@ -94,6 +94,159 @@ window.PhotoPaveCompositor = (function(){
     }
   }
 
+  // Build a plane->screen homography from a camera model.
+  // For plane coordinates (u,v,0), using H = K * [r1 r2 t].
+  function _homographyFromCam(cam){
+    try{
+      if(!cam || !cam.R || !cam.t || !cam.Kinv) return null;
+      const f = 1.0 / Math.max(1e-9, cam.Kinv[0]);
+      const cx = -cam.Kinv[2] * f;
+      const cy = -cam.Kinv[5] * f;
+      if(!isFinite(f) || !isFinite(cx) || !isFinite(cy) || f <= 2) return null;
+
+      const K = [
+        f, 0, cx,
+        0, f, cy,
+        0, 0, 1
+      ];
+
+      // M = [r1 r2 t] (columns), row-major.
+      const R = cam.R;
+      const t = cam.t;
+      const M = [
+        R[0], R[1], t[0],
+        R[3], R[4], t[1],
+        R[6], R[7], t[2]
+      ];
+
+      return _mul3x3(K, M);
+    }catch(_){
+      return null;
+    }
+  }
+
+  function _computeNearMetricsFromCam(cam, planeMetric, rotDeg){
+    const Hc = _homographyFromCam(cam);
+    if(!Hc) return null;
+    return _computeNearMetrics(Hc, planeMetric, rotDeg);
+  }
+
+  function _nearMetricsPass(m, cfg){
+    if(!m || !m.worst) return true;
+    const rho = Math.max(1e-6, +m.worst.rho || 1.0);
+    const anis = Math.max(rho, 1.0/rho);
+    const shear = Math.max(0, +m.worst.shearDeg || 0);
+    const rhoMax = (cfg && isFinite(cfg.rhoMax)) ? cfg.rhoMax : 1.30;
+    const shearMax = (cfg && isFinite(cfg.shearMax)) ? cfg.shearMax : 20.0;
+    return (anis <= rhoMax + 1e-6) && (shear <= shearMax + 1e-6);
+  }
+
+  // Near-field quality guard (B3): deterministically reduces "rubber" by adjusting camera only.
+  // Priority: pitch↓ (keep horizon via cyShift) -> distance↑. No UV warp, no anisotropic UV scale.
+  function _applyNearGuard(camBase, cfg){
+    try{
+      if(!camBase) return null;
+      const f = cfg.f;
+      const cx = cfg.cx;
+      const cyCur = cfg.cyCur;
+      const planeMetric = cfg.planeMetric;
+      const rotDeg = cfg.rotDeg;
+
+      const pitchDes = cfg.pitchDes || 0.0;
+      const distDes = cfg.distDes || 1.0;
+      const distMax = cfg.distMax || distDes;
+
+      function buildCam(pitchRad, distScale){
+        const pose = _applyPitchToCam(camBase, pitchRad);
+        return {
+          R: pose.R,
+          t: [pose.t[0]*distScale, pose.t[1]*distScale, pose.t[2]*distScale],
+          Kinv: [
+            1/f, 0, -cx/f,
+            0, 1/f, -cyCur/f,
+            0, 0, 1
+          ]
+        };
+      }
+
+      function evalCam(pitchRad, distScale){
+        const cam = buildCam(pitchRad, distScale);
+        const m = _computeNearMetricsFromCam(cam, planeMetric, rotDeg);
+        return {cam, m};
+      }
+
+      // Start with desired.
+      let pitchEff = pitchDes;
+      let distEff = distDes;
+      let r = evalCam(pitchEff, distEff);
+
+      if(_nearMetricsPass(r.m, cfg)){
+        return { pitchEff, distEff, metrics: r.m, stage: 'none' };
+      }
+
+      // 1) Reduce pitch (binary search for max retained pitch that passes).
+      if(Math.abs(pitchDes) > 1e-6){
+        const sgn = (pitchDes >= 0) ? 1 : -1;
+        const baseAbs = Math.abs(pitchDes);
+        // If even pitch=0 doesn't pass, skip to distance.
+        const r0 = evalCam(0.0, distEff);
+        if(_nearMetricsPass(r0.m, cfg)){
+          let lo = 0.0, hi = 1.0;
+          let best = 0.0;
+          for(let i=0;i<10;i++){
+            const mid = 0.5*(lo+hi);
+            const rr = evalCam(sgn*baseAbs*mid, distEff);
+            if(_nearMetricsPass(rr.m, cfg)){
+              best = mid;
+              lo = mid;
+            }else{
+              hi = mid;
+            }
+          }
+          pitchEff = sgn*baseAbs*best;
+          r = evalCam(pitchEff, distEff);
+          if(_nearMetricsPass(r.m, cfg)){
+            return { pitchEff, distEff, metrics: r.m, stage: 'pitch' };
+          }
+        }else{
+          pitchEff = 0.0;
+          r = r0;
+        }
+      }
+
+      // 2) Increase distance (binary search minimal distance that passes).
+      if(isFinite(distMax) && distMax > distEff + 1e-6){
+        const rHi = evalCam(pitchEff, distMax);
+        if(_nearMetricsPass(rHi.m, cfg)){
+          let lo = distEff, hi = distMax;
+          let best = distMax;
+          for(let i=0;i<10;i++){
+            const mid = 0.5*(lo+hi);
+            const rr = evalCam(pitchEff, mid);
+            if(_nearMetricsPass(rr.m, cfg)){
+              best = mid;
+              hi = mid;
+            }else{
+              lo = mid;
+            }
+          }
+          distEff = best;
+          r = evalCam(pitchEff, distEff);
+          return { pitchEff, distEff, metrics: r.m, stage: 'dist' };
+        }else{
+          // Best effort: clamp to max even if still failing.
+          distEff = distMax;
+          r = rHi;
+          return { pitchEff, distEff, metrics: r.m, stage: 'distMax' };
+        }
+      }
+
+      return { pitchEff, distEff, metrics: r.m, stage: 'noSolution' };
+    }catch(_){
+      return null;
+    }
+  }
+
 
   let canvas = null;
   let gl = null;
@@ -2274,38 +2427,47 @@ try{
 
     // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
     const pitchW = smoothstep(hPitchStart, 1.0, aH);
-    const pitchCur = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+    const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
 
     // Principal point shift: extends the effective horizon adjustment range
     // without forcing extreme camera tilts.
     const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
 
-    // Dev-only metrics (B2): measure near anisotropy/shear in the tile grid basis.
-    // Enabled by app.js via window.__PP_DEBUG_METRICS=1.
+    // B3: near-field quality guard (camera-only). If the base camera is too aggressive,
+    // it can make the tile look "squashed" even at Horizon≈0. The guard reduces pitch
+    // first, then increases distance as needed. The tile scale remains stable via the
+    // existing anchor-scale lock (cam3dRef).
+    const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
+    let pitchEff = pitchDes;
+    let distEff = distScale;
+    let guardInfo = null;
     try{
-      const dbgEnabled = (typeof window !== 'undefined') && !!window.__PP_DEBUG_METRICS;
-      const activeZoneId = state && state.ui ? state.ui.activeZoneId : null;
-      if(dbgEnabled && activeZoneId && zone && zone.id === activeZoneId && Hm){
-        const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
-        const m = _computeNearMetrics(Hm, planeMetric, rotDeg);
-        if(m){
-          _lastDebugMetrics = {
-            zoneId: zone.id,
-            horizon: { hVal, hSafe, pitchMax, pitchW, pitchCur, cyCur, cyBase: cy, cyShiftMax },
-            perspective: { pVal, distScale },
-            planeMetric: { W: planeMetric.W, D: planeMetric.D },
-            metrics: m
-          };
+      if(camBase){
+        guardInfo = _applyNearGuard(camBase, {
+          f: fCur,
+          cx,
+          cyCur,
+          planeMetric,
+          rotDeg,
+          pitchDes,
+          distDes: distScale,
+          distMax: 2.20,
+          rhoMax: 1.30,
+          shearMax: 22.0
+        });
+        if(guardInfo){
+          pitchEff = guardInfo.pitchEff;
+          distEff = guardInfo.distEff;
         }
       }
-    }catch(_){}
+    }catch(_){ guardInfo = null; }
 
     if(camBase && camBase.R && camBase.t){
       // Current camera: same pose (with optional pitch), different focal (fCur).
-      const camPoseCur = _applyPitchToCam(camBase, pitchCur);
+      const camPoseCur = _applyPitchToCam(camBase, pitchEff);
       cam3d = {
         R: camPoseCur.R,
-        t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
+        t: [camPoseCur.t[0]*distEff, camPoseCur.t[1]*distEff, camPoseCur.t[2]*distEff],
         Kinv: [
           1/fCur, 0, -cx/fCur,
           0, 1/fCur, -cyCur/fCur,
@@ -2325,6 +2487,24 @@ try{
           0, 0, 1
         ]
       };
+
+      // Dev-only metrics (B2): report near anisotropy/shear for the ACTUAL camera mapping.
+      // Enabled by app.js via window.__PP_DEBUG_METRICS=1.
+      try{
+        const dbgEnabled = (typeof window !== 'undefined') && !!window.__PP_DEBUG_METRICS;
+        const activeZoneId = state && state.ui ? state.ui.activeZoneId : null;
+        if(dbgEnabled && activeZoneId && zone && zone.id === activeZoneId){
+          const mCam = _computeNearMetricsFromCam(cam3d, planeMetric, rotDeg);
+          _lastDebugMetrics = {
+            zoneId: zone.id,
+            horizon: { hVal, hSafe, pitchMax, pitchW, pitchDes, pitchEff, cyCur, cyBase: cy, cyShiftMax },
+            perspective: { pVal, distDes: distScale, distEff },
+            guard: guardInfo,
+            planeMetric: { W: planeMetric.W, D: planeMetric.D },
+            metrics: mCam
+          };
+        }
+      }catch(_){/*noop*/}
     }
   }
 }catch(_){ cam3d = null; cam3dRef = null; }
@@ -2566,14 +2746,39 @@ if(!invH){
 
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
           const pitchW = smoothstep(hPitchStart, 1.0, aH);
-          const pitchCur = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+          const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
           const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
 
+          // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
+          const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
+          let pitchEff = pitchDes;
+          let distEff = distScale;
+          try{
+            if(camBase){
+              const gi = _applyNearGuard(camBase, {
+                f: fGuess,
+                cx,
+                cyCur,
+                planeMetric,
+                rotDeg,
+                pitchDes,
+                distDes: distScale,
+                distMax: 2.20,
+                rhoMax: 1.30,
+                shearMax: 22.0
+              });
+              if(gi){
+                pitchEff = gi.pitchEff;
+                distEff = gi.distEff;
+              }
+            }
+          }catch(_){/*noop*/}
+
           if(camBase && camBase.R && camBase.t){
-            const camPoseCur = _applyPitchToCam(camBase, pitchCur);
+            const camPoseCur = _applyPitchToCam(camBase, pitchEff);
             cam3d = {
               R: camPoseCur.R,
-              t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
+              t: [camPoseCur.t[0]*distEff, camPoseCur.t[1]*distEff, camPoseCur.t[2]*distEff],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
                 0, 1/fGuess, -cyCur/fGuess,
@@ -2713,11 +2918,37 @@ if(!invH){
 
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
           const pitchW = smoothstep(hPitchStart, 1.0, aH);
-          const pitchCur = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+          const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
           const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
+
+          // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
+          const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
+          let pitchEff = pitchDes;
+          let distEff = distScale;
+          try{
+            if(camBase){
+              const gi = _applyNearGuard(camBase, {
+                f: fGuess,
+                cx,
+                cyCur,
+                planeMetric,
+                rotDeg,
+                pitchDes,
+                distDes: distScale,
+                distMax: 2.20,
+                rhoMax: 1.30,
+                shearMax: 22.0
+              });
+              if(gi){
+                pitchEff = gi.pitchEff;
+                distEff = gi.distEff;
+              }
+            }
+          }catch(_){/*noop*/}
+
           if(camBase && camBase.R && camBase.t){
-            const camPoseCur = _applyPitchToCam(camBase, pitchCur);
-            cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
+            const camPoseCur = _applyPitchToCam(camBase, pitchEff);
+            cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0]*distEff, camPoseCur.t[1]*distEff, camPoseCur.t[2]*distEff],
               Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
             // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
             cam3dRef = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
