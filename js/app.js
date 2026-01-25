@@ -717,8 +717,9 @@ async function handlePhotoFile(file){
         const fmt1 = (v)=> (isFinite(v) ? v.toFixed(1) : "—");
 
         const rL = a[0], rC = a[1], rR = a[2];
-        const rhoLine = `ρ  L:${fmt(rL?.rho)}  C:${fmt(rC?.rho)}  R:${fmt(rR?.rho)}  | worst:${fmt(m?.worst?.rho)}`;
-        const shLine  = `sh° L:${fmt1(rL?.shearDeg)} C:${fmt1(rC?.shearDeg)} R:${fmt1(rR?.shearDeg)} | worst:${fmt1(m?.worst?.shearDeg)}`;
+        // Show symmetric anisotropy (max(rho,1/rho)), which correlates better with perceived "squash".
+        const anLine  = `an  L:${fmt(rL?.anis)}  C:${fmt(rC?.anis)}  R:${fmt(rR?.anis)} |w:${fmt(m?.worst?.anis)}`;
+        const shLine  = `sh° L:${fmt1(rL?.shearDeg)} C:${fmt1(rC?.shearDeg)} R:${fmt1(rR?.shearDeg)} |w:${fmt1(m?.worst?.shearDeg)}`;
         const h = data.horizon || {};
         const p = data.perspective || {};
         const g = data.guard || {};
@@ -728,10 +729,11 @@ async function handlePhotoFile(file){
         const distDes = isFinite(p.distDes) ? p.distDes : (isFinite(p.distScale) ? p.distScale : NaN);
         const distEff = isFinite(p.distEff) ? p.distEff : distDes;
 
-        const meta = `pitchW:${fmt(h.pitchW)} pitch(des/eff):${fmt1(pitchDesDeg)}°/${fmt1(pitchEffDeg)}°  dist(des/eff):${fmt(distDes)}/${fmt(distEff)}  stage:${g.stage||'—'}`;
+        const flatK = (isFinite(g.flattenK) ? g.flattenK : NaN);
+        const meta = `pW:${fmt(h.pitchW)} p°:${fmt1(pitchEffDeg)} d:${fmt(distEff)} st:${g.stage||'—'} k:${fmt(flatK)}`;
 
         ctx.fillText("Near metrics (tile basis)", 6, 4);
-        ctx.fillText(rhoLine, 6, 20);
+        ctx.fillText(anLine, 6, 20);
         ctx.fillText(shLine, 6, 34);
         ctx.fillText(meta, 6, 50);
       }catch(_){}

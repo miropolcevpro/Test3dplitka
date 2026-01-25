@@ -53,7 +53,7 @@ window.PhotoPaveCompositor = (function(){
 
       const step = 0.02 * Math.min(W, D); // local finite difference, plane units
 
-      const out = { anchors: [], worst: { rho: 1.0, shearDeg: 0.0 }, step, rotDeg: (+rotDeg||0) };
+      const out = { anchors: [], worst: { rho: 1.0, anis: 1.0, shearDeg: 0.0 }, step, rotDeg: (+rotDeg||0) };
 
       for(let i=0;i<anchorsU.length;i++){
         const u0 = anchorsU[i];
@@ -78,13 +78,16 @@ window.PhotoPaveCompositor = (function(){
         }
         const shearDeg = Math.abs(90.0 - ang);
 
-        const a = { label: (i===0?'L':(i===1?'C':'R')), u:u0, v:v0, rho, shearDeg, lenU, lenV, angDeg: ang };
+        const anis = (isFinite(rho) && rho > 1e-9) ? Math.max(rho, 1.0/rho) : NaN;
+        const a = { label: (i===0?'L':(i===1?'C':'R')), u:u0, v:v0, rho, anis, shearDeg, lenU, lenV, angDeg: ang };
         out.anchors.push(a);
 
         // Worst-of: maximize deviation from rho=1, and maximize shear.
-        const rhoDev = Math.abs(Math.log(Math.max(1e-6, rho)));
-        const worstRhoDev = Math.abs(Math.log(Math.max(1e-6, out.worst.rho)));
-        if(rhoDev > worstRhoDev) out.worst.rho = rho;
+        // Worst-of: maximize anisotropy (symmetric) and maximize shear.
+        if(isFinite(anis) && anis > out.worst.anis){
+          out.worst.anis = anis;
+          out.worst.rho = rho;
+        }
         if(shearDeg > out.worst.shearDeg) out.worst.shearDeg = shearDeg;
       }
 
@@ -155,6 +158,37 @@ window.PhotoPaveCompositor = (function(){
       const pitchDes = cfg.pitchDes || 0.0;
       const distDes = cfg.distDes || 1.0;
       const distMax = cfg.distMax || distDes;
+
+      // Orthonormalize a pair of basis vectors (r1,r2) and rebuild a right-handed rotation.
+      function orthoFromR12(r1, r2){
+        // r1 normalize
+        let n1 = Math.hypot(r1[0],r1[1],r1[2]);
+        if(!isFinite(n1) || n1 < 1e-9) return null;
+        r1 = [r1[0]/n1, r1[1]/n1, r1[2]/n1];
+
+        // Gram-Schmidt r2
+        const d12 = r1[0]*r2[0] + r1[1]*r2[1] + r1[2]*r2[2];
+        r2 = [r2[0]-d12*r1[0], r2[1]-d12*r1[1], r2[2]-d12*r1[2]];
+        let n2 = Math.hypot(r2[0],r2[1],r2[2]);
+        if(!isFinite(n2) || n2 < 1e-9) return null;
+        r2 = [r2[0]/n2, r2[1]/n2, r2[2]/n2];
+
+        // r3 = r1 x r2
+        let r3 = [
+          r1[1]*r2[2] - r1[2]*r2[1],
+          r1[2]*r2[0] - r1[0]*r2[2],
+          r1[0]*r2[1] - r1[1]*r2[0]
+        ];
+        let n3 = Math.hypot(r3[0],r3[1],r3[2]);
+        if(!isFinite(n3) || n3 < 1e-9) return null;
+        r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+
+        return [
+          r1[0], r2[0], r3[0],
+          r1[1], r2[1], r3[1],
+          r1[2], r2[2], r3[2]
+        ];
+      }
 
       function buildCam(pitchRad, distScale){
         const pose = _applyPitchToCam(camBase, pitchRad);
@@ -239,14 +273,74 @@ window.PhotoPaveCompositor = (function(){
           r = evalCam(pitchEff, distEff);
           return { pitchEff, distEff, metrics: r.m, stage: 'dist' };
         }else{
-          // Best effort: clamp to max even if still failing.
+          // Best effort: clamp to max and continue to the next lever (flatten).
           distEff = distMax;
           r = rHi;
-          return { pitchEff, distEff, metrics: r.m, stage: 'distMax' };
         }
       }
 
-      return { pitchEff, distEff, metrics: r.m, stage: 'noSolution' };
+      // 3) Flatten the base tilt if distance alone is insufficient.
+      // Some photos/quads produce an extremely steep plane orientation even at Horizon≈0,
+      // which makes the near-field look "squashed". We stay camera-only by adjusting R,
+      // without any UV warp: we attenuate the Z components of r1/r2 (plane directions)
+      // and re-orthonormalize. This reduces foreshortening while keeping the in-plane
+      // directions stable.
+      try{
+        const flattenMin = (cfg && isFinite(cfg.flattenMin)) ? cfg.flattenMin : 0.20; // smaller => more orthographic
+        const flattenMax = 1.00;
+
+        // Evaluate at most-flattened candidate first.
+        function evalFlatten(k){
+          const pose = _applyPitchToCam(camBase, pitchEff);
+          const R0 = pose.R;
+          const r1 = [R0[0], R0[3], R0[6]];
+          const r2 = [R0[1], R0[4], R0[7]];
+          const r1k = [r1[0], r1[1], r1[2]*k];
+          const r2k = [r2[0], r2[1], r2[2]*k];
+          const Rk = orthoFromR12(r1k, r2k);
+          if(!Rk) return null;
+          const cam = {
+            R: Rk,
+            t: [pose.t[0], pose.t[1], pose.t[2]*distEff],
+            Kinv: [
+              1/f, 0, -cx/f,
+              0, 1/f, -cyCur/f,
+              0, 0, 1
+            ]
+          };
+          const m = _computeNearMetricsFromCam(cam, planeMetric, rotDeg);
+          return { cam, m };
+        }
+
+        const rMin = evalFlatten(flattenMin);
+        if(rMin && _nearMetricsPass(rMin.m, cfg)){
+          // Binary search maximal k (closest to original) that still passes.
+          let lo = flattenMin, hi = flattenMax;
+          let best = flattenMin;
+          let bestRes = rMin;
+          for(let i=0;i<10;i++){
+            const mid = 0.5*(lo+hi);
+            const rr = evalFlatten(mid);
+            if(rr && _nearMetricsPass(rr.m, cfg)){
+              best = mid;
+              bestRes = rr;
+              lo = mid;
+            }else{
+              hi = mid;
+            }
+          }
+
+          // Commit: override R in the result cam via stage info.
+          // Caller currently rebuilds cam3d from camBase + pitch/dist; to keep changes isolated,
+          // we report flattenK and let caller apply it.
+          return { pitchEff, distEff, metrics: bestRes.m, stage: 'flatten', flattenK: best };
+        }
+      }catch(_){/*noop*/}
+
+      // If we reached here, we didn't find a passing solution.
+      // Still return the best-effort metrics at the current (pitchEff, distEff).
+      const stage = (isFinite(distMax) && distMax > distDes + 1e-6) ? 'distMax' : 'noSolution';
+      return { pitchEff, distEff, metrics: r.m, stage };
     }catch(_){
       return null;
     }
@@ -2459,9 +2553,9 @@ try{
           // Allow the guard to increase distance beyond the user slider's max if needed.
           // The user-facing slider still controls distDes (semantics). distMax is an internal
           // safety lever to prevent obvious near-field "squash".
-          distMax: 6.00,
-          rhoMax: 1.30,
-          shearMax: 22.0
+          distMax: 12.00,
+          rhoMax: 2.00,
+          shearMax: 32.0
         });
         if(guardInfo){
           pitchEff = guardInfo.pitchEff;
@@ -2473,8 +2567,43 @@ try{
     if(camBase && camBase.R && camBase.t){
       // Current camera: same pose (with optional pitch), different focal (fCur).
       const camPoseCur = _applyPitchToCam(camBase, pitchEff);
+      // If near-guard requested flattening (camera-only), attenuate the Z components
+      // of r1/r2 and re-orthonormalize. This reduces excessive near-field squash
+      // caused by overly steep base plane orientation.
+      let Rcur = camPoseCur.R;
+      if(guardInfo && isFinite(guardInfo.flattenK)){
+        const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenK));
+        const r1 = [Rcur[0], Rcur[3], Rcur[6]];
+        const r2 = [Rcur[1], Rcur[4], Rcur[7]];
+        // scale z
+        const r1k = [r1[0], r1[1], r1[2]*k];
+        const r2k = [r2[0], r2[1], r2[2]*k];
+        // Gram-Schmidt
+        const n1 = Math.hypot(r1k[0],r1k[1],r1k[2]);
+        const rr1 = (n1>1e-9) ? [r1k[0]/n1, r1k[1]/n1, r1k[2]/n1] : r1;
+        const d12 = rr1[0]*r2k[0] + rr1[1]*r2k[1] + rr1[2]*r2k[2];
+        let vv = [r2k[0]-d12*rr1[0], r2k[1]-d12*rr1[1], r2k[2]-d12*rr1[2]];
+        const n2 = Math.hypot(vv[0],vv[1],vv[2]);
+        if(n2>1e-9){
+          vv = [vv[0]/n2, vv[1]/n2, vv[2]/n2];
+          let r3 = [
+            rr1[1]*vv[2] - rr1[2]*vv[1],
+            rr1[2]*vv[0] - rr1[0]*vv[2],
+            rr1[0]*vv[1] - rr1[1]*vv[0]
+          ];
+          const n3 = Math.hypot(r3[0],r3[1],r3[2]);
+          if(n3>1e-9){
+            r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+            Rcur = [
+              rr1[0], vv[0], r3[0],
+              rr1[1], vv[1], r3[1],
+              rr1[2], vv[2], r3[2]
+            ];
+          }
+        }
+      }
       cam3d = {
-        R: camPoseCur.R,
+        R: Rcur,
         // Distance affects camera height (tz) only; see _applyNearGuard.
         t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
         Kinv: [
@@ -2488,7 +2617,7 @@ try{
       // Reference camera for anchor-scale lock uses the same pose (incl. pitch) and cy shift,
       // so horizon adjustments don't fight the scale lock.
       cam3dRef = {
-        R: camPoseCur.R,
+        R: Rcur,
         t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
         Kinv: [
           1/fRef, 0, -cx/fRef,
@@ -2762,9 +2891,10 @@ if(!invH){
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
           let pitchEff = pitchDes;
           let distEff = distScale;
+          let guardInfo = null;
           try{
             if(camBase){
-              const gi = _applyNearGuard(camBase, {
+              guardInfo = _applyNearGuard(camBase, {
                 f: fGuess,
                 cx,
                 cyCur,
@@ -2772,21 +2902,52 @@ if(!invH){
                 rotDeg,
                 pitchDes,
                 distDes: distScale,
-                distMax: 6.00,
-                rhoMax: 1.30,
-                shearMax: 22.0
+                distMax: 12.00,
+                rhoMax: 2.00,
+                shearMax: 32.0
               });
-              if(gi){
-                pitchEff = gi.pitchEff;
-                distEff = gi.distEff;
+              if(guardInfo){
+                pitchEff = guardInfo.pitchEff;
+                distEff = guardInfo.distEff;
               }
             }
           }catch(_){/*noop*/}
 
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchEff);
+            // Apply optional near-guard flattening (camera-only).
+            let Rcur = camPoseCur.R;
+            if(guardInfo && isFinite(guardInfo.flattenK)){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenK));
+              const r1 = [Rcur[0], Rcur[3], Rcur[6]];
+              const r2 = [Rcur[1], Rcur[4], Rcur[7]];
+              const r1k = [r1[0], r1[1], r1[2]*k];
+              const r2k = [r2[0], r2[1], r2[2]*k];
+              const n1 = Math.hypot(r1k[0],r1k[1],r1k[2]);
+              const rr1 = (n1>1e-9) ? [r1k[0]/n1, r1k[1]/n1, r1k[2]/n1] : r1;
+              const d12 = rr1[0]*r2k[0] + rr1[1]*r2k[1] + rr1[2]*r2k[2];
+              let vv = [r2k[0]-d12*rr1[0], r2k[1]-d12*rr1[1], r2k[2]-d12*rr1[2]];
+              const n2 = Math.hypot(vv[0],vv[1],vv[2]);
+              if(n2>1e-9){
+                vv = [vv[0]/n2, vv[1]/n2, vv[2]/n2];
+                let r3 = [
+                  rr1[1]*vv[2] - rr1[2]*vv[1],
+                  rr1[2]*vv[0] - rr1[0]*vv[2],
+                  rr1[0]*vv[1] - rr1[1]*vv[0]
+                ];
+                const n3 = Math.hypot(r3[0],r3[1],r3[2]);
+                if(n3>1e-9){
+                  r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+                  Rcur = [
+                    rr1[0], vv[0], r3[0],
+                    rr1[1], vv[1], r3[1],
+                    rr1[2], vv[2], r3[2]
+                  ];
+                }
+              }
+            }
             cam3d = {
-              R: camPoseCur.R,
+              R: Rcur,
               t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
@@ -2796,7 +2957,7 @@ if(!invH){
             };
             // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
             cam3dRef = {
-              R: camPoseCur.R,
+              R: Rcur,
               t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
@@ -2934,9 +3095,10 @@ if(!invH){
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
           let pitchEff = pitchDes;
           let distEff = distScale;
+          let guardInfo = null;
           try{
             if(camBase){
-              const gi = _applyNearGuard(camBase, {
+              guardInfo = _applyNearGuard(camBase, {
                 f: fGuess,
                 cx,
                 cyCur,
@@ -2944,23 +3106,49 @@ if(!invH){
                 rotDeg,
                 pitchDes,
                 distDes: distScale,
-                distMax: 6.00,
-                rhoMax: 1.30,
-                shearMax: 22.0
+                distMax: 12.00,
+                rhoMax: 2.00,
+                shearMax: 32.0
               });
-              if(gi){
-                pitchEff = gi.pitchEff;
-                distEff = gi.distEff;
+              if(guardInfo){
+                pitchEff = guardInfo.pitchEff;
+                distEff = guardInfo.distEff;
               }
             }
           }catch(_){/*noop*/}
 
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchEff);
-            cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
+            let Rcur = camPoseCur.R;
+            if(guardInfo && isFinite(guardInfo.flattenK)){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenK));
+              const r1 = [Rcur[0], Rcur[3], Rcur[6]];
+              const r2 = [Rcur[1], Rcur[4], Rcur[7]];
+              const r1k = [r1[0], r1[1], r1[2]*k];
+              const r2k = [r2[0], r2[1], r2[2]*k];
+              const n1 = Math.hypot(r1k[0],r1k[1],r1k[2]);
+              const rr1 = (n1>1e-9) ? [r1k[0]/n1, r1k[1]/n1, r1k[2]/n1] : r1;
+              const d12 = rr1[0]*r2k[0] + rr1[1]*r2k[1] + rr1[2]*r2k[2];
+              let vv = [r2k[0]-d12*rr1[0], r2k[1]-d12*rr1[1], r2k[2]-d12*rr1[2]];
+              const n2 = Math.hypot(vv[0],vv[1],vv[2]);
+              if(n2>1e-9){
+                vv = [vv[0]/n2, vv[1]/n2, vv[2]/n2];
+                let r3 = [
+                  rr1[1]*vv[2] - rr1[2]*vv[1],
+                  rr1[2]*vv[0] - rr1[0]*vv[2],
+                  rr1[0]*vv[1] - rr1[1]*vv[0]
+                ];
+                const n3 = Math.hypot(r3[0],r3[1],r3[2]);
+                if(n3>1e-9){
+                  r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+                  Rcur = [ rr1[0], vv[0], r3[0],  rr1[1], vv[1], r3[1],  rr1[2], vv[2], r3[2] ];
+                }
+              }
+            }
+            cam3d = { R: Rcur, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
               Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
             // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
-            cam3dRef = { R: camPoseCur.R, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
+            cam3dRef = { R: Rcur, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
               Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
           }
         }
