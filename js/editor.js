@@ -1280,11 +1280,35 @@ if(state.ui.mode==="contour"&&zone){
           window.PhotoPaveAPI.setStatus("Экспорт недоступен: WebGL композитор не инициализирован");
           return;
         }
-        const dataURL = await compositor.exportPNG(state, {maxLongSide: Math.max(1, state.assets.photoW, state.assets.photoH)});
-        const a=document.createElement("a");
-        a.download="paving_preview.png";
-        a.href=dataURL;
-        a.click();
+        // Robust download: prefer Blob/ObjectURL to avoid data: URL limits and blocked clicks in some browsers/iframes.
+        const fileName = "paving_preview.png";
+        let blob = null;
+        if(compositor && typeof compositor.exportPNGBlob === "function"){
+          blob = await compositor.exportPNGBlob(state, {maxLongSide: Math.max(1, state.assets.photoW, state.assets.photoH)});
+        }
+        if(!blob){
+          const dataURL = await compositor.exportPNG(state, {maxLongSide: Math.max(1, state.assets.photoW, state.assets.photoH)});
+          // Convert dataURL -> Blob
+          const resp = await fetch(dataURL);
+          blob = await resp.blob();
+        }
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.download = fileName;
+        a.href = url;
+        a.rel = "noopener";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        // Some environments block synthetic clicks unless the element is in DOM.
+        try{ a.click(); }
+        catch(_){
+          try{ window.open(url, "_blank"); }catch(__){}
+        }
+        setTimeout(()=>{
+          try{ document.body.removeChild(a); }catch(_){ }
+          try{ URL.revokeObjectURL(url); }catch(_){ }
+        }, 1500);
       }catch(e){
         console.warn(e);
         window.PhotoPaveAPI.setStatus("Не удалось экспортировать PNG (см. консоль)");

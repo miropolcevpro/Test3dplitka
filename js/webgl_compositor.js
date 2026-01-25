@@ -1986,14 +1986,30 @@ let cam3d = null;
 let cam3dRef = null;
 try{
   if(Hm){
-    const cx = 0.5 * w;
-    const cy = 0.5 * h;
+    let cx = 0.5 * w;
+    let cy = 0.5 * h;
     const maxDim = Math.max(1, w, h);
 
     let fGuess = _estimateFocalFromHomography(Hm, cx, cy, w, h);
     if(!fGuess || !isFinite(fGuess) || fGuess < 2){
       fGuess = 0.95 * maxDim;
     }
+
+    // If manual 3D calibration lines are ready, prefer their intrinsics (scaled to render buffer).
+    // This makes the Beta mode meaningful: the on/off difference appears only once the user set A1/A2/B1/B2.
+    try{
+      const c3 = ai && ai.calib3d;
+      const res = c3 && c3.result;
+      if(c3 && c3.enabled === true && res && res.ok && res.K){
+        const sAvg = (sx + sy) * 0.5;
+        const fFrom = (+res.K.f||0) * sAvg;
+        const cxFrom = (+res.K.cx||0) * sx;
+        const cyFrom = (+res.K.cy||0) * sy;
+        if(isFinite(fFrom) && fFrom > 2) fGuess = fFrom;
+        if(isFinite(cxFrom)) cx = cxFrom;
+        if(isFinite(cyFrom)) cy = cyFrom;
+      }
+    }catch(_){ /*no-op*/ }
 
     const params = zone.material?.params || {};
     // Effective values computed above (may be AI-derived), fall back to user params.
@@ -2082,6 +2098,37 @@ const tmp = src; src = dst; dst = tmp;
     const imgData = new ImageData(flipped, w, h);
     cctx.putImageData(imgData, 0, 0);
     return c.toDataURL('image/png');
+  }
+
+  async function _readPixelsToBlob(rt){
+    const w = rt.w, h = rt.h;
+    const buf = new Uint8Array(w*h*4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fbo);
+    gl.readPixels(0,0,w,h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Flip Y for canvas
+    const flipped = new Uint8ClampedArray(w*h*4);
+    for(let y=0;y<h;y++){
+      const srcOff = (h-1-y)*w*4;
+      const dstOff = y*w*4;
+      flipped.set(buf.subarray(srcOff, srcOff+w*4), dstOff);
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cctx = c.getContext('2d');
+    const imgData = new ImageData(flipped, w, h);
+    cctx.putImageData(imgData, 0, 0);
+    const blob = await new Promise((resolve)=>{
+      try{
+        c.toBlob((b)=>resolve(b), 'image/png');
+      }catch(_){ resolve(null); }
+    });
+    if(blob) return blob;
+    // Fallback to dataURL if toBlob is unavailable
+    const dataURL = c.toDataURL('image/png');
+    const resp = await fetch(dataURL);
+    return await resp.blob();
   }
 
   async function exportPNG(state, opts={}){
@@ -2204,30 +2251,68 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-      // Variant B (3D camera): if manual calibration is ready, compute a camera model that
-// reproduces the current homography via ray-plane intersection in the shader.
-let cam3d = null;
-try{
-  const c3 = ai && ai.calib3d;
-  const res = c3 && c3.result;
-  const want3d = !!(c3 && c3.enabled === true && (c3.use3DRenderer !== false));
-  if(want3d && Hm){
-    // If the user completed manual lines, use their intrinsics; otherwise use a robust fallback.
-    let K0 = (res && res.ok && res.K) ? res.K : null;
-    const allowFallback = !(c3 && c3.allowFallbackK === false);
-    if(!K0 && allowFallback){
-      const W = Math.max(1, outW);
-      const H = Math.max(1, outH);
-      // Fallback intrinsics: center principal point + focal proportional to image size.
-      K0 = { f: 0.95 * Math.max(W, H), cx: 0.5 * W, cy: 0.5 * H };
-    }
-    if(K0 && isFinite(K0.f) && K0.f > 2){
-      const sAvg = (sx + sy) * 0.5;
-      const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
-      cam3d = _decomposeHomographyToRT(Hm, Kr);
-    }
-  }
-}catch(_){ cam3d = null; }
+      // Global camera model (export must match on-screen render):
+      // - Infer a stable pose from base homography.
+      // - Apply horizon/perspective strictly as camera pitch + distance scaling.
+      // - If manual calib lines are ready, use their intrinsics as a better baseline.
+      let cam3d = null;
+      let cam3dRef = null;
+      try{
+        if(Hm){
+          let cx = 0.5 * outW;
+          let cy = 0.5 * outH;
+          let fGuess = _estimateFocalFromHomography(Hm, cx, cy, outW, outH);
+          if(!fGuess || !isFinite(fGuess) || fGuess < 2){
+            fGuess = 0.95 * Math.max(1, outW, outH);
+          }
+
+          const c3 = ai && ai.calib3d;
+          const res = c3 && c3.result;
+          if(c3 && c3.enabled === true && res && res.ok && res.K){
+            const sAvg = (sx + sy) * 0.5;
+            const fFrom = (+res.K.f||0) * sAvg;
+            const cxFrom = (+res.K.cx||0) * sx;
+            const cyFrom = (+res.K.cy||0) * sy;
+            if(isFinite(fFrom) && fFrom > 2) fGuess = fFrom;
+            if(isFinite(cxFrom)) cx = cxFrom;
+            if(isFinite(cyFrom)) cy = cyFrom;
+          }
+
+          const params = zone.material?.params || {};
+          const hVal = clamp((params.horizon ?? 0.0), -0.85, 0.85);
+          const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
+
+          const perspT = (pVal - 0.5) * 2.0;
+          const distK = 0.70;
+          const distScale = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
+          const distScaleRef = 1.0;
+
+          const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
+          const pitchMax = 0.35;
+          const pitchCur = hVal * pitchMax;
+          if(camBase && camBase.R && camBase.t){
+            const camPoseCur = _applyPitchToCam(camBase, pitchCur);
+            cam3d = {
+              R: camPoseCur.R,
+              t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
+              Kinv: [
+                1/fGuess, 0, -cx/fGuess,
+                0, 1/fGuess, -cy/fGuess,
+                0, 0, 1
+              ]
+            };
+            cam3dRef = {
+              R: camBase.R,
+              t: [camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
+              Kinv: [
+                1/fGuess, 0, -cx/fGuess,
+                0, 1/fGuess, -cy/fGuess,
+                0, 0, 1
+              ]
+            };
+          }
+        }
+      }catch(_){ cam3d = null; cam3dRef = null; }
 
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
       _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
@@ -2242,5 +2327,125 @@ try{
     return dataURL;
   }
 
-  return { init, setPhoto, resize, render, exportPNG, getLimits };
+  async function exportPNGBlob(state, opts={}){
+    if(!gl) throw new Error('WebGL compositor not initialized');
+    if(!state?.assets?.photoBitmap || !photoTex) throw new Error('No photo loaded');
+
+    // Reuse exportPNG logic by rendering to a temp RT and reading pixels as Blob.
+    const ai = state && state.ai ? state.ai : null;
+    if(ai){
+      try{ _ensureAIDepthTexture(ai); }catch(_){ }
+      try{ _ensureAIOcclusionTexture(ai); }catch(_){ }
+    }
+
+    const longSide = Math.max(1, photoW, photoH);
+    const reqLong = clamp(opts.maxLongSide || longSide, 512, 4096);
+    const lim = Math.max(512, Math.min(maxTexSize, maxRbSize));
+    const outLong = Math.min(reqLong, lim);
+    const sc = outLong / longSide;
+    const outW = Math.max(1, Math.round(photoW * sc));
+    const outH = Math.max(1, Math.round(photoH * sc));
+
+    const rtA = _createFBO(outW, outH);
+    const rtB = _createFBO(outW, outH);
+
+    gl.viewport(0,0,outW,outH);
+    _renderCopy(photoTex, rtA, true);
+    let src = rtA;
+    let dst = rtB;
+
+    const API = window.PhotoPaveAPI;
+    const sx = outW / Math.max(1, photoW);
+    const sy = outH / Math.max(1, photoH);
+
+    for(const zone of (state.zones||[])){
+      if(!zone || !zone.enabled) continue;
+      if(!zone.closed || !zone.contour || zone.contour.length < 3) continue;
+      const url = zone.material?.textureUrl;
+      if(!url) continue;
+      const img = await API.loadImage(url);
+      const tileTex = _getTileTex(url, img);
+
+      const key = [
+        'mexp', outW, outH,
+        zone.id,
+        zone.contour.length,
+        zone.contour.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+        (zone.cutouts||[]).filter(c=>c.closed&&c.polygon&&c.polygon.length>=3).map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';')).join('|')
+      ].join('|');
+      const maskEntry = _getMaskTextures(key, zone, outW, outH, sx, sy);
+
+      // Export geometry must match on-screen render: base quad from contour, camera model applied globally.
+      const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+      const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
+      let planeMetric = {W:1.0, D:1.0};
+      const quad = quadRes && quadRes.quad ? quadRes.quad : null;
+      if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
+      let Hm = null;
+      let invH = null;
+      if(quad){
+        const qn = _normalizeQuad(quad);
+        if(qn){
+          Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+          if(Hm) invH = _invert3x3(Hm);
+        }
+      }
+      if(!invH){ invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1]; }
+
+      // Build camera model consistent with on-screen path (pose locked, perspective->distance, horizon->pitch).
+      let cam3d = null;
+      let cam3dRef = null;
+      try{
+        if(Hm){
+          let cx = 0.5*outW;
+          let cy = 0.5*outH;
+          let fGuess = _estimateFocalFromHomography(Hm, cx, cy, outW, outH);
+          if(!fGuess || !isFinite(fGuess) || fGuess < 2){ fGuess = 0.95 * Math.max(1,outW,outH); }
+
+          // If manual calibration lines are ready, use their intrinsics (scaled to export buffer).
+          const a = (state && state.ai) ? state.ai : null;
+          const c3 = a && a.calib3d;
+          const res = c3 && c3.result;
+          if(c3 && c3.enabled === true && res && res.ok && res.K){
+            const sAvg = (sx + sy) * 0.5;
+            const f0 = (+res.K.f||0) * sAvg;
+            const cx0 = (+res.K.cx||0) * sx;
+            const cy0 = (+res.K.cy||0) * sy;
+            if(isFinite(f0) && f0 > 2) fGuess = f0;
+            if(isFinite(cx0)) cx = cx0;
+            if(isFinite(cy0)) cy = cy0;
+          }
+
+          const params = zone.material?.params || {};
+          const hVal = clamp((params.horizon ?? 0.0), -0.85, 0.85);
+          const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
+          const perspT = (pVal - 0.5) * 2.0;
+          const distK = 0.70;
+          const distScale = clamp(Math.exp(-perspT * distK), 0.45, 2.20);
+          const distScaleRef = 1.0;
+          const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
+          const pitchMax = 0.35;
+          const pitchCur = hVal * pitchMax;
+          if(camBase && camBase.R && camBase.t){
+            const camPoseCur = _applyPitchToCam(camBase, pitchCur);
+            cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cy/fGuess, 0,0,1 ] };
+            cam3dRef = { R: camBase.R, t:[camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cy/fGuess, 0,0,1 ] };
+          }
+        }
+      }catch(_){ cam3d = null; cam3dRef = null; }
+
+      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
+      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx);
+      const tmp = src; src = dst; dst = tmp;
+    }
+
+    const blob = await _readPixelsToBlob(src);
+    _destroyFBO(rtA);
+    _destroyFBO(rtB);
+    return blob;
+  }
+
+  return { init, setPhoto, resize, render, exportPNG, exportPNGBlob, getLimits };
 })();
