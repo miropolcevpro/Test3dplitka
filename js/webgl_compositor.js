@@ -903,21 +903,79 @@ function _decomposeHomographyToRT(H, K){
     const dx = Math.hypot(px.x - p0.x, px.y - p0.y);
     const dy = Math.hypot(py.x - p0.x, py.y - p0.y);
     if(!isFinite(dx) || !isFinite(dy) || dx < 1e-9 || dy < 1e-9) return null;
-    return Math.sqrt(dx*dy);
+    return 0.5*(dx + dy);
   }
 
 
-  function _localAnisoInfo(cam, ax, ay){
-    const p0 = _planePointFromCamPixel(cam, ax, ay);
-    if(!p0.ok) return null;
-    const px = _planePointFromCamPixel(cam, ax+1.0, ay);
-    const py = _planePointFromCamPixel(cam, ax, ay+1.0);
-    if(!px.ok || !py.ok) return null;
-    const dx = Math.hypot(px.x - p0.x, px.y - p0.y);
-    const dy = Math.hypot(py.x - p0.x, py.y - p0.y);
-    if(!isFinite(dx) || !isFinite(dy) || dx < 1e-9 || dy < 1e-9) return null;
-    const ratio = dx / dy;
-    return {dx, dy, ratio};
+  // Horizon safety: keep the rendered plane visible inside the user contour.
+  // When the "horizon" is moved too far, some rays inside the contour can miss the plane (s<=0),
+  // causing empty/unfilled regions near the top of the contour. We clamp the effective horizon
+  // so that representative pixels in the upper part of the contour still intersect the plane.
+  function _computeContourBounds(contour){
+    let xMin=Infinity,xMax=-Infinity,yMin=Infinity,yMax=-Infinity;
+    for(const p of (contour||[])){
+      const x = +p.x, y = +p.y;
+      if(!isFinite(x) || !isFinite(y)) continue;
+      if(x < xMin) xMin = x;
+      if(x > xMax) xMax = x;
+      if(y < yMin) yMin = y;
+      if(y > yMax) yMax = y;
+    }
+    if(!isFinite(xMin) || !isFinite(yMin)) return null;
+    return {xMin,xMax,yMin,yMax};
+  }
+
+  function _horizonKeepsZoneFilled(camBase, hTest, cfg){
+    if(!camBase || !cfg || !cfg.bounds) return true;
+    const {cx,cy,f,w,h,distScale,pitchMax,cyShiftMax,bounds} = cfg;
+    const pitchCur = hTest * pitchMax;
+    const cyCur = clamp(cy + (hTest * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
+    const camPose = _applyPitchToCam(camBase, pitchCur);
+    if(!camPose || !camPose.R || !camPose.t) return false;
+
+    const cam = {
+      R: camPose.R,
+      t: [camPose.t[0]*distScale, camPose.t[1]*distScale, camPose.t[2]*distScale],
+      Kinv: [
+        1/f, 0, -cx/f,
+        0, 1/f, -cyCur/f,
+        0, 0, 1
+      ]
+    };
+
+    // Sample representative pixels near the upper part of the contour.
+    // If any of them fail to intersect the plane, the user would see an "empty" area.
+    const yTop = clamp(bounds.yMin + 1.0, 0.0, (h||1)-1.0);
+    const yMid = clamp(bounds.yMin + (bounds.yMax - bounds.yMin)*0.12, 0.0, (h||1)-1.0);
+    const xL = clamp(bounds.xMin + 1.0, 0.0, (w||1)-1.0);
+    const xM = clamp((bounds.xMin + bounds.xMax)*0.5, 0.0, (w||1)-1.0);
+    const xR = clamp(bounds.xMax - 1.0, 0.0, (w||1)-1.0);
+
+    const pts = [[xL,yTop],[xM,yTop],[xR,yTop],[xM,yMid]];
+    for(const pt of pts){
+      const pp = _planePointFromCamPixel(cam, pt[0], pt[1]);
+      if(!pp.ok) return false;
+    }
+    return true;
+  }
+
+  function _clampHorizonToFillContour(camBase, hVal, cfg){
+    if(!camBase || !cfg || !cfg.bounds) return hVal;
+    const sign = (hVal >= 0) ? 1 : -1;
+    const target = Math.min(1.0, Math.abs(hVal));
+    if(target < 1e-6) return 0.0;
+
+    // If already safe, keep it.
+    if(_horizonKeepsZoneFilled(camBase, sign*target, cfg)) return sign*target;
+
+    // Binary search the maximum safe magnitude (monotonic in practice).
+    let lo = 0.0, hi = target;
+    for(let it=0; it<20; it++){
+      const mid = 0.5*(lo + hi);
+      if(_horizonKeepsZoneFilled(camBase, sign*mid, cfg)) lo = mid;
+      else hi = mid;
+    }
+    return sign * lo;
   }
 
 
@@ -2027,7 +2085,11 @@ try{
 
     const params = zone.material?.params || {};
     // Effective values computed above (may be AI-derived), fall back to user params.
-    const hVal = clamp((typeof effH === 'number' ? effH : (params.horizon ?? 0.0)), -0.85, 0.85);
+    // We intentionally allow a wider UI range for horizon, but we apply it in a safe way:
+    // - Pitch is kept within a conservative bound (prevents near-field "rubber" / squash).
+    // - Additional "horizon movement" is expressed as principal point shift (cy), which
+    //   changes the horizon position without introducing strong foreshortening.
+    const hVal = clamp((typeof effH === 'number' ? effH : (params.horizon ?? 0.0)), -1.0, 1.0);
     const pVal = clamp((typeof effP === 'number' ? effP : (params.perspective ?? 0.75)), 0.0, 1.0);
 
     // Perspective slider -> camera distance scaling (NOT focal).
@@ -2036,101 +2098,7 @@ try{
     // We instead vary camera distance while keeping focal near the estimated baseline.
     const perspT = (pVal - 0.5) * 2.0; // [-1..1]
     const distK = 0.70;
-    const distScaleBase = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
-
-    // Jacobian-based Horizon↔Perspective coupling (Near Metric Guard):
-    // When horizon tilt increases, near-field projection can become locally anisotropic (users see "rubber/squash",
-    // e.g. a circular pattern becoming a rectangle near the bottom). To preserve near geometry without shrinking
-    // horizon range, we auto-increase camera distance (uniformly) to keep the local anisotropy around the near anchor
-    // within a safe corridor. This does NOT warp UV; it only adjusts camera distance.
-    let distScale = distScaleBase;
-    try{
-      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      if(anchorPx){
-        const camBaseTmp = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
-        if(!camBaseTmp || !camBaseTmp.R || !camBaseTmp.t) {
-          // no stable camera
-        } else {
-          const pitchMax = 0.35; // keep consistent with pitch below
-          const pitchTest = hVal * pitchMax;
-          const basePose = _applyPitchToCam(camBaseTmp, pitchTest);
-
-        const buildCamAt = (ds)=>({
-          R: basePose.R,
-          t: [basePose.t[0]*ds, basePose.t[1]*ds, basePose.t[2]*ds],
-          Kinv: [
-            1/fGuess, 0, -cx/fGuess,
-            0, 1/fGuess, -cy/fGuess,
-            0, 0, 1
-          ]
-        });
-
-        const an0 = _localAnisoInfo(buildCamAt(distScaleBase), anchorPx.x, anchorPx.y);
-        if(an0 && isFinite(an0.ratio)){
-          const ratio0 = an0.ratio;
-          const ratioAbs = (r)=> (r>1? r : (1/r));
-
-          // Target: keep local ratio close to 1.0 (isotropy) in near region.
-          // Corridor: allow mild anisotropy; beyond that users perceive "rubber" near the bottom.
-          const corridor = 1.10;
-          if(ratioAbs(ratio0) > corridor){
-            // Search an increased distance multiplier m>=1 that minimizes |log(ratio)| and brings it into corridor.
-            let bestM = 1.0;
-            let bestScore = Math.abs(Math.log(ratioAbs(ratio0)));
-
-            const evalM = (m)=>{
-              const ds = clamp(distScaleBase*m, 0.35, 4.00);
-              const an = _localAnisoInfo(buildCamAt(ds), anchorPx.x, anchorPx.y);
-              if(!an || !isFinite(an.ratio)) return null;
-              const ra = ratioAbs(an.ratio);
-              return {m, ds, ra, score: Math.abs(Math.log(ra))};
-            };
-
-            // Coarse scan
-            const candidates = [1.0, 1.15, 1.35, 1.65, 2.0, 2.5, 3.0, 3.5, 4.0];
-            let best = null;
-            for(const m of candidates){
-              const r = evalM(m);
-              if(!r) continue;
-              if(!best || r.score < best.score){
-                best = r;
-              }
-            }
-            if(best){
-              bestM = best.m;
-              bestScore = best.score;
-
-              // Refine around the best candidate with a small local search (log-space).
-              let lo = Math.max(1.0, bestM/1.35);
-              let hi = Math.min(4.0, bestM*1.35);
-              for(let it=0; it<8; it++){
-                const m1 = Math.exp(Math.log(lo) * (2/3) + Math.log(hi) * (1/3));
-                const m2 = Math.exp(Math.log(lo) * (1/3) + Math.log(hi) * (2/3));
-                const r1 = evalM(m1);
-                const r2 = evalM(m2);
-                if(!r1 || !r2) break;
-                if(r1.score < r2.score){
-                  hi = m2;
-                  bestM = m1;
-                  bestScore = r1.score;
-                }else{
-                  lo = m1;
-                  bestM = m2;
-                  bestScore = r2.score;
-                }
-              }
-
-              // Apply only if it meaningfully improves or brings into corridor.
-              const finalTry = evalM(bestM);
-              if(finalTry && (finalTry.ra <= corridor || finalTry.score + 1e-6 < Math.abs(Math.log(ratioAbs(ratio0))))){
-                distScale = finalTry.ds;
-              }
-            }
-          }
-        }
-        }
-      }
-    }catch(_){ /*no-op*/ }
+    const distScale = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
 
     // Keep focal stable to preserve tile geometry; perspective comes from distance change + anchor-scale lock.
     const fCur = fGuess;
@@ -2144,9 +2112,27 @@ try{
     // Re-solving pose for each f introduces subtle non-rigid distortions ("rubber" feel).
     const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
 
-    // Horizon slider -> camera pitch (tilt). Kept intentionally conservative.
+    // Horizon slider -> camera pitch (tilt) + principal point shift.
+    // Pitch is kept conservative to avoid near-field shape distortion.
     const pitchMax = 0.35; // ~20 degrees
-    const pitchCur = hVal * pitchMax;
+    const cyShiftMax = 0.42 * (h || 1);
+
+    // Keep the plane visible inside the contour: if the horizon is moved too far,
+    // rays near the top of the contour can miss the plane (s<=0) and the user sees an empty area.
+    const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(w||1)-1, yMin:0, yMax:(h||1)-1};
+    const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+      cx, cy, f: fCur, w, h,
+      distScale,
+      pitchMax,
+      cyShiftMax,
+      bounds
+    });
+
+    const pitchCur = hSafe * pitchMax;
+
+    // Principal point shift: extends the effective horizon adjustment range
+    // without forcing extreme camera tilts.
+    const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
 
     if(camBase && camBase.R && camBase.t){
       // Current camera: same pose (with optional pitch), different focal (fCur).
@@ -2156,18 +2142,20 @@ try{
         t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
         Kinv: [
           1/fCur, 0, -cx/fCur,
-          0, 1/fCur, -cy/fCur,
+          0, 1/fCur, -cyCur/fCur,
           0, 0, 1
         ]
       };
 
       // Reference camera for anchor-scale lock: baseline UX (h=0, p=0.75).
+      // Reference camera for anchor-scale lock uses the same pose (incl. pitch) and cy shift,
+      // so horizon adjustments don't fight the scale lock.
       cam3dRef = {
-        R: camBase.R,
-        t: [camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
+        R: camPoseCur.R,
+        t: [camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
         Kinv: [
           1/fRef, 0, -cx/fRef,
-          0, 1/fRef, -cy/fRef,
+          0, 1/fRef, -cyCur/fRef,
           0, 0, 1
         ]
       };
@@ -2387,54 +2375,32 @@ if(!invH){
           }
 
           const params = zone.material?.params || {};
-          const hVal = clamp((params.horizon ?? 0.0), -0.85, 0.85);
+          // Same horizon handling as on-screen: allow wide UI range but apply safely
+          // via conservative pitch + principal point shift (cy).
+          const hVal = clamp((params.horizon ?? 0.0), -1.0, 1.0);
           const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
 
           const perspT = (pVal - 0.5) * 2.0;
           const distK = 0.70;
-          const distScaleBase = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
-          let distScale = distScaleBase;
+          const distScale = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
           const distScaleRef = 1.0;
 
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
           const pitchMax = 0.35;
-          const pitchCur = hVal * pitchMax;
+          const cyShiftMax = 0.42 * (outH || 1);
 
-          // Near Metric Guard (export): auto-increase distance under strong horizon tilt to prevent near "rubber/squash".
-          try{
-            const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-            if(anchorPx && camBase && camBase.R && camBase.t){
-              const basePose = _applyPitchToCam(camBase, pitchCur);
-              const buildCamAt = (ds)=>({
-                R: basePose.R,
-                t: [basePose.t[0]*ds, basePose.t[1]*ds, basePose.t[2]*ds],
-                Kinv: [
-                  1/fGuess, 0, -cx/fGuess,
-                  0, 1/fGuess, -cy/fGuess,
-                  0, 0, 1
-                ]
-              });
-              const ratioAbs = (r)=> (r>1? r : (1/r));
-              const corridor = 1.10;
-              const an0 = _localAnisoInfo(buildCamAt(distScaleBase), anchorPx.x, anchorPx.y);
-              if(an0 && isFinite(an0.ratio) && ratioAbs(an0.ratio) > corridor){
-                let best = {m:1.0, ds:distScaleBase, score: Math.abs(Math.log(ratioAbs(an0.ratio)))};
-                const evalM = (m)=>{
-                  const ds = clamp(distScaleBase*m, 0.35, 4.00);
-                  const an = _localAnisoInfo(buildCamAt(ds), anchorPx.x, anchorPx.y);
-                  if(!an || !isFinite(an.ratio)) return null;
-                  const ra = ratioAbs(an.ratio);
-                  return {m, ds, ra, score: Math.abs(Math.log(ra))};
-                };
-                const candidates = [1.0,1.15,1.35,1.65,2.0,2.5,3.0,3.5,4.0];
-                for(const m of candidates){
-                  const r = evalM(m);
-                  if(r && r.score < best.score) best = r;
-                }
-                distScale = best.ds;
-              }
-            }
-          }catch(_){ /*no-op*/ }
+          // Keep the plane visible inside the contour at export resolution.
+          const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
+          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+            cx, cy, f: fGuess, w: outW, h: outH,
+            distScale,
+            pitchMax,
+            cyShiftMax,
+            bounds
+          });
+
+          const pitchCur = hSafe * pitchMax;
+          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
 
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchCur);
@@ -2443,16 +2409,17 @@ if(!invH){
               t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
-                0, 1/fGuess, -cy/fGuess,
+                0, 1/fGuess, -cyCur/fGuess,
                 0, 0, 1
               ]
             };
+            // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
             cam3dRef = {
-              R: camBase.R,
-              t: [camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
+              R: camPoseCur.R,
+              t: [camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
               Kinv: [
                 1/fGuess, 0, -cx/fGuess,
-                0, 1/fGuess, -cy/fGuess,
+                0, 1/fGuess, -cyCur/fGuess,
                 0, 0, 1
               ]
             };
@@ -2563,59 +2530,37 @@ if(!invH){
           }
 
           const params = zone.material?.params || {};
-          const hVal = clamp((params.horizon ?? 0.0), -0.85, 0.85);
+          // Same horizon handling as on-screen: allow a wide UI range, but apply it safely
+          // via conservative pitch + principal point shift (cy).
+          const hVal = clamp((params.horizon ?? 0.0), -1.0, 1.0);
           const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
           const perspT = (pVal - 0.5) * 2.0;
           const distK = 0.70;
-          const distScaleBase = clamp(Math.exp(-perspT * distK), 0.45, 2.20);
-          let distScale = distScaleBase;
+          const distScale = clamp(Math.exp(-perspT * distK), 0.45, 2.20);
           const distScaleRef = 1.0;
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
           const pitchMax = 0.35;
-          const pitchCur = hVal * pitchMax;
+          const cyShiftMax = 0.42 * (outH || 1);
 
-          // Near Metric Guard (export): auto-increase distance under strong horizon tilt to prevent near "rubber/squash".
-          try{
-            const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-            if(anchorPx && camBase && camBase.R && camBase.t){
-              const basePose = _applyPitchToCam(camBase, pitchCur);
-              const buildCamAt = (ds)=>({
-                R: basePose.R,
-                t: [basePose.t[0]*ds, basePose.t[1]*ds, basePose.t[2]*ds],
-                Kinv: [
-                  1/fGuess, 0, -cx/fGuess,
-                  0, 1/fGuess, -cy/fGuess,
-                  0, 0, 1
-                ]
-              });
-              const ratioAbs = (r)=> (r>1? r : (1/r));
-              const corridor = 1.10;
-              const an0 = _localAnisoInfo(buildCamAt(distScaleBase), anchorPx.x, anchorPx.y);
-              if(an0 && isFinite(an0.ratio) && ratioAbs(an0.ratio) > corridor){
-                let best = {m:1.0, ds:distScaleBase, score: Math.abs(Math.log(ratioAbs(an0.ratio)))};
-                const evalM = (m)=>{
-                  const ds = clamp(distScaleBase*m, 0.35, 4.00);
-                  const an = _localAnisoInfo(buildCamAt(ds), anchorPx.x, anchorPx.y);
-                  if(!an || !isFinite(an.ratio)) return null;
-                  const ra = ratioAbs(an.ratio);
-                  return {m, ds, ra, score: Math.abs(Math.log(ra))};
-                };
-                const candidates = [1.0,1.15,1.35,1.65,2.0,2.5,3.0,3.5,4.0];
-                for(const m of candidates){
-                  const r = evalM(m);
-                  if(r && r.score < best.score) best = r;
-                }
-                distScale = best.ds;
-              }
-            }
-          }catch(_){ /*no-op*/ }
+          // Keep the plane visible inside the contour at export resolution.
+          const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
+          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+            cx, cy, f: fGuess, w: outW, h: outH,
+            distScale,
+            pitchMax,
+            cyShiftMax,
+            bounds
+          });
 
+          const pitchCur = hSafe * pitchMax;
+          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchCur);
             cam3d = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
-              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cy/fGuess, 0,0,1 ] };
-            cam3dRef = { R: camBase.R, t:[camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
-              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cy/fGuess, 0,0,1 ] };
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
+            // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
+            cam3dRef = { R: camPoseCur.R, t:[camPoseCur.t[0]*distScaleRef, camPoseCur.t[1]*distScaleRef, camPoseCur.t[2]*distScaleRef],
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
           }
         }
       }catch(_){ cam3d = null; cam3dRef = null; }
