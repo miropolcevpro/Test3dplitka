@@ -729,7 +729,7 @@ async function handlePhotoFile(file){
         const distDes = isFinite(p.distDes) ? p.distDes : (isFinite(p.distScale) ? p.distScale : NaN);
         const distEff = isFinite(p.distEff) ? p.distEff : distDes;
 
-        const flatK = (isFinite(g.flattenK) ? g.flattenK : NaN);
+        const flatK = (isFinite(g.flattenKEff) ? g.flattenKEff : (isFinite(g.flattenK) ? g.flattenK : NaN));
         const meta = `pW:${fmt(h.pitchW)} p°:${fmt1(pitchEffDeg)} d:${fmt(distEff)} st:${g.stage||'—'} k:${fmt(flatK)}`;
 
         ctx.fillText("Near metrics (tile basis)", 6, 4);

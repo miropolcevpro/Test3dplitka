@@ -347,6 +347,50 @@ window.PhotoPaveCompositor = (function(){
   }
 
 
+
+// C1 (polish): smooth guard-controlled parameters to avoid visible "snaps" when the
+// near-quality guard switches stage (dist/flatten) while the user adjusts sliders.
+// This is camera-only; it does not affect UV/tiling. Smoothing is applied to distEff
+// and flattenK only (pitch remains immediate) to preserve the Horizon feel.
+const _guardSmoothState = new Map(); // zoneId -> {dist, k, t}
+function _smoothGuard(zoneId, distTarget, kTarget){
+  if(!zoneId) return { distEff: distTarget, kEff: kTarget };
+
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const st = _guardSmoothState.get(zoneId);
+
+  // Time-constant smoothing (~120ms) + per-frame delta clamp to remove micro-jitters.
+  const tauMs = 120.0;
+  const maxDistDelta = 0.35; // per frame (in dist units)
+  const maxKDelta = 0.06;    // per frame (unitless)
+
+  if(!st){
+    const init = { dist: distTarget, k: kTarget, t: now };
+    _guardSmoothState.set(zoneId, init);
+    return { distEff: distTarget, kEff: kTarget };
+  }
+
+  const dt = Math.max(0.0, Math.min(100.0, now - st.t)); // cap dt to avoid big jumps
+  const a = 1.0 - Math.exp(-dt / tauMs);
+
+  // Exponential smoothing
+  let dist = st.dist + (distTarget - st.dist) * a;
+  let k = st.k + (kTarget - st.k) * a;
+
+  // Clamp per-frame changes (safety against jitter)
+  const dd = dist - st.dist;
+  if(Math.abs(dd) > maxDistDelta) dist = st.dist + Math.sign(dd) * maxDistDelta;
+
+  const dk = k - st.k;
+  if(Math.abs(dk) > maxKDelta) k = st.k + Math.sign(dk) * maxKDelta;
+
+  st.dist = dist;
+  st.k = k;
+  st.t = now;
+
+  return { distEff: dist, kEff: k };
+}
+
   let canvas = null;
   let gl = null;
   let extAniso = null;
@@ -2557,12 +2601,28 @@ try{
           rhoMax: 2.00,
           shearMax: 32.0
         });
-        if(guardInfo){
-          pitchEff = guardInfo.pitchEff;
-          distEff = guardInfo.distEff;
-        }
-      }
-    }catch(_){ guardInfo = null; }
+        
+    if(guardInfo){
+      pitchEff = guardInfo.pitchEff;
+      distEff = guardInfo.distEff;
+    }
+  }
+}
+}catch(_){ guardInfo = null; }
+
+// C1: smooth distEff/flattenK per-zone to avoid snapping when guard switches stage.
+// pitch remains immediate (handled above) to preserve Horizon response.
+try{
+  const zid = zone && zone.id ? zone.id : null;
+  const kTarget = (guardInfo && isFinite(guardInfo.flattenK)) ? Math.max(0.10, Math.min(1.0, guardInfo.flattenK)) : 1.0;
+  const sm = _smoothGuard(zid, distEff, kTarget);
+  distEff = sm.distEff;
+  if(guardInfo){
+    guardInfo.flattenKEff = sm.kEff;
+  }else{
+    guardInfo = { stage: 'none', flattenKEff: sm.kEff };
+  }
+}catch(_){/*noop*/}
 
     if(camBase && camBase.R && camBase.t){
       // Current camera: same pose (with optional pitch), different focal (fCur).
@@ -2571,8 +2631,8 @@ try{
       // of r1/r2 and re-orthonormalize. This reduces excessive near-field squash
       // caused by overly steep base plane orientation.
       let Rcur = camPoseCur.R;
-      if(guardInfo && isFinite(guardInfo.flattenK)){
-        const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenK));
+      if(guardInfo && isFinite(guardInfo.flattenKEff) && guardInfo.flattenKEff < 0.999){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenKEff));
         const r1 = [Rcur[0], Rcur[3], Rcur[6]];
         const r2 = [Rcur[1], Rcur[4], Rcur[7]];
         // scale z
@@ -2913,12 +2973,25 @@ if(!invH){
             }
           }catch(_){/*noop*/}
 
+// C1: ensure effective flattenK is defined in export/secondary passes too.
+try{
+  const zid = zone && zone.id ? zone.id : null;
+  const kTarget = (guardInfo && isFinite(guardInfo.flattenK)) ? Math.max(0.10, Math.min(1.0, guardInfo.flattenK)) : 1.0;
+  const sm = _smoothGuard(zid, distEff, kTarget);
+  distEff = sm.distEff;
+  if(guardInfo){
+    guardInfo.flattenKEff = sm.kEff;
+  }else{
+    guardInfo = { stage: 'none', flattenKEff: sm.kEff };
+  }
+}catch(_){/*noop*/}
+
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchEff);
             // Apply optional near-guard flattening (camera-only).
             let Rcur = camPoseCur.R;
-            if(guardInfo && isFinite(guardInfo.flattenK)){
-              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenK));
+            if(guardInfo && isFinite(guardInfo.flattenKEff) && guardInfo.flattenKEff < 0.999){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenKEff));
               const r1 = [Rcur[0], Rcur[3], Rcur[6]];
               const r2 = [Rcur[1], Rcur[4], Rcur[7]];
               const r1k = [r1[0], r1[1], r1[2]*k];
@@ -3120,8 +3193,8 @@ if(!invH){
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchEff);
             let Rcur = camPoseCur.R;
-            if(guardInfo && isFinite(guardInfo.flattenK)){
-              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenK));
+            if(guardInfo && isFinite(guardInfo.flattenKEff) && guardInfo.flattenKEff < 0.999){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenKEff));
               const r1 = [Rcur[0], Rcur[3], Rcur[6]];
               const r2 = [Rcur[1], Rcur[4], Rcur[7]];
               const r1k = [r1[0], r1[1], r1[2]*k];
