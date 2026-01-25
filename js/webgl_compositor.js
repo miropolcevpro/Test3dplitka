@@ -1355,7 +1355,10 @@ function _decomposeHomographyToRT(H, K){
 
     const cam = {
       R: camPose.R,
-      t: [camPose.t[0]*distScale, camPose.t[1]*distScale, camPose.t[2]*distScale],
+      // Distance affects camera height (tz) only.
+      // This matches the main render pipeline (near-guard) and improves stability
+      // of the "keep-filled" boundary test.
+      t: [camPose.t[0], camPose.t[1], camPose.t[2]*distScale],
       Kinv: [
         1/f, 0, -cx/f,
         0, 1/f, -cyCur/f,
@@ -1427,7 +1430,25 @@ function _clampHorizonToFillContour(camBase, hVal, cfg){
       if(_horizonKeepsZoneFilled(camBase, sign*mid, cfg)) lo = mid;
       else hi = mid;
     }
-    return sign * lo;
+
+    // Soft-clamp (C1 polish): avoid a visible "twitch" when the fill-constraint
+    // engages/disengages near the boundary by using a smooth-min between the user
+    // request (target) and the hard safety bound (lo).
+    // Guarantees: result <= lo (so still safe), continuous near the boundary.
+    const kSoft = (cfg && isFinite(cfg.hSoftK)) ? Math.max(2.0, cfg.hSoftK) : 28.0;
+    // smoothMin(a,b) = -ln(exp(-k a) + exp(-k b))/k  (approx min)
+    const aMag = target;
+    const bMag = lo;
+    let sm = bMag;
+    try{
+      const ea = Math.exp(-kSoft * aMag);
+      const eb = Math.exp(-kSoft * bMag);
+      sm = -Math.log(ea + eb) / kSoft;
+    }catch(_){ sm = bMag; }
+    // Ensure within [0, lo]
+    if(!isFinite(sm)) sm = bMag;
+    sm = Math.max(0.0, Math.min(bMag, sm));
+    return sign * sm;
   }
 
 
@@ -2563,6 +2584,8 @@ try{
       pitchMax,
       cyShiftMax,
       hPitchStart,
+      // Soft boundary to avoid snapping when the fill-constraint engages.
+      hSoftK: 28.0,
       bounds
     });
 
