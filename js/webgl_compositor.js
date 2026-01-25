@@ -973,7 +973,12 @@ function _decomposeHomographyToRT(H, K){
   function _horizonKeepsZoneFilled(camBase, hTest, cfg){
     if(!camBase || !cfg || !cfg.bounds) return true;
     const {cx,cy,f,w,h,distScale,pitchMax,cyShiftMax,bounds} = cfg;
-    const pitchCur = hTest * pitchMax;
+    const hPitchStart = (cfg && typeof cfg.hPitchStart === 'number') ? cfg.hPitchStart : 0.82;
+    const a = Math.min(1.0, Math.abs(hTest||0));
+    const sgn = (hTest >= 0) ? 1 : -1;
+    // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+    const pitchW = smoothstep(hPitchStart, 1.0, a);
+    const pitchCur = sgn * pitchMax * pitchW;
     const cyCur = clamp(cy + (hTest * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
     const camPose = _applyPitchToCam(camBase, pitchCur);
     if(!camPose || !camPose.R || !camPose.t) return false;
@@ -2176,6 +2181,9 @@ try{
     const pitchMax = 0.35; // ~20 degrees
     const cyShiftMax = 0.42 * (h || 1);
 
+    // B1: Pitch only starts contributing near the end of the Horizon slider travel.
+    const hPitchStart = 0.82;
+
     // Keep the plane visible inside the contour: if the horizon is moved too far,
     // rays near the top of the contour can miss the plane (s<=0) and the user sees an empty area.
     const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(w||1)-1, yMin:0, yMax:(h||1)-1};
@@ -2184,10 +2192,15 @@ try{
       distScale,
       pitchMax,
       cyShiftMax,
+      hPitchStart,
       bounds
     });
 
-    const pitchCur = hSafe * pitchMax;
+    const aH = Math.min(1.0, Math.abs(hSafe||0));
+
+    // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+    const pitchW = smoothstep(hPitchStart, 1.0, aH);
+    const pitchCur = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
 
     // Principal point shift: extends the effective horizon adjustment range
     // without forcing extreme camera tilts.
@@ -2441,6 +2454,9 @@ if(!invH){
           const pitchMax = 0.35;
           const cyShiftMax = 0.42 * (outH || 1);
 
+          // B1: Pitch only starts contributing near the end of the Horizon slider travel.
+          const hPitchStart = 0.82;
+
           // Keep the plane visible inside the contour at export resolution.
           const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
           const hSafe = _clampHorizonToFillContour(camBase, hVal, {
@@ -2448,10 +2464,15 @@ if(!invH){
             distScale,
             pitchMax,
             cyShiftMax,
+            hPitchStart,
             bounds
           });
 
-          const pitchCur = hSafe * pitchMax;
+          const aH = Math.min(1.0, Math.abs(hSafe||0));
+
+          // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+          const pitchW = smoothstep(hPitchStart, 1.0, aH);
+          const pitchCur = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
           const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
 
           if(camBase && camBase.R && camBase.t){
@@ -2580,6 +2601,9 @@ if(!invH){
           const pitchMax = 0.35;
           const cyShiftMax = 0.42 * (outH || 1);
 
+          // B1: Pitch only starts contributing near the end of the Horizon slider travel.
+          const hPitchStart = 0.82;
+
           // Keep the plane visible inside the contour at export resolution.
           const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
           const hSafe = _clampHorizonToFillContour(camBase, hVal, {
@@ -2587,10 +2611,15 @@ if(!invH){
             distScale,
             pitchMax,
             cyShiftMax,
+            hPitchStart,
             bounds
           });
 
-          const pitchCur = hSafe * pitchMax;
+          const aH = Math.min(1.0, Math.abs(hSafe||0));
+
+          // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+          const pitchW = smoothstep(hPitchStart, 1.0, aH);
+          const pitchCur = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
           const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
           if(camBase && camBase.R && camBase.t){
             const camPoseCur = _applyPitchToCam(camBase, pitchCur);
