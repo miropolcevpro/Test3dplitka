@@ -697,10 +697,28 @@ function polyPath(points){
   }
 
   function drawPoint(imgPt,idx,showIdx=false,color="rgba(0,229,255,1)"){
-    const p=imgToCanvasPt(imgPt),r=6*dpr;
-    ctx.beginPath();ctx.fillStyle=color;ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill();
-    ctx.strokeStyle="rgba(0,0,0,0.5)";ctx.lineWidth=2*dpr;ctx.stroke();
-    if(showIdx){ctx.fillStyle="rgba(0,0,0,0.65)";ctx.font=`${10*dpr}px sans-serif`;ctx.fillText(String(idx+1),p.x+8*dpr,p.y-8*dpr);}
+    // Visual size is intentionally small for precision work. Interaction hit-testing
+    // is controlled separately via HIT_RADIUS_CSS / SNAP_CLOSE_CSS.
+    const p=imgToCanvasPt(imgPt);
+    const r=3.2*dpr;
+    ctx.save();
+    ctx.beginPath();
+    ctx.fillStyle=color;
+    ctx.arc(p.x,p.y,r,0,Math.PI*2);
+    ctx.fill();
+    // Thin high-contrast outline to keep points readable on any photo.
+    ctx.lineWidth=1.25*dpr;
+    ctx.strokeStyle="rgba(0,0,0,0.70)";
+    ctx.stroke();
+    ctx.lineWidth=0.75*dpr;
+    ctx.strokeStyle="rgba(255,255,255,0.55)";
+    ctx.stroke();
+    if(showIdx){
+      ctx.fillStyle="rgba(0,0,0,0.70)";
+      ctx.font=`${10*dpr}px sans-serif`;
+      ctx.fillText(String(idx+1),p.x+6*dpr,p.y-6*dpr);
+    }
+    ctx.restore();
   }
 
   function drawPlaneOverlay(){
@@ -727,7 +745,10 @@ function polyPath(points){
       if(!zone.contour||zone.contour.length<2)continue;
       const isActive=zone.id===state.ui.activeZoneId;
       ctx.strokeStyle=isActive?"rgba(0,229,255,0.95)":"rgba(255,255,255,0.35)";
-      ctx.lineWidth=(isActive?3.8:2.2)*dpr;
+      // Make contour lines thinner for precision editing while keeping them readable.
+      ctx.lineWidth=(isActive?2.0:1.2)*dpr;
+      ctx.lineJoin='round';
+      ctx.lineCap='round';
       ctx.beginPath();
       const p0=imgToCanvasPt(zone.contour[0]);ctx.moveTo(p0.x,p0.y);
       for(let i=1;i<zone.contour.length;i++){const p=imgToCanvasPt(zone.contour[i]);ctx.lineTo(p.x,p.y);} 
@@ -738,7 +759,9 @@ function polyPath(points){
         if(!c.polygon||c.polygon.length<2)continue;
         const isCut=isActive&&(c.id===state.ui.activeCutoutId);
         ctx.strokeStyle=isCut?"rgba(255,77,79,0.95)":"rgba(255,77,79,0.45)";
-        ctx.lineWidth=(isCut?3.2:2.0)*dpr;
+        ctx.lineWidth=(isCut?1.8:1.1)*dpr;
+        ctx.lineJoin='round';
+        ctx.lineCap='round';
         ctx.beginPath();
         const q0=imgToCanvasPt(c.polygon[0]);ctx.moveTo(q0.x,q0.y);
         for(let i=1;i<c.polygon.length;i++){const q=imgToCanvasPt(c.polygon[i]);ctx.lineTo(q.x,q.y);} 

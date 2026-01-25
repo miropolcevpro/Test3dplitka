@@ -316,11 +316,37 @@ window.PhotoPaveCompositor = (function(){
     float m = texture(uMask, uvSrc).r;
     float mb = texture(uMaskBlur, uvSrc).r;
 
-    // Feathered alpha from blurred mask (edge softness)
-    float alphaEdge = clamp(mb, 0.0, 1.0);
-    // Slightly tighten edge to avoid bleeding
-    alphaEdge = smoothstep(0.18, 0.82, alphaEdge);
-    alphaEdge = mix(m, alphaEdge, clamp(uFeather, 0.0, 1.0));
+    // HARD CLIP CONTRACT:
+    // Never render the tile outside of the user-defined contour.
+    // We use the non-blurred mask as the authoritative inside/outside test.
+    // This prevents any bleed / rounding caused by blur sampling or linear filtering.
+    if(m < 0.5){
+      outColor = prev;
+      return;
+    }
+
+    // Edge alpha:
+    // - HARD CLIP (m) prevents any drawing outside contour.
+    // - For a high-quality edge without bleed, we apply *inward-only* anti-aliasing:
+    //   outside pixels stay untouched (handled above), while inside pixels near the boundary
+    //   fade from 0..1 based on the blurred mask value around the 0.5 isocontour.
+    //
+    // mb is a softened (blurred) version of the mask in [0..1].
+    float mb01 = clamp(mb, 0.0, 1.0);
+
+    // Inward-only AA (default): 0 at boundary (mb~0.5), 1 deeper inside.
+    // Use a derivative-based width, but keep a small minimum so the edge is still smooth
+    // even on high-DPI displays.
+    float aaW = max(0.02, fwidth(mb01) * 2.0);
+    float alphaAA = smoothstep(0.5, 0.5 + aaW, mb01);
+
+    // Optional legacy feather (if ever enabled): softer edge based on wider mb range.
+    float alphaFeather = smoothstep(0.18, 0.82, mb01);
+
+    // uFeather blends between crisp inward-AA (0) and soft feather (1).
+    float alphaEdge = mix(alphaAA, alphaFeather, clamp(uFeather, 0.0, 1.0));
+    // Bound strictly by hard mask (already ensured by early return, but keep explicit).
+    alphaEdge = min(alphaEdge, m);
 
     float op = clamp(uOpacity, 0.0, 1.0);
     float alpha = alphaEdge * op;
@@ -627,12 +653,14 @@ window.PhotoPaveCompositor = (function(){
     try{ _blurCtx.filter = 'none'; }catch(_){ }
   }
 
-  function _uploadMaskTextureFromCanvas(srcCanvas, existingTex){
+  function _uploadMaskTextureFromCanvas(srcCanvas, existingTex, opts={}){
     let tex = existingTex;
     if(!tex){ tex = gl.createTexture(); }
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    const minF = opts.minFilter || gl.LINEAR;
+    const magF = opts.magFilter || gl.LINEAR;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minF);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magF);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     try{
@@ -661,8 +689,10 @@ window.PhotoPaveCompositor = (function(){
     }
 
     _buildMaskCanvases(zone, w, h, scaleX, scaleY);
-    const maskTex = _uploadMaskTextureFromCanvas(_maskCanvas, null);
-    const blurTex = _uploadMaskTextureFromCanvas(_blurCanvas, null);
+    // IMPORTANT: the hard mask must not be linearly filtered, otherwise it can leak
+    // outside the contour by interpolation. Use NEAREST for strict clipping.
+    const maskTex = _uploadMaskTextureFromCanvas(_maskCanvas, null, {minFilter:gl.NEAREST, magFilter:gl.NEAREST});
+    const blurTex = _uploadMaskTextureFromCanvas(_blurCanvas, null, {minFilter:gl.LINEAR, magFilter:gl.LINEAR});
     const entry = {maskTex, blurTex, w, h, ts: now};
     maskCache.set(key, entry);
     // LRU cap
@@ -1676,8 +1706,10 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uOpacity'), clamp(params.opacity ?? 1.0, 0, 1));
     gl.uniform1i(gl.getUniformLocation(progZone,'uBlendMode'), (opaqueFill ? 0 : _blendModeId(params.blendMode)));
 
-    // Quality defaults tuned for "pro" look without user knobs
-    gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 1.0);
+    // Precision contract: do not soften the clip edge by default.
+    // Soft feathering makes the border look "rounded" and can mask fine details.
+    // AO still uses the blurred mask, but the hard mask strictly bounds visibility.
+    gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 0.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
