@@ -765,18 +765,22 @@ function _decomposeHomographyToRT(H, K){
   const n2 = Math.hypot(b2[0],b2[1],b2[2]);
   if(!isFinite(n1) || !isFinite(n2) || n1 < 1e-9 || n2 < 1e-9) return null;
 
-  const s = 2 / (n1 + n2); // scale factor (average normalization)
-  let r1 = [b1[0]*s, b1[1]*s, b1[2]*s];
-  let r2 = [b2[0]*s, b2[1]*s, b2[2]*s];
+  // Homography decomposition scale: use average column norm for translation,
+// but keep r1/r2 unit-length before Gram-Schmidt (avoids implicit shear).
+  const s = 2 / (n1 + n2); // lambda = 1 / ((n1+n2)/2)
 
-  // Orthonormalize r2 against r1 (Gram-Schmidt)
+  // Start from individually-normalized directions
+  let r1 = [b1[0]/n1, b1[1]/n1, b1[2]/n1];
+  let r2 = [b2[0]/n2, b2[1]/n2, b2[2]/n2];
+
+  // Orthonormalize r2 against r1 (Gram-Schmidt), with r1 assumed unit
   const d12 = r1[0]*r2[0] + r1[1]*r2[1] + r1[2]*r2[2];
   r2 = [r2[0]-d12*r1[0], r2[1]-d12*r1[1], r2[2]-d12*r1[2]];
   const nr2 = Math.hypot(r2[0],r2[1],r2[2]);
   if(!isFinite(nr2) || nr2 < 1e-9) return null;
   r2 = [r2[0]/nr2, r2[1]/nr2, r2[2]/nr2];
 
-  // r3 = r1 x r2
+  // r3 = r1 x r2 (right-handed)
   let r3 = [
     r1[1]*r2[2] - r1[2]*r2[1],
     r1[2]*r2[0] - r1[0]*r2[2],
@@ -786,15 +790,26 @@ function _decomposeHomographyToRT(H, K){
   if(!isFinite(nr3) || nr3 < 1e-9) return null;
   r3 = [r3[0]/nr3, r3[1]/nr3, r3[2]/nr3];
 
+  // Translation uses the shared scale (keeps consistency with H)
   let t = [b3[0]*s, b3[1]*s, b3[2]*s];
 
   // Ensure the plane is in front of the camera (positive z in camera space).
   // If not, flip the solution.
   if(t[2] < 0){
+    // Keep the plane in front of the camera without changing handedness.
     r1 = [-r1[0],-r1[1],-r1[2]];
     r2 = [-r2[0],-r2[1],-r2[2]];
-    r3 = [-r3[0],-r3[1],-r3[2]];
     t  = [-t[0], -t[1], -t[2]];
+
+    // Recompute r3 to preserve a proper right-handed rotation (det(R)≈+1)
+    r3 = [
+      r1[1]*r2[2] - r1[2]*r2[1],
+      r1[2]*r2[0] - r1[0]*r2[2],
+      r1[0]*r2[1] - r1[1]*r2[0]
+    ];
+    const nr3b = Math.hypot(r3[0],r3[1],r3[2]);
+    if(!isFinite(nr3b) || nr3b < 1e-9) return null;
+    r3 = [r3[0]/nr3b, r3[1]/nr3b, r3[2]/nr3b];
   }
 
   const R = [
