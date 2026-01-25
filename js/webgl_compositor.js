@@ -281,6 +281,7 @@ window.PhotoPaveCompositor = (function(){
   uniform mat3 uRwc;        // world->camera rotation
   uniform vec3 uTwc;        // world->camera translation
   uniform float uScale;     // tile scale
+  uniform vec2  uPhase;     // texture phase lock (0..1)
   uniform float uRotation;  // degrees
   uniform float uOpacity;   // 0..1
   uniform int uBlendMode;   // 0=normal, 1=multiply
@@ -396,7 +397,9 @@ window.PhotoPaveCompositor = (function(){
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
-    vec2 suv = fract(tuv);
+    // Phase lock: keep texture anchored so it does not "swim" when
+    // horizon/perspective are adjusted.
+    vec2 suv = fract(tuv + uPhase);
     // Flip Y for uploaded tile texture (top-left origin) while preserving repeat.
     suv.y = 1.0 - suv.y;
     vec3 tile = texture(uTile, suv).rgb;
@@ -772,6 +775,137 @@ function _decomposeHomographyToRT(H, K){
 
   return {Kinv, R, t};
 }
+
+  // ---------------------------------------------------------------------------
+  // Camera-first geometry model (Global Anti-Rubber):
+  // - Plane coordinates are metric (from contour-derived quad W,D).
+  // - User "horizon" and "perspective" control ONLY camera (pitch + focal length).
+  // - UV metric never depends on horizon/perspective (prevents rubber stretching).
+  // ---------------------------------------------------------------------------
+
+  function _estimateFocalFromHomography(H, cx, cy, w, h){
+    if(!H) return null;
+    const maxDim = Math.max(1, w|0, h|0);
+    const fMin = 0.40 * maxDim;
+    const fMax = 3.50 * maxDim;
+
+    function score(f){
+      if(!isFinite(f) || f <= 2) return 1e30;
+      const invF = 1.0 / f;
+      const Kinv = [
+        invF, 0, -cx*invF,
+        0, invF, -cy*invF,
+        0, 0, 1
+      ];
+      const B = _mul3x3(Kinv, H);
+      const b1 = [B[0], B[3], B[6]];
+      const b2 = [B[1], B[4], B[7]];
+      const n1 = Math.hypot(b1[0], b1[1], b1[2]);
+      const n2 = Math.hypot(b2[0], b2[1], b2[2]);
+      if(!isFinite(n1) || !isFinite(n2) || n1 < 1e-9 || n2 < 1e-9) return 1e30;
+      const dot = b1[0]*b2[0] + b1[1]*b2[1] + b1[2]*b2[2];
+      const dn = (n1 - n2);
+      return dot*dot + dn*dn;
+    }
+
+    // Coarse log-space scan
+    let bestF = null;
+    let bestS = Infinity;
+    const n = 34;
+    const logMin = Math.log(fMin);
+    const logMax = Math.log(fMax);
+    for(let i=0;i<n;i++){
+      const t = i/(n-1);
+      const f = Math.exp(logMin + (logMax-logMin)*t);
+      const s = score(f);
+      if(s < bestS){
+        bestS = s;
+        bestF = f;
+      }
+    }
+    if(!bestF || !isFinite(bestF)) return null;
+
+    // Local refine in log-space (ternary)
+    let lo = Math.max(fMin, bestF/1.6);
+    let hi = Math.min(fMax, bestF*1.6);
+    for(let it=0; it<18; it++){
+      const f1 = Math.exp((2*Math.log(lo) + Math.log(hi))/3);
+      const f2 = Math.exp((Math.log(lo) + 2*Math.log(hi))/3);
+      const s1 = score(f1);
+      const s2 = score(f2);
+      if(s1 < s2) hi = f2;
+      else lo = f1;
+    }
+    const fFinal = Math.sqrt(lo*hi);
+    return isFinite(fFinal) ? fFinal : bestF;
+  }
+
+  function _rotX(rad){
+    const c = Math.cos(rad), s = Math.sin(rad);
+    return [
+      1,0,0,
+      0,c,-s,
+      0,s,c
+    ];
+  }
+
+  function _applyPitchToCam(cam, pitchRad){
+    if(!cam || !cam.R || !cam.t) return cam;
+    const Rx = _rotX(pitchRad);
+    const Rn = _mul3x3(Rx, cam.R);
+    const t = cam.t;
+    const tn = [
+      Rx[0]*t[0] + Rx[1]*t[1] + Rx[2]*t[2],
+      Rx[3]*t[0] + Rx[4]*t[1] + Rx[5]*t[2],
+      Rx[6]*t[0] + Rx[7]*t[1] + Rx[8]*t[2],
+    ];
+    return {Kinv: cam.Kinv, R: Rn, t: tn};
+  }
+
+  function _planePointFromCamPixel(cam, x, y){
+    if(!cam || !cam.Kinv || !cam.R || !cam.t) return {x:0,y:0,ok:false};
+    const KinvA = cam.Kinv;
+    let rx = KinvA[0]*x + KinvA[1]*y + KinvA[2];
+    let ry = KinvA[3]*x + KinvA[4]*y + KinvA[5];
+    let rz = KinvA[6]*x + KinvA[7]*y + KinvA[8];
+    const rlen = Math.hypot(rx, ry, rz) || 1.0;
+    rx/=rlen; ry/=rlen; rz/=rlen;
+
+    const RwcA = cam.R;
+    const Rcw00 = RwcA[0], Rcw01 = RwcA[3], Rcw02 = RwcA[6];
+    const Rcw10 = RwcA[1], Rcw11 = RwcA[4], Rcw12 = RwcA[7];
+    const Rcw20 = RwcA[2], Rcw21 = RwcA[5], Rcw22 = RwcA[8];
+
+    const tA = cam.t;
+    const cwx = -(Rcw00*tA[0] + Rcw01*tA[1] + Rcw02*tA[2]);
+    const cwy = -(Rcw10*tA[0] + Rcw11*tA[1] + Rcw12*tA[2]);
+    const cwz = -(Rcw20*tA[0] + Rcw21*tA[1] + Rcw22*tA[2]);
+
+    let rwx = (Rcw00*rx + Rcw01*ry + Rcw02*rz);
+    let rwy = (Rcw10*rx + Rcw11*ry + Rcw12*rz);
+    let rwz = (Rcw20*rx + Rcw21*ry + Rcw22*rz);
+    const rwlen = Math.hypot(rwx, rwy, rwz) || 1.0;
+    rwx/=rwlen; rwy/=rwlen; rwz/=rwlen;
+
+    const denom = rwz;
+    if(Math.abs(denom) < 1e-6) return {x:0,y:0,ok:false};
+    const sRay = -cwz / denom;
+    if(!(sRay > 0.0)) return {x:0,y:0,ok:false};
+    return {x: cwx + rwx*sRay, y: cwy + rwy*sRay, ok:true};
+  }
+
+  function _localMetersPerPixel(cam, ax, ay){
+    const p0 = _planePointFromCamPixel(cam, ax, ay);
+    if(!p0.ok) return null;
+    const px = _planePointFromCamPixel(cam, ax+1.0, ay);
+    const py = _planePointFromCamPixel(cam, ax, ay+1.0);
+    if(!px.ok || !py.ok) return null;
+    const dx = Math.hypot(px.x - p0.x, px.y - p0.y);
+    const dy = Math.hypot(py.x - p0.x, py.y - p0.y);
+    if(!isFinite(dx) || !isFinite(dy) || dx < 1e-9 || dy < 1e-9) return null;
+    return 0.5*(dx + dy);
+  }
+
 
   function _homographyRectToQuad(q, srcW, srcH){
     // q: 4 points in render-pixel coords in order: nearL, nearR, farR, farL
@@ -1170,14 +1304,12 @@ function _inferQuadFromContour(contour, params, w, h, lockExtrema){
   const _mNearR = {x: nearR.x, y: nearR.y};
   const _mFarL  = {x: farL.x,  y: farL.y};
   const _mFarR  = {x: farR.x,  y: farR.y};
-// User controls: keep them gentle and monotonic
-  // Perspective strength is |perspective|, sign is reserved for user-facing depth inversion.
-  const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1));
+// User controls (Global CamPlane contract):
+  // IMPORTANT: To eliminate "rubber" texture deformation, we must NOT deform the inferred quad
+  // with horizon/perspective here. These sliders are applied later as camera parameters only
+  // (pitch / focal). The quad remains purely contour-derived and bottom->up stable.
+  const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1)); // kept for downstream camera mapping only
   const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
-
-  const mild = 0.25 + 0.75*persp; // 0.25..1.0
-  farL = { x: nearL.x + (farL.x-nearL.x)*mild, y: nearL.y + (farL.y-nearL.y)*mild };
-  farR = { x: nearR.x + (farR.x-nearR.x)*mild, y: nearR.y + (farR.y-nearR.y)*mild };
 
   const cx = (nearL.x + nearR.x) * 0.5;
   const dyH = horizon * 0.22 * (photoH||h||1);
@@ -1316,7 +1448,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, planeMetric, ai, cam3d){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -1353,22 +1485,121 @@ function _blendModeId(blend){
     // Params
     const params = zone.material?.params || {};
     const opaqueFill = !!params.opaqueFill;
-    // Negative perspective value was previously used as a user-facing "invert depth" control.
-    // Product rule (premium/3D): paving is always bottom->up, so depth inversion is disabled when forceBottomUp is on.
-    const perspRaw = Number(params.perspective ?? 0.75);
-    const forceBottomUp = !!(ai && ai.calib3d && ai.calib3d.forceBottomUp);
-    const vflip = (!forceBottomUp && perspRaw < 0) ? 1 : 0;
-    gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), (cam3d ? 0 : vflip));
+    // Bottom->Up invariant (all modes): depth inversion is disabled.
+    const vflip = 0;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), 0);
     gl.uniform1i(gl.getUniformLocation(progZone,'uOpaqueFill'), (opaqueFill ? 1 : 0));
     // Metric-lock: map plane UV in stable world units (derived from contour) to avoid tile deformation
     const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
     const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPlaneD'), planeD);
-    // Keep the "scale" slider semantics: approximately number of repeats across the near edge
-    const baseScale = (params.scale ?? 1.0);
-    const scaleEff = Math.max(0.0001, baseScale / planeW);
+    // Keep the "scale" slider semantics: approximately number of repeats across the near edge.
+// Global Anti-Rubber: additionally apply an anchor-scale lock so adjusting camera
+// (horizon/perspective) does not change tile *geometry* near the bottom.
+// This is a uniform correction (no anisotropic scale).
+    const baseScaleAcross = (params.scale ?? 1.0);
+    let scaleEff = Math.max(0.0001, baseScaleAcross / planeW);
 
+    // Anchor-scale lock (optional but enabled by default when camera model is available)
+    let scaleComp = 1.0;
+    try{
+      const ax = (anchorPx && isFinite(anchorPx.x)) ? anchorPx.x : null;
+      const ay = (anchorPx && isFinite(anchorPx.y)) ? anchorPx.y : null;
+      if(ax !== null && ay !== null && cam3d && cam3dRef){
+        const mppRef = _localMetersPerPixel(cam3dRef, ax, ay);
+        const mppCur = _localMetersPerPixel(cam3d, ax, ay);
+        if(isFinite(mppRef) && isFinite(mppCur) && mppRef > 1e-9 && mppCur > 1e-9){
+          scaleComp = clamp(mppRef / mppCur, 0.25, 4.0);
+        }
+      }
+    }catch(_){ scaleComp = 1.0; }
+
+    scaleEff = Math.max(0.0001, scaleEff * scaleComp);
     gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), scaleEff);
+
+    // Phase lock (anti-swim): keep texture grid anchored to a stable point on the near edge.
+    // This prevents the "rubber" feeling where the pattern slides when horizon/perspective changes.
+    let phaseX = 0.0, phaseY = 0.0;
+    try{
+      const ax = (anchorPx && isFinite(anchorPx.x)) ? anchorPx.x : null;
+      const ay = (anchorPx && isFinite(anchorPx.y)) ? anchorPx.y : null;
+      if(ax !== null && ay !== null){
+        // Compute plane coords at anchor pixel.
+        let pu = null, pv = null;
+        const want3dLocal = !!(cam3d && cam3d.Kinv && cam3d.R && cam3d.t);
+        if(want3dLocal){
+          const KinvA = cam3d.Kinv;
+          const RwcA = cam3d.R;
+          const tA = cam3d.t;
+
+          // rayCam = normalize(Kinv * [x,y,1])
+          let rx = KinvA[0]*ax + KinvA[1]*ay + KinvA[2];
+          let ry = KinvA[3]*ax + KinvA[4]*ay + KinvA[5];
+          let rz = KinvA[6]*ax + KinvA[7]*ay + KinvA[8];
+          const rlen = Math.hypot(rx, ry, rz) || 1.0;
+          rx/=rlen; ry/=rlen; rz/=rlen;
+
+          // Rcw = transpose(Rwc)
+          const Rcw00 = RwcA[0], Rcw01 = RwcA[3], Rcw02 = RwcA[6];
+          const Rcw10 = RwcA[1], Rcw11 = RwcA[4], Rcw12 = RwcA[7];
+          const Rcw20 = RwcA[2], Rcw21 = RwcA[5], Rcw22 = RwcA[8];
+
+          // camPosW = -(Rcw * t)
+          const cwx = -(Rcw00*tA[0] + Rcw01*tA[1] + Rcw02*tA[2]);
+          const cwy = -(Rcw10*tA[0] + Rcw11*tA[1] + Rcw12*tA[2]);
+          const cwz = -(Rcw20*tA[0] + Rcw21*tA[1] + Rcw22*tA[2]);
+
+          // rayW = normalize(Rcw * rayCam)
+          let rwx = (Rcw00*rx + Rcw01*ry + Rcw02*rz);
+          let rwy = (Rcw10*rx + Rcw11*ry + Rcw12*rz);
+          let rwz = (Rcw20*rx + Rcw21*ry + Rcw22*rz);
+          const rwlen = Math.hypot(rwx, rwy, rwz) || 1.0;
+          rwx/=rwlen; rwy/=rwlen; rwz/=rwlen;
+
+          const denom = rwz;
+          if(Math.abs(denom) > 1e-6){
+            const sRay = -cwz / denom;
+            if(sRay > 0.0){
+              const pxw = cwx + rwx * sRay;
+              const pyw = cwy + rwy * sRay;
+              pu = pxw; pv = pyw;
+            }
+          }
+        }
+        if(pu === null || pv === null){
+          // Fallback: invH mapping
+          const x = ax, y = ay;
+          const u = invHArr9[0]*x + invHArr9[1]*y + invHArr9[2];
+          const v = invHArr9[3]*x + invHArr9[4]*y + invHArr9[5];
+          const wq = invHArr9[6]*x + invHArr9[7]*y + invHArr9[8];
+          if(isFinite(wq) && Math.abs(wq) > 1e-9){
+            pu = u / wq;
+            pv = v / wq;
+          }
+        }
+
+        if(pu !== null && pv !== null){
+          // Apply the same v-flip rule as the shader (only relevant for non-3D legacy and when forceBottomUp is off)
+          if(vflip === 1){ pv = planeD - pv; }
+
+          // Compute tuv(anchor) = R * (uv * scale)
+          const rotRad = ((params.rotation ?? 0.0) * Math.PI) / 180.0;
+          const c = Math.cos(rotRad), s = Math.sin(rotRad);
+          const su = pu * scaleEff;
+          const sv = pv * scaleEff;
+          const tx = c*su - s*sv;
+          const ty = s*su + c*sv;
+          const fract = (q)=>{
+            if(!isFinite(q)) return 0.0;
+            const f = q - Math.floor(q);
+            return (f < 0) ? (f + 1) : f;
+          };
+          phaseX = fract(-tx);
+          phaseY = fract(-ty);
+        }
+      }
+    }catch(_){ phaseX = 0.0; phaseY = 0.0; }
+    gl.uniform2f(gl.getUniformLocation(progZone,'uPhase'), phaseX, phaseY);
     gl.uniform1f(gl.getUniformLocation(progZone,'uRotation'), (params.rotation ?? 0.0));
     gl.uniform1f(gl.getUniformLocation(progZone,'uOpacity'), clamp(params.opacity ?? 1.0, 0, 1));
     gl.uniform1i(gl.getUniformLocation(progZone,'uBlendMode'), (opaqueFill ? 0 : _blendModeId(params.blendMode)));
@@ -1718,35 +1949,14 @@ try{
   }
 }catch(_){ lockExtrema = null; }
 
+
 let Hm = null;
-const quadRes = _inferQuadFromContour(contourR, quadParams, w, h, lockExtrema);
+// Global Anti-Rubber: infer ONLY a base quad from the contour (no horizon/perspective warping, no AI quad).
+// Horizon + Perspective are applied strictly as camera parameters later.
+const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, w, h, lockExtrema);
+let planeMetric = {W:1.0, D:1.0};
 const quad = quadRes && quadRes.quad ? quadRes.quad : null;
-
-// Stable plane metric: lock depth (D) to contour geometry to prevent texture "rubber" stretching.
-// W is kept consistent with near-edge width semantics (repeats across near edge = scale slider).
-let _yMin = (lockExtrema && isFinite(lockExtrema.yMin)) ? lockExtrema.yMin : Infinity;
-let _yMax = (lockExtrema && isFinite(lockExtrema.yMax)) ? lockExtrema.yMax : -Infinity;
-if(!isFinite(_yMin) || !isFinite(_yMax)){
-  _yMin = Infinity; _yMax = -Infinity;
-  for(const p of contourR){
-    const yy = +p.y;
-    if(!isFinite(yy)) continue;
-    if(yy < _yMin) _yMin = yy;
-    if(yy > _yMax) _yMax = yy;
-  }
-}
-const _stableD = (isFinite(_yMin) && isFinite(_yMax)) ? Math.max(1.0, (_yMax - _yMin)) : 1.0;
-
-let _planeW = 1.0;
-try{
-  if(quadRes && quadRes.metric && isFinite(quadRes.metric.W) && quadRes.metric.W > 1e-6){
-    _planeW = quadRes.metric.W;
-  }else if(quad && quad.length===4){
-    _planeW = Math.max(1.0, Math.hypot(quad[1].x-quad[0].x, quad[1].y-quad[0].y));
-  }
-}catch(_){ _planeW = 1.0; }
-
-let planeMetric = {W:_planeW, D:_stableD};
+if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
 
 if(quad){
   const qn = _normalizeQuad(quad);
@@ -1758,38 +1968,6 @@ if(quad){
   }
 }
 
-
-// Bottom->Up Guard (premium invariant):
-// Ensure the inferred mapping keeps near (bottom edge) at v≈0 and far (top edge) at v≈1.
-// In rare numeric edge cases this prevents an accidental vertical inversion.
-// If detected, we flip the plane V-axis consistently in both Hm and invH.
-try{
-  if(Hm && invH && quad && quad.length===4){
-    const midNear = {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5};
-    const midFar  = {x:(quad[2].x+quad[3].x)*0.5, y:(quad[2].y+quad[3].y)*0.5};
-    const _applyInv = (M, p)=>{
-      const x=p.x, y=p.y;
-      const u = M[0]*x + M[1]*y + M[2];
-      const v = M[3]*x + M[4]*y + M[5];
-      const w = M[6]*x + M[7]*y + M[8];
-      if(!isFinite(w) || Math.abs(w)<1e-9) return {u:0,v:0,ok:false};
-      return {u:u/w, v:v/w, ok:true};
-    };
-    const uNear = _applyInv(invH, midNear);
-    const uFar  = _applyInv(invH, midFar);
-    if(uNear.ok && uFar.ok && uNear.v > uFar.v){
-      // Flip V in plane coords: M = [[1,0,0],[0,-1,1],[0,0,1]] (involution)
-      const D = (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0;
-      const F = [1,0,0, 0,-1,D, 0,0,1];
-      // Hm maps plane->pixel, so Hm' = Hm * F
-      Hm = _mul3x3(Hm, F);
-      // invH maps pixel->plane, so invH' = F * invH
-      invH = _mul3x3(F, invH);
-    }
-  }
-}catch(_){ /*no-op*/ }
-
-
 if(!invH){
   const last = lastGoodInvH.get(zone.id);
   if(last) invH = last;
@@ -1800,34 +1978,80 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
-    // Variant B (3D camera): if manual calibration is ready, compute a camera model that
-// reproduces the current homography via ray-plane intersection in the shader.
+// Global camera model (all modes):
+// - Estimate a plausible focal length from the base homography.
+// - Apply user horizon/perspective as camera pitch + focal scaling.
+// - Provide camCur (for rendering) and camRef (for near-anchor scale lock).
 let cam3d = null;
+let cam3dRef = null;
 try{
-  const c3 = ai && ai.calib3d;
-  const res = c3 && c3.result;
-  const want3d = !!(c3 && c3.enabled === true && (c3.use3DRenderer !== false));
-  if(want3d && Hm){
-    // If the user completed manual lines, use their intrinsics; otherwise use a robust fallback.
-    let K0 = (res && res.ok && res.K) ? res.K : null;
-    const allowFallback = !(c3 && c3.allowFallbackK === false);
-    if(!K0 && allowFallback){
-      const W = Math.max(1, w);
-      const H = Math.max(1, h);
-      // Fallback intrinsics: center principal point + focal proportional to image size.
-      K0 = { f: 0.95 * Math.max(W, H), cx: 0.5 * W, cy: 0.5 * H };
+  if(Hm){
+    const cx = 0.5 * w;
+    const cy = 0.5 * h;
+    const maxDim = Math.max(1, w, h);
+
+    let fGuess = _estimateFocalFromHomography(Hm, cx, cy, w, h);
+    if(!fGuess || !isFinite(fGuess) || fGuess < 2){
+      fGuess = 0.95 * maxDim;
     }
-    if(K0 && isFinite(K0.f) && K0.f > 2){
-      const sAvg = (sx + sy) * 0.5;
-      const Kr = { f:(+K0.f||0) * sAvg, cx:(+K0.cx||0) * sx, cy:(+K0.cy||0) * sy };
-      cam3d = _decomposeHomographyToRT(Hm, Kr);
+
+    const params = zone.material?.params || {};
+    // Effective values computed above (may be AI-derived), fall back to user params.
+    const hVal = clamp((typeof effH === 'number' ? effH : (params.horizon ?? 0.0)), -0.85, 0.85);
+    const pVal = clamp((typeof effP === 'number' ? effP : (params.perspective ?? 0.75)), 0.0, 1.0);
+
+    // Perspective slider -> camera distance scaling (NOT focal).
+    // Rationale: varying focal/FOV produces strong foreshortening ("squash") at extremes,
+    // which users perceive as "rubber" even if the math is correct.
+    // We instead vary camera distance while keeping focal near the estimated baseline.
+    const perspT = (pVal - 0.5) * 2.0; // [-1..1]
+    const distK = 0.70;
+    const distScale = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
+
+    // Keep focal stable to preserve tile geometry; perspective comes from distance change + anchor-scale lock.
+    const fCur = fGuess;
+
+    // Reference camera for anchor-scale lock: baseline UX (distance=1, h=0).
+    const fRef = fGuess;
+    const distScaleRef = 1.0;
+
+// Decompose ONCE to get a stable camera pose from the base homography.
+    // IMPORTANT: perspective slider must NOT change pose (R,t), only intrinsics (f).
+    // Re-solving pose for each f introduces subtle non-rigid distortions ("rubber" feel).
+    const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
+
+    // Horizon slider -> camera pitch (tilt). Kept intentionally conservative.
+    const pitchMax = 0.35; // ~20 degrees
+    const pitchCur = hVal * pitchMax;
+
+    if(camBase && camBase.R && camBase.t){
+      // Current camera: same pose (with optional pitch), different focal (fCur).
+      const camPoseCur = _applyPitchToCam(camBase, pitchCur);
+      cam3d = {
+        R: camPoseCur.R,
+        t: [camPoseCur.t[0]*distScale, camPoseCur.t[1]*distScale, camPoseCur.t[2]*distScale],
+        Kinv: [
+          1/fCur, 0, -cx/fCur,
+          0, 1/fCur, -cy/fCur,
+          0, 0, 1
+        ]
+      };
+
+      // Reference camera for anchor-scale lock: baseline UX (h=0, p=0.75).
+      cam3dRef = {
+        R: camBase.R,
+        t: [camBase.t[0]*distScaleRef, camBase.t[1]*distScaleRef, camBase.t[2]*distScaleRef],
+        Kinv: [
+          1/fRef, 0, -cx/fRef,
+          0, 1/fRef, -cy/fRef,
+          0, 0, 1
+        ]
+      };
     }
   }
-}catch(_){ cam3d = null; }
-
-
-
-    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d);
+}catch(_){ cam3d = null; cam3dRef = null; }
+    const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
+    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -1925,29 +2149,9 @@ const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
 
 let Hm = null;
 const quadRes = _inferQuadFromContour(contourR, quadParams, outW, outH, null);
+let planeMetric = {W:1.0, D:1.0};
 const quad = quadRes && quadRes.quad ? quadRes.quad : null;
-
-// Stable plane metric (export): lock depth (D) to contour geometry to prevent texture "rubber" stretching.
-let _yMin = Infinity, _yMax = -Infinity;
-for(const p of contourR){
-  const yy = +p.y;
-  if(!isFinite(yy)) continue;
-  if(yy < _yMin) _yMin = yy;
-  if(yy > _yMax) _yMax = yy;
-}
-const _stableD = (isFinite(_yMin) && isFinite(_yMax)) ? Math.max(1.0, (_yMax - _yMin)) : 1.0;
-
-let _planeW = 1.0;
-try{
-  if(quadRes && quadRes.metric && isFinite(quadRes.metric.W) && quadRes.metric.W > 1e-6){
-    _planeW = quadRes.metric.W;
-  }else if(quad && quad.length===4){
-    _planeW = Math.max(1.0, Math.hypot(quad[1].x-quad[0].x, quad[1].y-quad[0].y));
-  }
-}catch(_){ _planeW = 1.0; }
-
-let planeMetric = {W:_planeW, D:_stableD};
-
+if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
 if(quad){
   const qn = _normalizeQuad(quad);
   if(qn){
@@ -2025,7 +2229,8 @@ try{
   }
 }catch(_){ cam3d = null; }
 
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d);
+      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
+      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
       const tmp = src; src = dst; dst = tmp;
     }
 

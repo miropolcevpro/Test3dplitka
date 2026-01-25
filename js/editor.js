@@ -262,8 +262,8 @@ function homographyRectToQuad(q, srcW, srcH){
     for(let r=col+1;r<n;r++) if(Math.abs(A[r][col])>Math.abs(A[pivot][col])) pivot=r;
     if(Math.abs(A[pivot][col])<1e-12) return null;
     if(pivot!==col){
-      [A[col], A[pivot]] = [A[pivot], A[col]];
-      [B[col], B[pivot]] = [B[pivot], B[col]];
+      A[col],A[pivot]=A[pivot],A[col];
+      B[col],B[pivot]=B[pivot],B[col];
     }
     const div=A[col][col];
     for(let c2=col;c2<n;c2++) A[col][c2]/=div;
@@ -562,16 +562,7 @@ function distCanvasFromImg(a,b){
           const planeW = Math.max(1.0, Math.hypot(quad[1].x-quad[0].x, quad[1].y-quad[0].y));
           const midNear = {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5};
           const midFar  = {x:(quad[2].x+quad[3].x)*0.5, y:(quad[2].y+quad[3].y)*0.5};
-          // Lock plane depth to contour geometry (independent from horizon/perspective) to prevent "rubber" stretching.
-          let yMin = Infinity, yMax = -Infinity;
-          for(const pp of (zone.contour||[])){
-            const cp = imgToCanvasPt(pp);
-            const yy = +cp.y;
-            if(!isFinite(yy)) continue;
-            if(yy < yMin) yMin = yy;
-            if(yy > yMax) yMax = yy;
-          }
-          const planeD = (isFinite(yMin) && isFinite(yMax)) ? Math.max(1.0, (yMax - yMin)) : Math.max(1.0, Math.hypot(midFar.x-midNear.x, midFar.y-midNear.y));
+          const planeD = Math.max(1.0, Math.hypot(midFar.x-midNear.x, midFar.y-midNear.y));
           planeMetric = {W: planeW, D: planeD};
           H = homographyRectToQuad(quad, planeW, planeD);
         }

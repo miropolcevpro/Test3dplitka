@@ -10,7 +10,7 @@
   // Patch B: keep separate material params for base and ultra modes.
   // We avoid refactoring the whole codebase by keeping z.material.params as a pointer
   // to either params_base or params_ultra depending on state.ai.enabled.
-  const DEFAULT_MAT_PARAMS={scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0};
+  const DEFAULT_MAT_PARAMS={scale:12.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0};
   const _clone=(o)=>JSON.parse(JSON.stringify(o));
   function ensureZoneMaterialParams(z){
     if(!z || !z.material) return;
