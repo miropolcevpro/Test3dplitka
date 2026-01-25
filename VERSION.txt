@@ -1,1 +1,1 @@
-mvp-iter2.2.66-global-camplane-no-rubber-persp_pose_lock
+mvp-iter2.2.67-metric-lock-uv-stable-hotfix2
