@@ -2009,30 +2009,38 @@ try{
     const pRef = 0.75;
     const fRef = clamp(fGuess * Math.exp(-((pRef - 0.5) * 2.0) * kPersp), 0.35*maxDim, 4.0*maxDim);
 
-    // Decompose with current/ref intrinsics.
-    const cam0 = _decomposeHomographyToRT(Hm, {f:fCur, cx, cy});
-    const camR = _decomposeHomographyToRT(Hm, {f:fRef, cx, cy});
+    // Decompose ONCE to get a stable camera pose from the base homography.
+    // IMPORTANT: perspective slider must NOT change pose (R,t), only intrinsics (f).
+    // Re-solving pose for each f introduces subtle non-rigid distortions ("rubber" feel).
+    const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
 
     // Horizon slider -> camera pitch (tilt). Kept intentionally conservative.
     const pitchMax = 0.35; // ~20 degrees
     const pitchCur = hVal * pitchMax;
 
-    if(cam0 && cam0.Kinv && cam0.R && cam0.t){
-      cam3d = _applyPitchToCam(cam0, pitchCur);
-      // Rebuild Kinv for current f (pitch does not change K)
-      cam3d.Kinv = [
-        1/fCur, 0, -cx/fCur,
-        0, 1/fCur, -cy/fCur,
-        0, 0, 1
-      ];
-    }
-    if(camR && camR.Kinv && camR.R && camR.t){
-      cam3dRef = camR;
-      cam3dRef.Kinv = [
-        1/fRef, 0, -cx/fRef,
-        0, 1/fRef, -cy/fRef,
-        0, 0, 1
-      ];
+    if(camBase && camBase.R && camBase.t){
+      // Current camera: same pose (with optional pitch), different focal (fCur).
+      const camPoseCur = _applyPitchToCam(camBase, pitchCur);
+      cam3d = {
+        R: camPoseCur.R,
+        t: camPoseCur.t,
+        Kinv: [
+          1/fCur, 0, -cx/fCur,
+          0, 1/fCur, -cy/fCur,
+          0, 0, 1
+        ]
+      };
+
+      // Reference camera for anchor-scale lock: baseline UX (h=0, p=0.75).
+      cam3dRef = {
+        R: camBase.R,
+        t: camBase.t,
+        Kinv: [
+          1/fRef, 0, -cx/fRef,
+          0, 1/fRef, -cy/fRef,
+          0, 0, 1
+        ]
+      };
     }
   }
 }catch(_){ cam3d = null; cam3dRef = null; }
