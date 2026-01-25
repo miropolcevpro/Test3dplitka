@@ -21,6 +21,80 @@ window.PhotoPaveCompositor = (function(){
   };
   const EPS = 1e-9;
 
+  // Dev-only debug metrics (B2). Enabled by URL flag ?debugMetrics=1 (set in app.js).
+  // Must have zero effect on rendering unless explicitly enabled.
+  let _lastDebugMetrics = null;
+
+  function _applyH_rowMajor(H, u, v){
+    // H is row-major 3x3 mapping plane (u,v,1) -> screen (x,y,1)
+    const x = H[0]*u + H[1]*v + H[2];
+    const y = H[3]*u + H[4]*v + H[5];
+    const z = H[6]*u + H[7]*v + H[8];
+    const iz = (Math.abs(z) > 1e-12) ? (1.0/z) : 0.0;
+    return { x: x*iz, y: y*iz, z };
+  }
+
+  function _computeNearMetrics(Hm, planeMetric, rotDeg){
+    try{
+      if(!Hm || !planeMetric) return null;
+      const W = Math.max(1e-6, +planeMetric.W || 1.0);
+      const D = Math.max(1e-6, +planeMetric.D || 1.0);
+
+      // Anchors slightly inside the near edge (v=0 is the near boundary).
+      const v0 = 0.05 * D;
+      const anchorsU = [0.10*W, 0.50*W, 0.90*W];
+
+      // Directions aligned with the tile grid in plane space.
+      const r = ((+rotDeg || 0) * Math.PI) / 180.0;
+      const cr = Math.cos(r), sr = Math.sin(r);
+      // Using a right-handed 2D basis aligned with the grid.
+      const Ux = cr, Uy = sr;
+      const Vx = -sr, Vy = cr;
+
+      const step = 0.02 * Math.min(W, D); // local finite difference, plane units
+
+      const out = { anchors: [], worst: { rho: 1.0, shearDeg: 0.0 }, step, rotDeg: (+rotDeg||0) };
+
+      for(let i=0;i<anchorsU.length;i++){
+        const u0 = anchorsU[i];
+        const p0 = _applyH_rowMajor(Hm, u0, v0);
+        const pU = _applyH_rowMajor(Hm, u0 + step*Ux, v0 + step*Uy);
+        const pV = _applyH_rowMajor(Hm, u0 + step*Vx, v0 + step*Vy);
+
+        const jux = pU.x - p0.x, juy = pU.y - p0.y;
+        const jvx = pV.x - p0.x, jvy = pV.y - p0.y;
+
+        const lenU = Math.hypot(jux, juy);
+        const lenV = Math.hypot(jvx, jvy);
+
+        let rho = 1.0;
+        if(lenU > 1e-9 && lenV > 1e-9) rho = lenU / lenV;
+
+        let ang = 90.0;
+        if(lenU > 1e-9 && lenV > 1e-9){
+          const dot = (jux*jvx + juy*jvy) / (lenU*lenV);
+          const c = Math.max(-1.0, Math.min(1.0, dot));
+          ang = Math.acos(c) * 180.0 / Math.PI;
+        }
+        const shearDeg = Math.abs(90.0 - ang);
+
+        const a = { label: (i===0?'L':(i===1?'C':'R')), u:u0, v:v0, rho, shearDeg, lenU, lenV, angDeg: ang };
+        out.anchors.push(a);
+
+        // Worst-of: maximize deviation from rho=1, and maximize shear.
+        const rhoDev = Math.abs(Math.log(Math.max(1e-6, rho)));
+        const worstRhoDev = Math.abs(Math.log(Math.max(1e-6, out.worst.rho)));
+        if(rhoDev > worstRhoDev) out.worst.rho = rho;
+        if(shearDeg > out.worst.shearDeg) out.worst.shearDeg = shearDeg;
+      }
+
+      return out;
+    }catch(_){
+      return null;
+    }
+  }
+
+
   let canvas = null;
   let gl = null;
   let extAniso = null;
@@ -2206,6 +2280,26 @@ try{
     // without forcing extreme camera tilts.
     const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
 
+    // Dev-only metrics (B2): measure near anisotropy/shear in the tile grid basis.
+    // Enabled by app.js via window.__PP_DEBUG_METRICS=1.
+    try{
+      const dbgEnabled = (typeof window !== 'undefined') && !!window.__PP_DEBUG_METRICS;
+      const activeZoneId = state && state.ui ? state.ui.activeZoneId : null;
+      if(dbgEnabled && activeZoneId && zone && zone.id === activeZoneId && Hm){
+        const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
+        const m = _computeNearMetrics(Hm, planeMetric, rotDeg);
+        if(m){
+          _lastDebugMetrics = {
+            zoneId: zone.id,
+            horizon: { hVal, hSafe, pitchMax, pitchW, pitchCur, cyCur, cyBase: cy, cyShiftMax },
+            perspective: { pVal, distScale },
+            planeMetric: { W: planeMetric.W, D: planeMetric.D },
+            metrics: m
+          };
+        }
+      }
+    }catch(_){}
+
     if(camBase && camBase.R && camBase.t){
       // Current camera: same pose (with optional pitch), different focal (fCur).
       const camPoseCur = _applyPitchToCam(camBase, pitchCur);
@@ -2643,5 +2737,5 @@ if(!invH){
     return blob;
   }
 
-  return { init, setPhoto, resize, render, exportPNG, exportPNGBlob, getLimits };
+  return { init, setPhoto, resize, render, exportPNG, exportPNGBlob, getLimits, getDebugMetrics: ()=>_lastDebugMetrics };
 })();

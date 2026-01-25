@@ -677,11 +677,66 @@ async function handlePhotoFile(file){
       }
     }
 
-    // URL flag
+    // URL flags
     try{
       const qs = new URLSearchParams(location.search);
       if(qs.get("aidebug")==="1"){ setAiDebugOverlayEnabled(true); }
+      if(qs.get("debugMetrics")==="1"){
+        // Dev-only near-metric overlay (B2). Does not affect rendering.
+        window.__PP_DEBUG_METRICS = true;
+        setAiDebugOverlayEnabled(true);
+      }
     }catch(_){}
+
+    // Dev-only near-metric overlay loop (B2).
+    function drawNearMetricOverlay(){
+      try{
+        if(!window.__PP_DEBUG_METRICS) return;
+        const C = window.PhotoPaveCompositor;
+        if(!C || typeof C.getDebugMetrics!=="function") return;
+        const data = C.getDebugMetrics();
+        if(!data) return;
+
+        const cv = document.getElementById("aiDebugCanvas");
+        if(!cv) return;
+        const ctx = cv.getContext("2d");
+        if(!ctx) return;
+
+        // Clear with a translucent dark background for readability.
+        ctx.clearRect(0,0,cv.width,cv.height);
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(0,0,cv.width,cv.height);
+
+        ctx.fillStyle = "#fff";
+        ctx.font = "11px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+        ctx.textBaseline = "top";
+
+        const m = data.metrics;
+        const a = (m && m.anchors) ? m.anchors : [];
+        const fmt = (v)=> (isFinite(v) ? v.toFixed(2) : "—");
+        const fmt1 = (v)=> (isFinite(v) ? v.toFixed(1) : "—");
+
+        const rL = a[0], rC = a[1], rR = a[2];
+        const rhoLine = `ρ  L:${fmt(rL?.rho)}  C:${fmt(rC?.rho)}  R:${fmt(rR?.rho)}  | worst:${fmt(m?.worst?.rho)}`;
+        const shLine  = `sh° L:${fmt1(rL?.shearDeg)} C:${fmt1(rC?.shearDeg)} R:${fmt1(rR?.shearDeg)} | worst:${fmt1(m?.worst?.shearDeg)}`;
+        const h = data.horizon || {};
+        const p = data.perspective || {};
+        const meta = `pitchW:${fmt(h.pitchW)} pitch:${fmt1((h.pitchCur||0)*57.2958)}°  dist:${fmt(p.distScale)}`;
+
+        ctx.fillText("Near metrics (tile basis)", 6, 4);
+        ctx.fillText(rhoLine, 6, 20);
+        ctx.fillText(shLine, 6, 34);
+        ctx.fillText(meta, 6, 50);
+      }catch(_){}
+    }
+
+    // When enabled, update overlay at a low rate (requestAnimationFrame).
+    (function overlayLoop(){
+      if(window.__PP_DEBUG_METRICS){
+        drawNearMetricOverlay();
+        requestAnimationFrame(overlayLoop);
+      }
+    })();
 
     window.addEventListener("ai:ready", drawAiDebugOverlay);
     window.addEventListener("ai:depthReady", drawAiDebugOverlay);
