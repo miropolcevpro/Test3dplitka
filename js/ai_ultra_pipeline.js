@@ -730,7 +730,7 @@
     try{
       ctx.save();
       ctx.globalCompositeOperation = "source-over";
-      ctx.filter = "blur(1.2px)";
+      ctx.filter = "blur(0.6px)";
       ctx.drawImage(_occCanvas, 0, 0);
       ctx.restore();
     }catch(_){ /* noop */ }
