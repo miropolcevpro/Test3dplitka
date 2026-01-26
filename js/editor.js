@@ -935,46 +935,6 @@ function polyPath(points){
         };
         drawVP(res.vanishA, "VA");
         drawVP(res.vanishB, "VB");
-
-        // Optional plane grid overlay for better calibration UX
-        try{
-          if(c.showGrid !== false){
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(rect.x, rect.y, rect.w, rect.h);
-            ctx.clip();
-            ctx.strokeStyle = "rgba(120,200,255,0.22)";
-            ctx.lineWidth = Math.max(1.0, 1.05*dpr);
-
-            const vA = imgToCanvasPt(res.vanishA);
-            const vB = imgToCanvasPt(res.vanishB);
-
-            const nA = 9; // depth-direction lines
-            for(let i=0;i<nA;i++){
-              const t = (nA===1)?0.5:(i/(nA-1));
-              const x = rect.x + rect.w * t;
-              const y = rect.y + rect.h;
-              ctx.beginPath();
-              ctx.moveTo(x, y);
-              ctx.lineTo(vA.x, vA.y);
-              ctx.stroke();
-            }
-
-            const nB = 7; // cross-direction lines
-            for(let i=0;i<nB;i++){
-              const t = (nB===1)?0.5:(i/(nB-1));
-              const x = rect.x;
-              const y = rect.y + rect.h * t;
-              ctx.beginPath();
-              ctx.moveTo(x, y);
-              ctx.lineTo(vB.x, vB.y);
-              ctx.stroke();
-            }
-
-            ctx.restore();
-          }
-        }catch(_){ }
-
         ctx.restore();
       }
 
@@ -1047,47 +1007,46 @@ function polyPath(points){
       c3.status = "editing";
       c3.error = null;
 
-      // Compute calibration when enough input is available.
-// Full mode: A1,A2,B1,B2 (4 lines). Quick test mode: A1 and B1 only (2 lines), with horizontal horizon assumption.
-      const quick = !!c3.quickMode;
-      const ready = quick
-        ? (c3.lines && c3.lines.A1 && c3.lines.A1.p1 && c3.lines.A1.p2 && c3.lines.B1 && c3.lines.B1.p1 && c3.lines.B1.p2)
-        : (["A1","A2","B1","B2"].every(k=>{ const x=c3.lines[k]; return x && x.p1 && x.p2; }));
-      if(ready && window.PhotoPaveCameraCalib){
-        const computeFn = quick ? window.PhotoPaveCameraCalib.computeFromGuides : window.PhotoPaveCameraCalib.computeFromLines;
-        if(typeof computeFn === "function"){
-          const prevOk = (c3.result && c3.result.ok) ? c3.result : (c3.lastGoodResult && c3.lastGoodResult.ok ? c3.lastGoodResult : null);
-          const res = computeFn(c3.lines, state.assets.photoW, state.assets.photoH);
-          if(res && res.ok){
-            c3.result = res;
-            c3.lastGoodResult = res;
-            c3.status = "ready";
+      // If all four lines have two points, compute calibration.
+      const ready = ["A1","A2","B1","B2"].every(k=>{
+        const x=c3.lines[k];
+        return x && x.p1 && x.p2;
+      });
+      if(ready && window.PhotoPaveCameraCalib && typeof window.PhotoPaveCameraCalib.computeFromLines === "function"){
+        const prevOk = (c3.result && c3.result.ok) ? c3.result : (c3.lastGoodResult && c3.lastGoodResult.ok ? c3.lastGoodResult : null);
+        const res = window.PhotoPaveCameraCalib.computeFromLines(c3.lines, state.assets.photoW, state.assets.photoH);
+        if(res && res.ok){
+          c3.result = res;
+          c3.lastGoodResult = res;
+          c3.status = "ready";
 
-            // Variant B rule: calibration does not change paving direction.
-            if(c3.applyToActiveZone !== false){
-              const z = getActiveZone();
-              if(z && z.material && z.material.params){
-                z.material.params.horizon = res.autoHorizon;
-                z.material.params.perspective = res.autoPerspective;
-                z.material._ultraTuned = z.material._ultraTuned || {horizon:false, perspective:false};
-                z.material._ultraTuned.horizon = false;
-                z.material._ultraTuned.perspective = false;
-              }
+          // Variant B rule: calibration does not change paving direction.
+          // Optional mapping to legacy sliders is allowed, but kept OFF by default.
+          if(c3.applyToActiveZone !== false){
+            const z = getActiveZone();
+            if(z && z.material && z.material.params){
+              z.material.params.horizon = res.autoHorizon;
+              z.material.params.perspective = res.autoPerspective;
+              // Mark as not manually tuned so it can be re-applied.
+              z.material._ultraTuned = z.material._ultraTuned || {horizon:false, perspective:false};
+              z.material._ultraTuned.horizon = false;
+              z.material._ultraTuned.perspective = false;
             }
-            c3.error = null;
-            c3.warn = null;
-          }else{
-            // Soft fallback: keep the last good calibration, or fallback if lines are unstable.
-            c3.result = prevOk || {ok:false, reason:(res && res.reason) ? String(res.reason) : "calibration_weak", fallback:true};
-            c3.status = "ready";
-            c3.error = null;
-            c3.warn = (res && res.reason) ? String(res.reason) : "calibration_weak";
           }
+          c3.error = null;
+          c3.warn = null;
+        }else{
+          // Soft fallback: keep the last good calibration (if any) and keep the mode operational.
+          // This avoids "error mode" when lines are nearly parallel/noisy.
+          c3.result = prevOk || {ok:false, reason:(res && res.reason) ? String(res.reason) : "calibration_weak", fallback:true};
+          c3.status = "ready";
+          c3.error = null;
+          c3.warn = (res && res.reason) ? String(res.reason) : "calibration_weak";
         }
       }
 
       try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
-render();
+      render();
       return;
     }
   }catch(_){ }

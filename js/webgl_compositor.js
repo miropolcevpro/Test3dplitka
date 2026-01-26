@@ -731,12 +731,15 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     }
 
     // Premium occlusion: if a mask exists, clip the tile under selected objects.
-    // The mask is in photo space, so we sample with uvSrc.
-    if(uHasOcc == 1){
-      float occ = texture(uOcc, uvSrc).r; // 0..1
-      float o = smoothstep(0.15, 0.60, occ);
-      alpha *= (1.0 - o);
-    }
+// The mask is in photo space, so we sample with uvSrc.
+// IMPORTANT: keep this close to binary to avoid "washed / semi-transparent" tiles.
+// Feather is intentionally narrow (done in shader, not by blurring the mask too much).
+if(uHasOcc == 1){
+  float occ = texture(uOcc, uvSrc).r; // 0..1 (mask stored in RGB/alpha)
+  // Narrow transition band: <0.45 -> no cut, >0.55 -> full cut
+  float o = smoothstep(0.45, 0.55, occ);
+  alpha *= (1.0 - o);
+}
 
     if(alpha <= 0.0005){
       outColor = vec4(toSRGB(prevLin), 1.0);
