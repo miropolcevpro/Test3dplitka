@@ -10,41 +10,7 @@
   // Patch B: keep separate material params for base and ultra modes.
   // We avoid refactoring the whole codebase by keeping z.material.params as a pointer
   // to either params_base or params_ultra depending on state.ai.enabled.
-  // Horizon UX (v2.2.93): bias the horizon control towards pushing the pattern "into the distance"
-  // (down/away) and reduce the range that lifts the pattern up. Users frequently see the
-  // default fill look "tilted up" and have to drag the slider far to correct it.
-  //
-  // We keep WebGL pipeline unchanged: no UV warp, no anisotropic scaling, no skew.
-  // Only a UI remap and a slightly better default.
-  const DEFAULT_MAT_PARAMS={scale:12.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.18};
-
-  // Slider mapping: ui in [-1..1] -> horizon internal in [H_UP_MIN..H_DOWN_MAX], centered at H_NEUTRAL.
-  // - Negative UI range is compressed (less "lift up")
-  // - Positive UI range is expanded (more "into the distance")
-  const H_NEUTRAL = 0.18;
-  const H_UP_MIN  = -0.35;
-  const H_DOWN_MAX = 1.00;
-  const _clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
-  function uiToHorizon(ui){
-    ui = _clamp(+ui || 0, -1, 1);
-    if(ui<=0){
-      const k = (H_NEUTRAL - H_UP_MIN); // ui=-1 => H_UP_MIN
-      return _clamp(H_NEUTRAL + ui*k, H_UP_MIN, H_DOWN_MAX);
-    }else{
-      const k = (H_DOWN_MAX - H_NEUTRAL); // ui=+1 => H_DOWN_MAX
-      return _clamp(H_NEUTRAL + ui*k, H_UP_MIN, H_DOWN_MAX);
-    }
-  }
-  function horizonToUi(h){
-    h = _clamp(+h || 0, H_UP_MIN, H_DOWN_MAX);
-    if(h<=H_NEUTRAL){
-      const k = (H_NEUTRAL - H_UP_MIN);
-      return _clamp((h - H_NEUTRAL)/k, -1, 1);
-    }else{
-      const k = (H_DOWN_MAX - H_NEUTRAL);
-      return _clamp((h - H_NEUTRAL)/k, -1, 1);
-    }
-  }
+  const DEFAULT_MAT_PARAMS={scale:12.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0};
   const _clone=(o)=>JSON.parse(JSON.stringify(o));
   function ensureZoneMaterialParams(z){
     if(!z || !z.material) return;
@@ -403,8 +369,7 @@ async function handlePhotoFile(file){
     const bs=el("blendSelect"); if(bs && oc){ bs.disabled=oc.checked; if(oc.checked) bs.value="source-over"; }
     const bs2=el("blendSelect"); if(bs2){ bs2.value = (oc && oc.checked) ? "source-over" : (z.material.params.blendMode??"source-over"); }
     el("perspectiveRange").value=z.material.params.perspective??0.75;
-    // Show UI value (shifted/bias-mapped) while keeping internal value stored in material params.
-    el("horizonRange").value = horizonToUi(z.material.params.horizon??H_NEUTRAL);
+    el("horizonRange").value=z.material.params.horizon??0.0;
   }
 
   function syncCloseButtonUI(){
@@ -957,8 +922,7 @@ el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z
     });
     el("horizonRange").addEventListener("input",()=>{
       const z=S.getActiveZone();if(!z)return;
-      const uiVal = parseFloat(el("horizonRange").value);
-      z.material.params.horizon = uiToHorizon(uiVal);
+      z.material.params.horizon=parseFloat(el("horizonRange").value);
       // Patch D: user manual tune in Ultra disables auto-calibration overlay for that parameter.
       if(state.ai && state.ai.enabled!==false && z.material && z.material._ultraTuned){
         z.material._ultraTuned.horizon = true;
