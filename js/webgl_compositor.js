@@ -2248,19 +2248,7 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 0.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
-    // Ultra AI: while the depth model is still loading/running, the fallback "far fade" based on plane-V
-    // can produce a visible left/right dimming on some perspectives. Once AI depth is ready we switch to
-    // depth-driven farBase. Disable the far-fade until depth is ready to avoid transient dull/transparent
-    // patches during long model loads.
-    let farFade = 1.0;
-    try{
-      if(ai && ai.enabled !== false){
-        if(!(ai.depthReady && ai.depthMap)){
-          farFade = 0.0;
-        }
-      }
-    }catch(_){ farFade = 1.0; }
-    gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), farFade);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
 
     const invH = _mat3FromArray9(invHArr9);
     gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);

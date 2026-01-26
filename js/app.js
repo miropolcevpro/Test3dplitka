@@ -457,6 +457,8 @@ async function handlePhotoFile(file){
     const calib3dEnableChk = document.getElementById("calib3dEnableChk");
     const calib3dApplyChk = document.getElementById("calib3dApplyChk");
     const calib3dStatusText = document.getElementById("calib3dStatusText");
+    const calib3dQuickChk = document.getElementById("calib3dQuickChk");
+    const calib3dGridChk = document.getElementById("calib3dGridChk");
     const calib3dA1Btn = document.getElementById("calib3dA1Btn");
     const calib3dA2Btn = document.getElementById("calib3dA2Btn");
     const calib3dB1Btn = document.getElementById("calib3dB1Btn");
@@ -557,6 +559,11 @@ async function handlePhotoFile(file){
       const c3 = _ensureCalib3DState();
       if(calib3dEnableChk) calib3dEnableChk.checked = !!c3.enabled;
       if(calib3dApplyChk) calib3dApplyChk.checked = (c3.applyToActiveZone !== false);
+      if(calib3dQuickChk) calib3dQuickChk.checked = !!c3.quickMode;
+      if(calib3dGridChk) calib3dGridChk.checked = (c3.showGrid !== false);
+      // In quick mode we only need A1 and B1. Hide A2/B2 controls to reduce confusion.
+      if(calib3dA2Btn) calib3dA2Btn.style.display = c3.quickMode ? "none" : "";
+      if(calib3dB2Btn) calib3dB2Btn.style.display = c3.quickMode ? "none" : "";
       const setActive = (btn, k)=>{ if(btn) btn.classList.toggle("btn--active", c3.active===k); };
       setActive(calib3dA1Btn, "A1");
       setActive(calib3dA2Btn, "A2");
@@ -597,6 +604,30 @@ async function handlePhotoFile(file){
         const c3 = _ensureCalib3DState();
         c3.applyToActiveZone = !!calib3dApplyChk.checked;
         _syncCalib3DUI();
+      });
+    }
+
+    if(calib3dQuickChk){
+      calib3dQuickChk.addEventListener("change", ()=>{
+        const c3 = _ensureCalib3DState();
+        c3.quickMode = !!calib3dQuickChk.checked;
+        // Force a sensible active line in quick mode.
+        if(c3.quickMode && (c3.active === "A2" || c3.active === "B2" || !c3.active)) c3.active = "A1";
+        // Enable grid by default in quick mode
+        if(c3.quickMode) c3.showGrid = true;
+        c3.result = null;
+        c3.status = "editing";
+        _syncCalib3DUI();
+        ED.render();
+        try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+      });
+    }
+    if(calib3dGridChk){
+      calib3dGridChk.addEventListener("change", ()=>{
+        const c3 = _ensureCalib3DState();
+        c3.showGrid = !!calib3dGridChk.checked;
+        _syncCalib3DUI();
+        ED.render();
       });
     }
     if(calib3dA1Btn) calib3dA1Btn.addEventListener("click", ()=>_enterCalibMode("A1"));

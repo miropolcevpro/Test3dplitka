@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_96_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_98_0" />
 </head>
 <body>
   <div class="app">
@@ -178,6 +178,14 @@
                 <input type="checkbox" id="calib3dApplyChk" checked />
                 <span>Применять к активной зоне</span>
               </label>
+              <label class="chkline" style="margin-top:6px">
+                <input type="checkbox" id="calib3dQuickChk" />
+                <span>Упрощённо: 2 линии + сетка (тест)</span>
+              </label>
+              <label class="chkline" style="margin-top:6px">
+                <input type="checkbox" id="calib3dGridChk" checked />
+                <span>Показывать сетку плоскости</span>
+              </label>
               <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:6px">
                 <button id="calib3dA1Btn" type="button" class="btn btn--ghost">Линия A1</button>
                 <button id="calib3dA2Btn" type="button" class="btn btn--ghost">Линия A2</button>
@@ -250,14 +258,14 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/state.js?v=iter2_2_96_0"></script>
-  <script src="js/updater.js?v=iter2_2_96_0"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_96_0"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_96_0"></script>
-  <script src="js/api.js?v=iter2_2_96_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_96_0"></script>
-  <script src="js/camera_calib.js?v=iter2_2_96_0"></script>
-  <script src="js/editor.js?v=iter2_2_96_0"></script>
-  <script src="js/app.js?v=iter2_2_96_0"></script>
+  <script src="js/state.js?v=iter2_2_98_0"></script>
+  <script src="js/updater.js?v=iter2_2_98_0"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_98_0"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_98_0"></script>
+  <script src="js/api.js?v=iter2_2_98_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_98_0"></script>
+  <script src="js/camera_calib.js?v=iter2_2_98_0"></script>
+  <script src="js/editor.js?v=iter2_2_98_0"></script>
+  <script src="js/app.js?v=iter2_2_98_0"></script>
 </body>
 </html>
