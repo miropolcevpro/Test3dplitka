@@ -1,1 +1,1 @@
-mvp-iter2.2.96-ai-loading-fade-fix
+mvp-iter2.2.95-horizon-more-amplitude
