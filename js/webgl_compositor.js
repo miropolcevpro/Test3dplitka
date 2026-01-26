@@ -1303,9 +1303,9 @@ function _decomposeHomographyToRT(H, K){
     rwx/=rwlen; rwy/=rwlen; rwz/=rwlen;
 
     const denom = rwz;
-    if(Math.abs(denom) < 2e-6) return {x:0,y:0,ok:false};
+    if(Math.abs(denom) < 1e-6) return {x:0,y:0,ok:false};
     const sRay = -cwz / denom;
-    if(!(sRay > 1e-5)) return {x:0,y:0,ok:false};
+    if(!(sRay > 0.0)) return {x:0,y:0,ok:false};
     return {x: cwx + rwx*sRay, y: cwy + rwy*sRay, ok:true};
   }
 
@@ -1336,9 +1336,6 @@ function _decomposeHomographyToRT(H, K){
       if(y < yMin) yMin = y;
       if(y > yMax) yMax = y;
     }
-
-  // Per-zone horizon fill bound smoothing (prevents boundary chatter / snapping)
-  const _hFillBoundCache = new Map();
     if(!isFinite(xMin) || !isFinite(yMin)) return null;
     return {xMin,xMax,yMin,yMax};
   }
@@ -1352,7 +1349,7 @@ function _decomposeHomographyToRT(H, K){
     // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
     const pitchW = smoothstep(hPitchStart, 1.0, a);
     const pitchCur = sgn * pitchMax * pitchW;
-    const cyCur = clamp(cy + (hTest * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
+	    const cyCur = clamp(cy + (hTest * cyShiftMax), 0.06*(h||1), 0.94*(h||1));
     const camPose = _applyPitchToCam(camBase, pitchCur);
     if(!camPose || !camPose.R || !camPose.t) return false;
 
@@ -1417,75 +1414,60 @@ function _decomposeHomographyToRT(H, K){
     return {f: fGuess, cx, cy};
   }
 
+	  // Per-zone horizon clamp smoothing: the hard "keep-filled" bound can move slightly
+	  // between frames due to numeric noise, causing a visible "twitch" while dragging.
+	  // We smooth ONLY the relaxation of the bound (making it less restrictive). Tightening
+	  // remains immediate to guarantee no empty regions appear.
+	  const _hClampState = new Map();
+	  function _hClampKey(cfg, sign){
+	    const zid = cfg && (cfg.zoneId || cfg.zid || cfg.zoneID || cfg.id);
+	    return `${zid || 'global'}:${sign < 0 ? 'n' : 'p'}`;
+	  }
+	  function _smoothClampBound(cfg, sign, boundMag){
+	    const key = _hClampKey(cfg, sign);
+	    const prev = _hClampState.get(key);
+	    let out = boundMag;
+	    if(prev && isFinite(prev.bound)){
+	      // Immediate tighten.
+	      if(boundMag < prev.bound) out = boundMag;
+	      else{
+	        // Smooth relax (less restrictive) to avoid visible snaps.
+	        const a = (cfg && isFinite(cfg.hRelaxAlpha)) ? clamp(cfg.hRelaxAlpha, 0.02, 0.50) : 0.18;
+	        out = prev.bound + (boundMag - prev.bound) * a;
+	      }
+	    }
+	    _hClampState.set(key, {bound: out});
+	    return out;
+	  }
+
 function _clampHorizonToFillContour(camBase, hVal, cfg){
-  if(!camBase || !cfg || !cfg.bounds) return hVal;
-  const zid = (cfg && cfg.zoneId) ? String(cfg.zoneId) : null;
-  const sign = (hVal >= 0) ? 1 : -1;
-  const target = Math.min(1.0, Math.abs(hVal));
-  if(target < 1e-6) return 0.0;
+    if(!camBase || !cfg || !cfg.bounds) return hVal;
+    const sign = (hVal >= 0) ? 1 : -1;
+    const target = Math.min(1.0, Math.abs(hVal));
+    if(target < 1e-6) return 0.0;
 
-  // If already safe, keep it (and allow bound to relax smoothly).
-  if(_horizonKeepsZoneFilled(camBase, sign*target, cfg)){
-    if(zid){
-      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      const st = _hFillBoundCache.get(zid) || {loEff: 0.0, t: now};
-      const dt = Math.max(0.0, Math.min(0.2, (now - (st.t||now)) / 1000.0));
-      st.t = now;
-      const rate = 6.0; // 1/s
-      const a = 1.0 - Math.exp(-rate * dt);
-      st.loEff = st.loEff > 0 ? Math.min(target, st.loEff + (target - st.loEff) * a) : target;
-      _hFillBoundCache.set(zid, st);
+	    // If already safe, keep it.
+	    if(_horizonKeepsZoneFilled(camBase, sign*target, cfg)) return sign*target;
+
+	    // Binary search the maximum safe magnitude (monotonic in practice).
+    let lo = 0.0, hi = target;
+    for(let it=0; it<20; it++){
+      const mid = 0.5*(lo + hi);
+      if(_horizonKeepsZoneFilled(camBase, sign*mid, cfg)) lo = mid;
+      else hi = mid;
     }
-    return sign*target;
-  }
 
-  // Binary search the maximum safe magnitude.
-  let lo = 0.0, hi = target;
-  for(let it=0; it<22; it++){
-    const mid = 0.5*(lo + hi);
-    if(_horizonKeepsZoneFilled(camBase, sign*mid, cfg)) lo = mid;
-    else hi = mid;
-  }
+	    // Smooth relaxation of the hard bound per-zone to avoid twitch.
+	    lo = _smoothClampBound(cfg, sign, lo);
 
-  // One-sided smoothing of the safety bound (never exceed `lo`).
-  let bMag = lo;
-  if(zid){
-    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const st = _hFillBoundCache.get(zid) || {loEff: lo, t: now};
-    const prev = isFinite(st.loEff) ? st.loEff : lo;
-    const dt = Math.max(0.0, Math.min(0.2, (now - (st.t||now)) / 1000.0));
-    st.t = now;
-    if(lo < prev){
-      st.loEff = lo; // tighten immediately
-    }else{
-      const rate = 4.0; // 1/s
-      const a = 1.0 - Math.exp(-rate * dt);
-      st.loEff = Math.min(lo, prev + (lo - prev) * a);
-    }
-    _hFillBoundCache.set(zid, st);
-    bMag = st.loEff;
-  }
-
-  // Soft-clamp (continuous): smooth-min between request and bound.
-  const kSoft = (cfg && isFinite(cfg.hSoftK)) ? Math.max(2.0, cfg.hSoftK) : 28.0;
-  const aMag = target;
-  let sm = bMag;
-  try{
-    const ea = Math.exp(-kSoft * aMag);
-    const eb = Math.exp(-kSoft * bMag);
-    sm = -Math.log(ea + eb) / kSoft;
-  }catch(_){ sm = bMag; }
-  if(!isFinite(sm)) sm = bMag;
-  sm = Math.max(0.0, Math.min(bMag, sm));
-  return sign * sm;
-}    // Soft-clamp (C1 polish): avoid a visible "twitch" when the fill-constraint
+    // Soft-clamp (C1 polish): avoid a visible "twitch" when the fill-constraint
     // engages/disengages near the boundary by using a smooth-min between the user
     // request (target) and the hard safety bound (lo).
     // Guarantees: result <= lo (so still safe), continuous near the boundary.
     const kSoft = (cfg && isFinite(cfg.hSoftK)) ? Math.max(2.0, cfg.hSoftK) : 28.0;
     // smoothMin(a,b) = -ln(exp(-k a) + exp(-k b))/k  (approx min)
     const aMag = target;
-    const bMag = lo;
+	    const bMag = lo;
     let sm = bMag;
     try{
       const ea = Math.exp(-kSoft * aMag);
@@ -2635,8 +2617,10 @@ try{
 
     // Horizon slider -> camera pitch (tilt) + principal point shift.
     // Pitch is kept conservative to avoid near-field shape distortion.
-    const pitchMax = 0.40; // ~23 degrees (guarded)
-    const cyShiftMax = 0.62 * (h || 1);
+	    // Slightly higher cy-shift range to allow the horizon to "lay down" further,
+	    // while the fill-constraint + near-guard keep the plane fully covered.
+	    const pitchMax = 0.38; // ~22 degrees
+	    const cyShiftMax = 0.55 * (h || 1);
 
     // B1: Pitch only starts contributing near the end of the Horizon slider travel.
     const hPitchStart = 0.82;
@@ -2645,12 +2629,14 @@ try{
     // rays near the top of the contour can miss the plane (s<=0) and the user sees an empty area.
     const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(w||1)-1, yMin:0, yMax:(h||1)-1};
     const hSafe = _clampHorizonToFillContour(camBase, hVal, {
-      zoneId: zone && zone.id ? zone.id : null,
+	      zoneId: (zone && zone.id) ? zone.id : null,
       cx, cy, f: fCur, w, h,
       distScale,
       pitchMax,
       cyShiftMax,
       hPitchStart,
+	      // Additional smoothing for relaxation of the fill-bound (prevents micro-snaps while dragging).
+	      hRelaxAlpha: 0.18,
       // Soft boundary to avoid snapping when the fill-constraint engages.
       hSoftK: 28.0,
       bounds
@@ -2664,7 +2650,7 @@ try{
 
     // Principal point shift: extends the effective horizon adjustment range
     // without forcing extreme camera tilts.
-    const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(h||1), 0.92*(h||1));
+	    const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.06*(h||1), 0.94*(h||1));
 
     // B3: near-field quality guard (camera-only). If the base camera is too aggressive,
     // it can make the tile look "squashed" even at Horizon≈0. The guard reduces pitch
@@ -3079,20 +3065,23 @@ if(!invH){
           const distScaleRef = 1.0;
 
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
-          const pitchMax = 0.35;
-          const cyShiftMax = 0.42 * (outH || 1);
+	          const pitchMax = 0.38;
+	          const cyShiftMax = 0.55 * (outH || 1);
 
           // B1: Pitch only starts contributing near the end of the Horizon slider travel.
           const hPitchStart = 0.82;
 
           // Keep the plane visible inside the contour at export resolution.
           const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
-          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
-            cx, cy, f: fGuess, w: outW, h: outH,
+	          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+	            zoneId: (zone && zone.id) ? zone.id : null,
+	            cx, cy, f: fGuess, w: outW, h: outH,
             distScale,
             pitchMax,
             cyShiftMax,
             hPitchStart,
+	            hRelaxAlpha: 0.18,
+	            hSoftK: 28.0,
             bounds
           });
 
@@ -3101,7 +3090,7 @@ if(!invH){
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
           const pitchW = smoothstep(hPitchStart, 1.0, aH);
           const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.06*(outH||1), 0.94*(outH||1));
 
           // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
@@ -3333,20 +3322,23 @@ try{
           const distScale = clamp(Math.exp(-perspT * distK), 0.45, 2.20);
           const distScaleRef = 1.0;
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
-          const pitchMax = 0.35;
-          const cyShiftMax = 0.42 * (outH || 1);
+	          const pitchMax = 0.38;
+	          const cyShiftMax = 0.55 * (outH || 1);
 
           // B1: Pitch only starts contributing near the end of the Horizon slider travel.
           const hPitchStart = 0.82;
 
           // Keep the plane visible inside the contour at export resolution.
           const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
-          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
-            cx, cy, f: fGuess, w: outW, h: outH,
+	          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+	            zoneId: (zone && zone.id) ? zone.id : null,
+	            cx, cy, f: fGuess, w: outW, h: outH,
             distScale,
             pitchMax,
             cyShiftMax,
             hPitchStart,
+	            hRelaxAlpha: 0.18,
+	            hSoftK: 28.0,
             bounds
           });
 
@@ -3355,7 +3347,7 @@ try{
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
           const pitchW = smoothstep(hPitchStart, 1.0, aH);
           const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.08*(outH||1), 0.92*(outH||1));
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.06*(outH||1), 0.94*(outH||1));
 
           // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;

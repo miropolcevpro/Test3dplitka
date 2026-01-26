@@ -351,7 +351,17 @@ async function handlePhotoFile(file){
   function syncSettingsUI(){
     const z=S.getActiveZone(); if(!z) return;
     ensureZoneMaterialParams(z);
-    el("scaleRange").value=z.material.params.scale??1.0;
+		// Scale slider range is intentionally constrained (pro-friendly defaults).
+		// Clamp stored values to the UI range to avoid sudden jumps when opening older projects.
+		{
+			const sr = el("scaleRange");
+			const v = (z.material.params.scale ?? 12.0);
+			const mn = parseFloat(sr.min||"0");
+			const mx = parseFloat(sr.max||"9999");
+			sr.value = Math.min(mx, Math.max(mn, +v));
+			// Keep model in sync with the clamped UI value.
+			z.material.params.scale = parseFloat(sr.value);
+		}
     el("rotRange").value=z.material.params.rotation??0;
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
     el("opacityRange").value=z.material.params.opacity??1.0;
@@ -867,7 +877,19 @@ async function handlePhotoFile(file){
       renderZonesUI();ED.render();
     });
 
-    el("scaleRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.scale=parseFloat(el("scaleRange").value);ED.render();});
+	el("scaleRange").addEventListener("input",()=>{
+		const z=S.getActiveZone(); if(!z) return;
+		const sr = el("scaleRange");
+		let v = parseFloat(sr.value);
+		const mn = parseFloat(sr.min||"0");
+		const mx = parseFloat(sr.max||"9999");
+		if(isFinite(mn) && isFinite(mx)){
+			v = Math.min(mx, Math.max(mn, v));
+			sr.value = String(v);
+		}
+		z.material.params.scale = v;
+		ED.render();
+	});
     el("rotRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.rotation=parseFloat(el("rotRange").value);ED.render();});
     el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.opacity=parseFloat(el("opacityRange").value);ED.render();});
     const oc=el("opaqueFillChk");
