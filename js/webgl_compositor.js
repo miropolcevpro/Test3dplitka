@@ -1343,11 +1343,12 @@ function _decomposeHomographyToRT(H, K){
   function _horizonKeepsZoneFilled(camBase, hTest, cfg){
     if(!camBase || !cfg || !cfg.bounds) return true;
     const {cx,cy,f,w,h,distScale,pitchMax,cyShiftMax,bounds} = cfg;
-    const hPitchStart = (cfg && typeof cfg.hPitchStart === 'number') ? cfg.hPitchStart : 0.82;
+    const hPitchStart = (cfg && typeof cfg.hPitchStart === 'number') ? cfg.hPitchStart : 0.65;
     const a = Math.min(1.0, Math.abs(hTest||0));
     const sgn = (hTest >= 0) ? 1 : -1;
     // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
     let pitchW = smoothstep(hPitchStart, 1.0, a);
+    pitchW = pitchW * pitchW; // gentler ramp reduces perceived 'kink'
     const pitchCur = sgn * pitchMax * pitchW;
 	    let cyCur = clamp(cy + (hTest * cyShiftMax), 0.04*(h||1), 0.96*(h||1));
     const camPose = _applyPitchToCam(camBase, pitchCur);
@@ -1390,7 +1391,16 @@ function _decomposeHomographyToRT(H, K){
     const xM = clamp((bounds.xMin + bounds.xMax)*0.5, 0.0, (w||1)-1.0);
     const xR = clamp(bounds.xMax - 1.0, 0.0, (w||1)-1.0);
 
-    const pts = [[xL,yTop],[xM,yTop],[xR,yTop],[xM,yMid]];
+    const xQ1 = clamp(bounds.xMin + (bounds.xMax - bounds.xMin)*0.25, 0.0, (w||1)-1.0);
+    const xQ3 = clamp(bounds.xMin + (bounds.xMax - bounds.xMin)*0.75, 0.0, (w||1)-1.0);
+    const yTop2 = clamp(bounds.yMin + (bounds.yMax - bounds.yMin)*0.06, 0.0, (h||1)-1.0);
+    const yMid2 = clamp(bounds.yMin + (bounds.yMax - bounds.yMin)*0.18, 0.0, (h||1)-1.0);
+    // More samples => more stable monotonic boundary (less jitter at the constraint edge)
+    const pts = [
+      [xL,yTop],[xQ1,yTop],[xM,yTop],[xQ3,yTop],[xR,yTop],
+      [xL,yTop2],[xM,yTop2],[xR,yTop2],
+      [xM,yMid],[xM,yMid2]
+    ];
     for(const pt of pts){
       const pp = _planePointFromCamPixel(cam, pt[0], pt[1]);
       if(!pp.ok) return false;
@@ -1452,9 +1462,47 @@ function _decomposeHomographyToRT(H, K){
 	        out = prev.bound + (boundMag - prev.bound) * a;
 	      }
 	    }
-	    _hClampState.set(key, {bound: out});
+	    const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+	    _hClampState.set(key, {bound: out, t: now});
 	    return out;
 	  }
+
+// C1/C2: stabilize the "keep-filled" horizon bound to avoid visible snapping.
+// We already smooth relaxation (less restrictive). For tightening (more restrictive), we try to
+// limit the step per update IF it remains safe; otherwise we fall back to the true safe bound.
+// This preserves the guarantee (no empty regions) while greatly reducing sudden jumps.
+function _stabilizeFillBound(camBase, cfg, sign, boundMagRaw){
+  const key = _hClampKey(cfg, sign);
+  const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+  const prev = _hClampState.get(key);
+  let out = boundMagRaw;
+
+  if(prev && isFinite(prev.bound)){
+    if(boundMagRaw >= prev.bound){
+      // Relax: smooth.
+      const a = (cfg && isFinite(cfg.hRelaxAlpha)) ? clamp(cfg.hRelaxAlpha, 0.02, 0.50) : 0.18;
+      out = prev.bound + (boundMagRaw - prev.bound) * a;
+    }else{
+      // Tighten: try to tighten gradually if still safe.
+      const step = (cfg && isFinite(cfg.hTightenStep)) ? clamp(cfg.hTightenStep, 0.005, 0.12) : 0.030;
+      let cand = Math.max(boundMagRaw, prev.bound - step);
+      if(cand > boundMagRaw){
+        // Verify candidate is still safe; otherwise use the true bound.
+        if(_horizonKeepsZoneFilled(camBase, sign*cand, cfg)) out = cand;
+        else out = boundMagRaw;
+      }else{
+        out = boundMagRaw;
+      }
+    }
+  }
+
+  // Small conservative margin reduces flicker near the boundary due to numerical noise.
+  const margin = (cfg && isFinite(cfg.hBoundMargin)) ? clamp(cfg.hBoundMargin, 0.0, 0.02) : 0.004;
+  out = Math.max(0.0, out - margin);
+
+  _hClampState.set(key, {bound: out, t: now});
+  return out;
+}
 
 function _clampHorizonToFillContour(camBase, hVal, cfg){
     if(!camBase || !cfg || !cfg.bounds) return hVal;
@@ -1474,7 +1522,7 @@ function _clampHorizonToFillContour(camBase, hVal, cfg){
     }
 
 	    // Smooth relaxation of the hard bound per-zone to avoid twitch.
-	    lo = _smoothClampBound(cfg, sign, lo);
+	    lo = _stabilizeFillBound(camBase, cfg, sign, lo);
 
     // Soft-clamp (C1 polish): avoid a visible "twitch" when the fill-constraint
     // engages/disengages near the boundary by using a smooth-min between the user
