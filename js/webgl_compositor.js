@@ -662,6 +662,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform int uVFlip;       // 0/1: flip plane V (depth)
   uniform int uOpaqueFill; // 0/1: force dense fill (reduce "transparency")
   uniform float uPlaneD;   // plane depth in UV units (for normalization)
+  // Far-direction in plane UV space. When the plane V axis is not aligned with
+  // the visual "into distance" direction, using uv.y for haze/far-fade can
+  // produce a lateral (left/right) brightness drift. We instead project UV on
+  // a CPU-provided far-direction.
+  uniform vec2 uFarDir;
+  uniform vec2 uFarOrigin;
 
   out vec4 outColor;
 
@@ -731,15 +737,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     }
 
     // Premium occlusion: if a mask exists, clip the tile under selected objects.
-// The mask is in photo space, so we sample with uvSrc.
-// IMPORTANT: keep this close to binary to avoid "washed / semi-transparent" tiles.
-// Feather is intentionally narrow (done in shader, not by blurring the mask too much).
-if(uHasOcc == 1){
-  float occ = texture(uOcc, uvSrc).r; // 0..1 (mask stored in RGB/alpha)
-  // Narrow transition band: <0.45 -> no cut, >0.55 -> full cut
-  float o = smoothstep(0.45, 0.55, occ);
-  alpha *= (1.0 - o);
-}
+    // The mask is in photo space, so we sample with uvSrc.
+    if(uHasOcc == 1){
+      float occ = texture(uOcc, uvSrc).r; // 0..1
+      float o = smoothstep(0.15, 0.60, occ);
+      alpha *= (1.0 - o);
+    }
 
     if(alpha <= 0.0005){
       outColor = vec4(toSRGB(prevLin), 1.0);
@@ -812,7 +815,7 @@ if(uHasOcc == 1){
 
     // Far fade to reduce moire + add subtle atmospheric integration.
     // If depth is available, prefer it over uv.y, because the real "far" direction may be diagonal.
-    float farBase = clamp(uv.y / max(uPlaneD, 1e-6), 0.0, 1.0);
+    float farBase = clamp(dot(uv - uFarOrigin, uFarDir) / max(uPlaneD, 1e-6), 0.0, 1.0);
     if(uHasDepth==1){
       float d = texture(uDepth, uvSrc).r; // 0..1 (normalized in AI pipeline)
       float farD = (uDepthFarHigh==1) ? d : (1.0 - d);
@@ -2134,6 +2137,33 @@ function _blendModeId(blend){
     const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
     const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPlaneD'), planeD);
+
+    // Far-direction (for haze/far-fade): derive from the *current* camera model.
+    // Using a fixed axis (e.g. uv.y) can create a left/right brightness drift on skewed quads.
+    // We sample two rays at screen center (near-bottom and near-top) and project to the plane.
+    let farOx = 0.0, farOy = 0.0, farDx = 0.0, farDy = 1.0;
+    try {
+      const sx = dstRT.w * 0.5;
+      const syNear = dstRT.h * 0.92;
+      const syFar = dstRT.h * 0.08;
+      const pNear = _planePointFromCamPixel(cam3d, sx, syNear);
+      const pFar = _planePointFromCamPixel(cam3d, sx, syFar);
+      if (pNear && pFar && isFinite(pNear[0]) && isFinite(pNear[1]) && isFinite(pFar[0]) && isFinite(pFar[1])) {
+        farOx = pNear[0];
+        farOy = pNear[1];
+        const dx = (pFar[0] - pNear[0]);
+        const dy = (pFar[1] - pNear[1]);
+        const l = Math.hypot(dx, dy);
+        if (l > 1e-6) {
+          farDx = dx / l;
+          farDy = dy / l;
+        }
+      }
+    } catch(e) {
+      // keep defaults
+    }
+    gl.uniform2f(gl.getUniformLocation(progZone,'uFarOrigin'), farOx, farOy);
+    gl.uniform2f(gl.getUniformLocation(progZone,'uFarDir'), farDx, farDy);
     // Keep the "scale" slider semantics: approximately number of repeats across the near edge.
 // Global Anti-Rubber: additionally apply an anchor-scale lock so adjusting camera
 // (horizon/perspective) does not change tile *geometry* near the bottom.
