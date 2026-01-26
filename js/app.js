@@ -23,9 +23,7 @@
   // - Positive UI range is expanded (more "into the distance")
   const H_NEUTRAL = 0.18;
   const H_UP_MIN  = -0.35;
-  // Increase "into distance" amplitude a bit more for difficult photos while
-  // keeping guards in WebGL compositor to avoid empty areas.
-  const H_DOWN_MAX = 1.15;
+  const H_DOWN_MAX = 1.00;
   const _clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
   function uiToHorizon(ui){
     ui = _clamp(+ui || 0, -1, 1);
