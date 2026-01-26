@@ -1350,7 +1350,7 @@ function _decomposeHomographyToRT(H, K){
     let pitchW = smoothstep(hPitchStart, 1.0, a);
     pitchW = pitchW * pitchW; // gentler ramp reduces perceived 'kink'
     const pitchCur = sgn * pitchMax * pitchW;
-	    let cyCur = clamp(cy + (hTest * cyShiftMax), 0.04*(h||1), 0.96*(h||1));
+	    let cyCur = clamp(cy + (hTest * cyShiftMax), 0.02*(h||1), 0.98*(h||1));
     const camPose = _applyPitchToCam(camBase, pitchCur);
     if(!camPose || !camPose.R || !camPose.t) return false;
 
@@ -2248,7 +2248,19 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 0.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
-    gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
+    // Ultra AI: while the depth model is still loading/running, the fallback "far fade" based on plane-V
+    // can produce a visible left/right dimming on some perspectives. Once AI depth is ready we switch to
+    // depth-driven farBase. Disable the far-fade until depth is ready to avoid transient dull/transparent
+    // patches during long model loads.
+    let farFade = 1.0;
+    try{
+      if(ai && ai.enabled !== false){
+        if(!(ai.depthReady && ai.depthMap)){
+          farFade = 0.0;
+        }
+      }
+    }catch(_){ farFade = 1.0; }
+    gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), farFade);
 
     const invH = _mat3FromArray9(invHArr9);
     gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);
@@ -2684,7 +2696,7 @@ try{
 	    // Slightly higher cy-shift range to allow the horizon to "lay down" further,
 	    // while the fill-constraint + near-guard keep the plane fully covered.
 	    const pitchMax = 0.40; // ~23 degrees
-	    const cyShiftMax = 0.70 * (h || 1);
+	    const cyShiftMax = 0.85 * (h || 1);
 
     // B1: Pitch only starts contributing near the end of the Horizon slider travel.
     const hPitchStart = 0.82;
@@ -2714,7 +2726,7 @@ try{
 
     // Principal point shift: extends the effective horizon adjustment range
     // without forcing extreme camera tilts.
-	    let cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(h||1), 0.96*(h||1));
+	    let cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(h||1), 0.98*(h||1));
 
     // B3: near-field quality guard (camera-only). If the base camera is too aggressive,
     // it can make the tile look "squashed" even at Horizon≈0. The guard reduces pitch
@@ -2777,7 +2789,7 @@ try{
       aH = Math.min(1.0, Math.abs(hSafe||0));
       pitchW = smoothstep(hPitchStart, 1.0, aH);
       pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(h||1), 0.96*(h||1));
+      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(h||1), 0.98*(h||1));
 
       // Re-run the near-guard once with the updated pitch/cy (deterministic single iteration).
       guardInfo = _applyNearGuard(camBase, {
@@ -3206,7 +3218,7 @@ if(!invH){
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
           let pitchW = smoothstep(hPitchStart, 1.0, aH);
           let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(outH||1), 0.96*(outH||1));
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(outH||1), 0.98*(outH||1));
 
           // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
@@ -3261,7 +3273,7 @@ try{
       aH = Math.min(1.0, Math.abs(hSafe||0));
       pitchW = smoothstep(hPitchStart, 1.0, aH);
       pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(outH||1), 0.96*(outH||1));
+      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(outH||1), 0.98*(outH||1));
 
       // Re-run the near-guard once with the updated pitch/cy (deterministic single iteration).
       guardInfo = _applyNearGuard(camBase, {
@@ -3517,7 +3529,7 @@ try{
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
           let pitchW = smoothstep(hPitchStart, 1.0, aH);
           let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(outH||1), 0.96*(outH||1));
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(outH||1), 0.98*(outH||1));
 
           // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
