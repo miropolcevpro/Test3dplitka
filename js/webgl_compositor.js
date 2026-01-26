@@ -2525,6 +2525,25 @@ if(!invH){
   lastGoodInvH.set(zone.id, invH);
 }
 
+// Cache render-space inference in PHOTO coordinates so export can reuse it verbatim.
+// This prevents subtle mismatches caused by re-inferring the quad/homography at a
+// different resolution or with different rounding/scanline behavior.
+try{
+  const geoKey = [
+    zone.id,
+    (zone.contour||[]).length,
+    (zone.contour||[]).map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+    (zone.cutouts||[])
+      .filter(c=>c.closed&&c.polygon&&c.polygon.length>=3)
+      .map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'))
+      .join('|')
+  ].join('|');
+  if(!zone._renderCache) zone._renderCache = {};
+  zone._renderCache.geoKey = geoKey;
+  zone._renderCache.metric = planeMetric;
+  zone._renderCache.quadPhoto = quad ? quad.map(pt=>({x: pt.x/Math.max(1,sx), y: pt.y/Math.max(1,sy)})) : null;
+}catch(_){/*no-op*/}
+
 // Global camera model (all modes):
 // - Estimate a plausible focal length from the base homography.
 // - Apply user horizon/perspective as camera pitch + focal scaling.
@@ -2708,6 +2727,22 @@ try{
         ]
       };
 
+      // Cache the *effective* camera that was actually used for on-screen rendering.
+      // Export uses this snapshot (scaled to export resolution) to guarantee
+      // "screen == PNG" even when the quad inference or guard is resolution-sensitive.
+      try{
+        if(!zone._renderCache) zone._renderCache = {};
+        const md = Math.max(1, Math.max(w||1, h||1));
+        zone._renderCache.cam = {
+          fN: (fCur || 1) / md,
+          cxN: (cx || 0) / Math.max(1, w||1),
+          cyN: (cyCur || 0) / Math.max(1, h||1),
+          R: (cam3d && cam3d.R) ? cam3d.R.slice(0) : null,
+          t: (cam3d && cam3d.t) ? cam3d.t.slice(0) : null,
+          tRef: (cam3dRef && cam3dRef.t) ? cam3dRef.t.slice(0) : null
+        };
+      }catch(_){/*no-op*/}
+
       // Dev-only metrics (B2): report near anisotropy/shear for the ACTUAL camera mapping.
       // Enabled by app.js via window.__PP_DEBUG_METRICS=1.
       try{
@@ -2850,16 +2885,69 @@ let invH = null;
 const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
 
 let Hm = null;
-const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
 let planeMetric = {W:1.0, D:1.0};
-const quad = quadRes && quadRes.quad ? quadRes.quad : null;
-if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
-if(quad){
-  const qn = _normalizeQuad(quad);
-  if(qn){
-    Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
-    if(Hm){
-      invH = _invert3x3(Hm);
+let quad = null;
+
+// Export parity: if we have a render-time cache (quad+camera) for this exact geometry,
+// reuse it to guarantee "screen == PNG". Re-inferring the quad at export resolution can
+// produce a different homography (scanline/rounding), which users perceive as mismatch.
+let cam3d = null;
+let cam3dRef = null;
+try{
+  const geoKey = [
+    zone.id,
+    (zone.contour||[]).length,
+    (zone.contour||[]).map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+    (zone.cutouts||[])
+      .filter(c=>c.closed&&c.polygon&&c.polygon.length>=3)
+      .map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'))
+      .join('|')
+  ].join('|');
+  const rc = zone._renderCache;
+  if(rc && rc.geoKey === geoKey && rc.quadPhoto && rc.quadPhoto.length===4){
+    planeMetric = rc.metric || planeMetric;
+    quad = rc.quadPhoto.map(pt=>({x:(+pt.x||0)*sx, y:(+pt.y||0)*sy}));
+    const qn = _normalizeQuad(quad);
+    if(qn){
+      Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+      if(Hm) invH = _invert3x3(Hm);
+    }
+
+    const cs = rc.cam;
+    if(cs && cs.R && cs.t){
+      const md = Math.max(1, Math.max(outW||1, outH||1));
+      const f = (cs.fN || 1) * md;
+      const cx = (cs.cxN || 0.5) * outW;
+      const cy = (cs.cyN || 0.5) * outH;
+      const inv = [
+        1/f, 0, -cx/f,
+        0, 1/f, -cy/f,
+        0, 0, 1
+      ];
+      cam3d = {
+        R: cs.R.slice(0),
+        t: cs.t.slice(0),
+        Kinv: inv
+      };
+      cam3dRef = {
+        R: cs.R.slice(0),
+        t: (cs.tRef ? cs.tRef.slice(0) : cs.t.slice(0)),
+        Kinv: inv
+      };
+    }
+  }
+}catch(_){/*no-op*/}
+
+// Fallback: infer quad/homography at export resolution if cache is missing.
+if(!Hm){
+  const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
+  quad = quadRes && quadRes.quad ? quadRes.quad : null;
+  if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
+  if(quad){
+    const qn = _normalizeQuad(quad);
+    if(qn){
+      Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+      if(Hm) invH = _invert3x3(Hm);
     }
   }
 }
@@ -2907,11 +2995,9 @@ if(!invH){
 }
 
       // Global camera model (export must match on-screen render):
-      // - Infer a stable pose from base homography.
-      // - Apply horizon/perspective strictly as camera pitch + distance scaling.
-      // - If manual calib lines are ready, use their intrinsics as a better baseline.
-      let cam3d = null;
-      let cam3dRef = null;
+      // If we have a cached camera from the last on-screen render, we reuse it.
+      // Otherwise we fall back to recomputing from Hm (best-effort).
+      if(!cam3d){
       try{
         if(Hm){
           let cx = 0.5 * outW;
@@ -3063,6 +3149,7 @@ try{
           }
         }
       }catch(_){ cam3d = null; cam3dRef = null; }
+      }
 
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
       _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
@@ -3125,28 +3212,64 @@ try{
       ].join('|');
       const maskEntry = _getMaskTextures(key, zone, outW, outH, sx, sy);
 
-      // Export geometry must match on-screen render: base quad from contour, camera model applied globally.
+      // Export parity: prefer cached quad+camera from the last on-screen render.
+      // This guarantees "screen == PNG" by avoiding resolution-dependent quad inference.
       const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
-      const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
       let planeMetric = {W:1.0, D:1.0};
-      const quad = quadRes && quadRes.quad ? quadRes.quad : null;
-      if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
+      let quad = null;
       let Hm = null;
       let invH = null;
-      if(quad){
-        const qn = _normalizeQuad(quad);
-        if(qn){
-          Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
-          if(Hm) invH = _invert3x3(Hm);
+      let cam3d = null;
+      let cam3dRef = null;
+      try{
+        const geoKey = [
+          zone.id,
+          (zone.contour||[]).length,
+          (zone.contour||[]).map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+          (zone.cutouts||[])
+            .filter(c=>c.closed&&c.polygon&&c.polygon.length>=3)
+            .map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'))
+            .join('|')
+        ].join('|');
+        const rc = zone._renderCache;
+        if(rc && rc.geoKey === geoKey && rc.quadPhoto && rc.quadPhoto.length===4){
+          planeMetric = rc.metric || planeMetric;
+          quad = rc.quadPhoto.map(pt=>({x:(+pt.x||0)*sx, y:(+pt.y||0)*sy}));
+          const qn = _normalizeQuad(quad);
+          if(qn){
+            Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+            if(Hm) invH = _invert3x3(Hm);
+          }
+          const cs = rc.cam;
+          if(cs && cs.R && cs.t){
+            const md = Math.max(1, Math.max(outW||1, outH||1));
+            const f = (cs.fN || 1) * md;
+            const cx = (cs.cxN || 0.5) * outW;
+            const cy = (cs.cyN || 0.5) * outH;
+            const inv = [1/f,0,-cx/f, 0,1/f,-cy/f, 0,0,1];
+            cam3d = { R: cs.R.slice(0), t: cs.t.slice(0), Kinv: inv };
+            cam3dRef = { R: cs.R.slice(0), t: (cs.tRef ? cs.tRef.slice(0) : cs.t.slice(0)), Kinv: inv };
+          }
+        }
+      }catch(_){/*no-op*/}
+
+      if(!Hm){
+        const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
+        quad = quadRes && quadRes.quad ? quadRes.quad : null;
+        if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
+        if(quad){
+          const qn = _normalizeQuad(quad);
+          if(qn){
+            Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+            if(Hm) invH = _invert3x3(Hm);
+          }
         }
       }
       if(!invH){ invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1]; }
 
       // Build camera model consistent with on-screen path (pose locked, perspective->distance, horizon->pitch).
-      let cam3d = null;
-      let cam3dRef = null;
       try{
-        if(Hm){
+        if(Hm && !cam3d){
           const intr = _computeIntrinsicsUnified(Hm, outW, outH, sx, sy, ai);
           let cx = intr.cx;
           let cy = intr.cy;
