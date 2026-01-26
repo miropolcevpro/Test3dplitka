@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-	build: { version: "mvp-iter2.2.90-horizon-smooth-scale-range",ts:new Date().toISOString()},
+	build: { version: "mvp-iter2.2.91-horizon-amp-smooth-scale-tune",ts:new Date().toISOString()},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -120,7 +120,7 @@ window.PhotoPaveState=(function(){
   const _clone=(o)=>JSON.parse(JSON.stringify(o));
 
   const makeZone=()=>{
-    const base={scale:1.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0};
+    const base={scale:12.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.0};
     const ultra=_clone(base);
     const active=(state.ai && state.ai.enabled!==false) ? ultra : base;
     return ({

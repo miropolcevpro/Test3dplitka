@@ -1347,14 +1347,30 @@ function _decomposeHomographyToRT(H, K){
     const a = Math.min(1.0, Math.abs(hTest||0));
     const sgn = (hTest >= 0) ? 1 : -1;
     // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
-    const pitchW = smoothstep(hPitchStart, 1.0, a);
+    let pitchW = smoothstep(hPitchStart, 1.0, a);
     const pitchCur = sgn * pitchMax * pitchW;
-	    const cyCur = clamp(cy + (hTest * cyShiftMax), 0.06*(h||1), 0.94*(h||1));
+	    let cyCur = clamp(cy + (hTest * cyShiftMax), 0.04*(h||1), 0.96*(h||1));
     const camPose = _applyPitchToCam(camBase, pitchCur);
     if(!camPose || !camPose.R || !camPose.t) return false;
 
+    // Optional: use the same camera-only flattening as the near-guard (if active).
+    // This makes the "keep-filled" boundary test consistent with the actual render camera
+    // and reduces visible snapping when the constraint engages.
+    let Rfill = camPose.R;
+    try{
+      const kFill = (cfg && isFinite(cfg.flattenK)) ? Math.max(0.10, Math.min(1.0, cfg.flattenK)) : 1.0;
+      if(kFill < 0.999){
+        const r1 = [Rfill[0], Rfill[3], Rfill[6]];
+        const r2 = [Rfill[1], Rfill[4], Rfill[7]];
+        const r1k = [r1[0], r1[1], r1[2]*kFill];
+        const r2k = [r2[0], r2[1], r2[2]*kFill];
+        const Rk = orthoFromR12(r1k, r2k);
+        if(Rk) Rfill = Rk;
+      }
+    }catch(_){/*noop*/}
+
     const cam = {
-      R: camPose.R,
+      R: Rfill,
       // Distance affects camera height (tz) only.
       // This matches the main render pipeline (near-guard) and improves stability
       // of the "keep-filled" boundary test.
@@ -2619,8 +2635,8 @@ try{
     // Pitch is kept conservative to avoid near-field shape distortion.
 	    // Slightly higher cy-shift range to allow the horizon to "lay down" further,
 	    // while the fill-constraint + near-guard keep the plane fully covered.
-	    const pitchMax = 0.38; // ~22 degrees
-	    const cyShiftMax = 0.55 * (h || 1);
+	    const pitchMax = 0.40; // ~23 degrees
+	    const cyShiftMax = 0.70 * (h || 1);
 
     // B1: Pitch only starts contributing near the end of the Horizon slider travel.
     const hPitchStart = 0.82;
@@ -2628,7 +2644,7 @@ try{
     // Keep the plane visible inside the contour: if the horizon is moved too far,
     // rays near the top of the contour can miss the plane (s<=0) and the user sees an empty area.
     const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(w||1)-1, yMin:0, yMax:(h||1)-1};
-    const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+    let hSafe = _clampHorizonToFillContour(camBase, hVal, {
 	      zoneId: (zone && zone.id) ? zone.id : null,
       cx, cy, f: fCur, w, h,
       distScale,
@@ -2642,15 +2658,15 @@ try{
       bounds
     });
 
-    const aH = Math.min(1.0, Math.abs(hSafe||0));
+    let aH = Math.min(1.0, Math.abs(hSafe||0));
 
     // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
-    const pitchW = smoothstep(hPitchStart, 1.0, aH);
-    const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+    let pitchW = smoothstep(hPitchStart, 1.0, aH);
+    let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
 
     // Principal point shift: extends the effective horizon adjustment range
     // without forcing extreme camera tilts.
-	    const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.06*(h||1), 0.94*(h||1));
+	    let cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(h||1), 0.96*(h||1));
 
     // B3: near-field quality guard (camera-only). If the base camera is too aggressive,
     // it can make the tile look "squashed" even at Horizon≈0. The guard reduces pitch
@@ -2684,6 +2700,58 @@ try{
         }
       }
     }catch(_){ guardInfo = null; }
+
+// B3/B1 coupling (stability): re-evaluate the fill-constraint using the *effective* camera
+// distance/flatten from the near-guard. This reduces visible snapping near the boundary
+// and also allows more usable Horizon amplitude on difficult photos, while still guaranteeing
+// there are no empty/unfilled regions inside the contour.
+try{
+  if(camBase && guardInfo){
+    const hSafe2 = _clampHorizonToFillContour(camBase, hVal, {
+      zoneId: (zone && zone.id) ? zone.id : null,
+      cx, cy, f: fCur, w, h,
+      // Use effective distance for the keep-filled test (camera-only).
+      distScale: (isFinite(guardInfo.distEff) ? guardInfo.distEff : distScale),
+      // Use flatten (if any) for the keep-filled test (camera-only).
+      flattenK: (isFinite(guardInfo.flattenK) ? guardInfo.flattenK : 1.0),
+      pitchMax,
+      cyShiftMax,
+      hPitchStart,
+      hRelaxAlpha: 0.18,
+      hSoftK: 28.0,
+      bounds
+    });
+
+    if(isFinite(hSafe2) && Math.abs(hSafe2 - hSafe) > 1e-4){
+      hSafe = hSafe2;
+
+      // Recompute desired pitch/cy with the updated safe horizon.
+      aH = Math.min(1.0, Math.abs(hSafe||0));
+      pitchW = smoothstep(hPitchStart, 1.0, aH);
+      pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(h||1), 0.96*(h||1));
+
+      // Re-run the near-guard once with the updated pitch/cy (deterministic single iteration).
+      guardInfo = _applyNearGuard(camBase, {
+        f: fCur,
+        cx,
+        cyCur,
+        planeMetric,
+        rotDeg,
+        pitchDes,
+        distDes: distScale,
+        distMax: 12.00,
+        rhoMax: 2.00,
+        shearMax: 32.0
+      });
+
+      if(guardInfo){
+        pitchEff = guardInfo.pitchEff;
+        distEff = guardInfo.distEff;
+      }
+    }
+  }
+}catch(_){/*noop*/}
 
 // C1: smooth distEff/flattenK per-zone to avoid snapping when guard switches stage.
 // pitch remains immediate (handled above) to preserve Horizon response.
@@ -3065,15 +3133,15 @@ if(!invH){
           const distScaleRef = 1.0;
 
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
-	          const pitchMax = 0.38;
-	          const cyShiftMax = 0.55 * (outH || 1);
+	          const pitchMax = 0.40;
+	          const cyShiftMax = 0.70 * (outH || 1);
 
           // B1: Pitch only starts contributing near the end of the Horizon slider travel.
           const hPitchStart = 0.82;
 
           // Keep the plane visible inside the contour at export resolution.
           const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
-	          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+	          let hSafe = _clampHorizonToFillContour(camBase, hVal, {
 	            zoneId: (zone && zone.id) ? zone.id : null,
 	            cx, cy, f: fGuess, w: outW, h: outH,
             distScale,
@@ -3085,12 +3153,12 @@ if(!invH){
             bounds
           });
 
-          const aH = Math.min(1.0, Math.abs(hSafe||0));
+          let aH = Math.min(1.0, Math.abs(hSafe||0));
 
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
-          const pitchW = smoothstep(hPitchStart, 1.0, aH);
-          const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.06*(outH||1), 0.94*(outH||1));
+          let pitchW = smoothstep(hPitchStart, 1.0, aH);
+          let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(outH||1), 0.96*(outH||1));
 
           // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
@@ -3116,7 +3184,61 @@ if(!invH){
                 distEff = guardInfo.distEff;
               }
             }
-          }catch(_){/*noop*/}
+          
+// B3/B1 coupling (stability): re-evaluate the fill-constraint using the *effective* camera
+// distance/flatten from the near-guard. This reduces visible snapping near the boundary
+// and also allows more usable Horizon amplitude on difficult photos, while still guaranteeing
+// there are no empty/unfilled regions inside the contour.
+try{
+  if(camBase && guardInfo){
+    const hSafe2 = _clampHorizonToFillContour(camBase, hVal, {
+      zoneId: (zone && zone.id) ? zone.id : null,
+      cx, cy, f: fGuess, w: outW, h: outH,
+      // Use effective distance for the keep-filled test (camera-only).
+      distScale: (isFinite(guardInfo.distEff) ? guardInfo.distEff : distScale),
+      // Use flatten (if any) for the keep-filled test (camera-only).
+      flattenK: (isFinite(guardInfo.flattenK) ? guardInfo.flattenK : 1.0),
+      pitchMax,
+      cyShiftMax,
+      hPitchStart,
+      hRelaxAlpha: 0.18,
+      hSoftK: 28.0,
+      bounds
+    });
+
+    if(isFinite(hSafe2) && Math.abs(hSafe2 - hSafe) > 1e-4){
+      hSafe = hSafe2;
+
+      // Recompute desired pitch/cy with the updated safe horizon.
+      aH = Math.min(1.0, Math.abs(hSafe||0));
+      pitchW = smoothstep(hPitchStart, 1.0, aH);
+      pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(outH||1), 0.96*(outH||1));
+
+      // Re-run the near-guard once with the updated pitch/cy (deterministic single iteration).
+      guardInfo = _applyNearGuard(camBase, {
+        f: fGuess,
+        cx,
+        cyCur,
+        planeMetric,
+        rotDeg,
+        pitchDes,
+        distDes: distScale,
+        distMax: 12.00,
+        rhoMax: 2.00,
+        shearMax: 32.0
+      });
+
+      if(guardInfo){
+        pitchEff = guardInfo.pitchEff;
+        distEff = guardInfo.distEff;
+      }
+    }
+  }
+}catch(_){/*noop*/}
+
+
+}catch(_){/*noop*/}
 
 // C1: ensure effective flattenK is defined in export/secondary passes too.
 try{
@@ -3322,15 +3444,15 @@ try{
           const distScale = clamp(Math.exp(-perspT * distK), 0.45, 2.20);
           const distScaleRef = 1.0;
           const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
-	          const pitchMax = 0.38;
-	          const cyShiftMax = 0.55 * (outH || 1);
+	          const pitchMax = 0.40;
+	          const cyShiftMax = 0.70 * (outH || 1);
 
           // B1: Pitch only starts contributing near the end of the Horizon slider travel.
           const hPitchStart = 0.82;
 
           // Keep the plane visible inside the contour at export resolution.
           const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
-	          const hSafe = _clampHorizonToFillContour(camBase, hVal, {
+	          let hSafe = _clampHorizonToFillContour(camBase, hVal, {
 	            zoneId: (zone && zone.id) ? zone.id : null,
 	            cx, cy, f: fGuess, w: outW, h: outH,
             distScale,
@@ -3342,12 +3464,12 @@ try{
             bounds
           });
 
-          const aH = Math.min(1.0, Math.abs(hSafe||0));
+          let aH = Math.min(1.0, Math.abs(hSafe||0));
 
           // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
-          const pitchW = smoothstep(hPitchStart, 1.0, aH);
-          const pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
-	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.06*(outH||1), 0.94*(outH||1));
+          let pitchW = smoothstep(hPitchStart, 1.0, aH);
+          let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.04*(outH||1), 0.96*(outH||1));
 
           // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
           const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
