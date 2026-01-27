@@ -12,6 +12,9 @@ self.onunhandledrejection = (e)=>{
   - Designed to avoid main-thread freezes in iframe/Tilda environments.
 */
 let _cv = null;
+let _opencvLoadPromise = null;
+let _opencvLoaded = false;
+
 let _lastRunId = null;
 
 function _norm2(v){
@@ -209,7 +212,12 @@ self.onmessage = async (ev)=>{
   try{
     if(msg.type === "init"){
       const candidates = msg.candidates || [];
-      _cv = await _loadOpenCV(candidates);
+      _cv = await (async()=>{
+        if(_opencvLoaded && _cv) return _cv;
+        if(_opencvLoadPromise) return _opencvLoadPromise;
+        _opencvLoadPromise = _loadOpenCV(candidates).then((cv)=>{ _opencvLoaded=true; return cv; }).catch((e)=>{ _opencvLoadPromise=null; throw e; });
+        return _opencvLoadPromise;
+      })();
       self.postMessage({type:"result", id, payload:{ok:true}});
       return;
     }

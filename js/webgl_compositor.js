@@ -788,6 +788,9 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform float uContactShadowWidth;    // in mask-blur units above 0.5 (0..0.5)
   uniform float uContactShadowPower;    // curve shaping
   uniform int uUsePBR;      // 0/1
+  // PhotoFit mode: 0=legacy per-pixel, 1=global exposure
+  uniform int uPhotoFitMode;
+  uniform float uPhotoExposure;
   uniform vec3 uLightDirW;  // world-space directional light (normalized)
   uniform sampler2D uMask;
   uniform sampler2D uMaskBlur;
