@@ -522,12 +522,30 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   // only when Ultra is enabled AND the palette provides a normal map.
   async function _preparePbrMaps(zone, ai){
     const maps = zone && zone.material ? zone.material.maps : null;
-    const hasNormal = !!(maps && typeof maps.normal === 'string' && maps.normal);
+
     const ultraEnabled = !!(ai && ai.enabled !== false);
-    if(!(ultraEnabled && hasNormal)) return {usePBR:false};
+    if(!ultraEnabled || !maps) return {usePBR:false};
+
+    const hasNormal = !!(typeof maps.normal === 'string' && maps.normal);
+    if(!hasNormal) return {usePBR:false};
+
+    // Normal is the gate: if present, enable PBR lighting.
     const normalTex = await _getPbrMapTexture(maps.normal, 'normal');
-    // roughness/ao reserved for next patch, keep fallbacks bound.
-    return {usePBR:true, normalTex};
+
+    // Roughness/AO are optional; if missing we fall back to neutral maps.
+    const roughnessTex = (typeof maps.roughness === 'string' && maps.roughness)
+      ? await _getPbrMapTexture(maps.roughness, 'roughness')
+      : null;
+    const aoTex = (typeof maps.ao === 'string' && maps.ao)
+      ? await _getPbrMapTexture(maps.ao, 'ao')
+      : null;
+
+    // Height reserved for Parallax later (kept loaded infra-only)
+    const heightTex = (typeof maps.height === 'string' && maps.height)
+      ? await _getPbrMapTexture(maps.height, 'height')
+      : null;
+
+    return {usePBR:true, normalTex, roughnessTex, aoTex, heightTex};
   }
   const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
   // Drag-stabilization: while the user drags contour points, keep the inferred "near/far" scanlines
@@ -754,8 +772,8 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform sampler2D uPrev;
   uniform sampler2D uPhoto;
   uniform sampler2D uTile;
-  // PBR maps (Patch 2.2.103): normal/roughness/ao are loaded from palette maps.
-  // Only normal is used in this patch (lighting). Roughness/AO are reserved for the next step.
+  // PBR maps: loaded from palette maps (albedo/normal/roughness/ao).
+  // Patch 2.2.103 enabled normal-mapped lighting; Patch 2.2.104 adds roughness + AO response.
   uniform sampler2D uNormalMap;
   uniform sampler2D uRoughnessMap;
   uniform sampler2D uAOMap;
@@ -804,21 +822,42 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     vec3 B = normalize(vec3(s, -c, 0.0));
     vec3 N0 = vec3(0.0, 0.0, 1.0);
 
+    // Normal map (tangent space)
     vec3 n = texture(uNormalMap, suv).rgb;
     vec3 nTS = normalize(n * 2.0 - 1.0);
     vec3 Nw = normalize(T * nTS.x + B * nTS.y + N0 * nTS.z);
 
+    // Material maps (linear)
+    float rough = clamp(texture(uRoughnessMap, suv).r, 0.0, 1.0);
+    float aoTex = clamp(texture(uAOMap, suv).r, 0.0, 1.0);
+
+    // AO strength (0..1) – reuse existing UI/logic knob (kept at 1.0 by default).
+    float aoStr = clamp(uAO, 0.0, 1.0);
+    float aoF = mix(1.0, aoTex, aoStr);
+
     vec3 L = normalize(uLightDirW);
     float ndl = max(dot(Nw, L), 0.0);
-    float amb = 0.35;
-    float diff = 0.85 * ndl;
 
-    // Very subtle specular (kept small to avoid changing the look too aggressively in this patch).
+    // Base terms (kept conservative to avoid a sudden "look change")
+    float amb = 0.32;
+    float diff = 0.90 * ndl;
+
+    // Apply AO to diffuse/ambient (not to the albedo itself, so color remains stable)
+    float lit = (amb + diff) * aoF;
+
+    // Roughness-driven subtle specular
+    float gloss = 1.0 - rough;
+    float shin = mix(14.0, 220.0, gloss * gloss);
+    float specStr = mix(0.012, 0.060, gloss);
+
     vec3 V = normalize(viewDirW);
     vec3 H = normalize(L + V);
-    float spec = pow(max(dot(Nw, H), 0.0), 48.0) * 0.05;
+    float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
 
-    return baseLin * (amb + diff) + spec;
+    // Slightly occlude specular in crevices
+    spec *= mix(1.0, aoTex, aoStr * 0.5);
+
+    return baseLin * lit + vec3(spec);
   }
 
   void main(){
@@ -2270,7 +2309,7 @@ function _blendModeId(blend){
     _bindTex(0, prevTex);
     _bindTex(1, photoTex);
     _bindTex(2, tileTex);
-    // PBR maps (Patch 2.2.103): normal is used for lighting; roughness/AO are reserved for next patches.
+    // PBR maps: normal/roughness/AO are supported (Ultra mode only, when palette provides maps).
     const fb = _ensurePbrFallback();
     const usePbr = !!(pbrMaps && pbrMaps.usePBR);
     const nTex = (pbrMaps && pbrMaps.normalTex) ? pbrMaps.normalTex : fb.normal;
