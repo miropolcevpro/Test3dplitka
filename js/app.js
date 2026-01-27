@@ -322,6 +322,9 @@
         }else{
           zone.material.maps = {albedo:url};
         }
+        // Palette-level/material-level parameters (from bucket JSON). Used by PBR shader.
+        if(t.params) zone.material.params = {...t.params};
+        else zone.material.params = null;
         renderTexturesUI();renderZonesUI();ED.render();
       });
       wrap.appendChild(card);

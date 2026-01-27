@@ -111,7 +111,40 @@ function absFromStorageMaybe(p){
     return s;
   }
 
-  function normalizePaletteTextures(pal, shapeId){
+  
+  function _clamp(v, a, b){ return Math.min(b, Math.max(a, v)); }
+
+  // Palette/material params (from bucket JSON). Supports Russian key "параметры" and English "params".
+  // Contract (current bucket):
+  //   normalScale, bumpScale, exposureMult, specStrength, roughnessMult
+  // We normalize to:
+  //   normalScale, bumpScale, exposureMult, specStrength, roughnessMult (same keys, sanitized)
+  function sanitizePaletteParams(p){
+    if(!p || typeof p !== "object") return null;
+    const out = {};
+    const ns = Number(p.normalScale);
+    const bs = Number(p.bumpScale);
+    const em = Number(p.exposureMult);
+    const ss = Number(p.specStrength);
+    const rm = Number(p.roughnessMult);
+
+    out.normalScale   = isFinite(ns) ? _clamp(ns, 0.0, 2.5) : 1.0;
+    // bumpScale is reserved for height/parallax: keep conservative
+    out.bumpScale     = isFinite(bs) ? _clamp(bs, 0.0, 0.12) : 0.0;
+    out.exposureMult  = isFinite(em) ? _clamp(em, 0.5, 1.8) : 1.0;
+    out.specStrength  = isFinite(ss) ? _clamp(ss, 0.0, 2.0) : 1.0;
+    out.roughnessMult = isFinite(rm) ? _clamp(rm, 0.25, 2.5) : 1.0;
+    return out;
+  }
+
+  function mergePaletteParams(pal, it){
+    const pPal = sanitizePaletteParams(pal?.params || pal?.["параметры"]);
+    const pIt  = sanitizePaletteParams(it?.params  || it?.["параметры"]);
+    if(!pPal && !pIt) return null;
+    return {...(pPal||{}), ...(pIt||{})};
+  }
+
+function normalizePaletteTextures(pal, shapeId){
     const out=[];
     const arr=pal?.textures||pal?.items||pal||[];
     if(!Array.isArray(arr)) return out;
@@ -141,6 +174,9 @@ function absFromStorageMaybe(p){
       const tileSizeM = (typeof it.tileSizeM==="number") ? it.tileSizeM :
                         (typeof it.tileSize==="number") ? it.tileSize : null;
 
+      const params = mergePaletteParams(pal, it);
+
+
       out.push({
         textureId,
         title,
@@ -148,6 +184,7 @@ function absFromStorageMaybe(p){
         albedoUrl: aUrl,
         maps: { albedo: aUrl, normal: nUrl, roughness: rUrl, ao: aoUrl, height: hUrl },
         tileSizeM,
+        params,
         pbrComplete: !!(aUrl && nUrl && rUrl && aoUrl),
         raw: it
       });

@@ -777,6 +777,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform sampler2D uNormalMap;
   uniform sampler2D uRoughnessMap;
   uniform sampler2D uAOMap;
+  uniform sampler2D uHeightMap;
+  // Palette parameters (from bucket JSON). Defaults are 1/1/1/1.
+  // x=exposureMult, y=normalScale, z=specStrength, w=roughnessMult
+  uniform vec4 uPbrParams0;
+  // Height/parallax strength in UV units (bumpScale). Keep conservative.
+  uniform float uBumpScale;
   uniform int uUsePBR;      // 0/1
   uniform vec3 uLightDirW;  // world-space directional light (normalized)
   uniform sampler2D uMask;
@@ -825,10 +831,14 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     // Normal map (tangent space)
     vec3 n = texture(uNormalMap, suv).rgb;
     vec3 nTS = normalize(n * 2.0 - 1.0);
+    // Palette normal scale
+    nTS.xy *= max(uPbrParams0.y, 0.0);
+    nTS = normalize(nTS);
     vec3 Nw = normalize(T * nTS.x + B * nTS.y + N0 * nTS.z);
 
     // Material maps (linear)
     float rough = clamp(texture(uRoughnessMap, suv).r, 0.0, 1.0);
+    rough = clamp(rough * max(uPbrParams0.w, 0.0), 0.0, 1.0);
     float aoTex = clamp(texture(uAOMap, suv).r, 0.0, 1.0);
 
     // AO strength (0..1) – reuse existing UI/logic knob (kept at 1.0 by default).
@@ -853,11 +863,53 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     vec3 V = normalize(viewDirW);
     vec3 H = normalize(L + V);
     float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
+    spec *= max(uPbrParams0.z, 0.0);
 
     // Slightly occlude specular in crevices
     spec *= mix(1.0, aoTex, aoStr * 0.5);
 
     return baseLin * lit + vec3(spec);
+  }
+
+  vec2 parallaxUv(vec2 uv, float rotRad, vec3 viewDirW){
+    float hStr = uBumpScale;
+    if(hStr <= 0.00001) return uv;
+
+    // Tangent basis aligned to the texture axes (same as in applyPBRLighting)
+    float c = cos(rotRad);
+    float s = sin(rotRad);
+    vec3 T = normalize(vec3(c, s, 0.0));
+    vec3 B = normalize(vec3(s, -c, 0.0));
+    vec3 N0 = vec3(0.0, 0.0, 1.0);
+
+    vec3 V = normalize(viewDirW);
+    vec3 Vts = vec3(dot(V, T), dot(V, B), dot(V, N0));
+    float vz = abs(Vts.z);
+
+    // Disable at very grazing angles to avoid "swimming" and artifacts.
+    if(vz < 0.35) return uv;
+
+    // Steps: more at grazing, fewer at near-normal incidence (bounded 6..12)
+    float stepsF = mix(12.0, 6.0, clamp((vz - 0.35) / (1.0 - 0.35), 0.0, 1.0));
+    int steps = int(clamp(floor(stepsF + 0.5), 6.0, 12.0));
+
+    float layerDepth = 1.0 / float(steps);
+    // Parallax direction (divide by z; clamp to avoid huge offsets)
+    vec2 delta = (Vts.xy / max(Vts.z, 0.12)) * (hStr / float(steps));
+
+    vec2 cuv = uv;
+    float curDepth = 0.0;
+    float height = texture(uHeightMap, cuv).r;
+
+    // Basic parallax mapping (safe). Height is expected in [0..1].
+    for(int i=0;i<12;i++){
+      if(i >= steps) break;
+      if(curDepth >= height) break;
+      cuv -= delta;
+      curDepth += layerDepth;
+      height = texture(uHeightMap, cuv).r;
+    }
+    return cuv;
   }
 
   void main(){
@@ -992,11 +1044,20 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     vec2 suv = fract(tuv + uPhase);
     // Flip Y for uploaded tile texture (top-left origin) while preserving repeat.
     suv.y = 1.0 - suv.y;
+
+    // Height/parallax (safe): only in PBR mode and only if bumpScale > 0.
+    if(uUsePBR == 1 && uBumpScale > 0.00001){
+      suv = parallaxUv(suv, rot, viewDirW);
+      suv = fract(suv);
+    }
+
     vec3 tile = texture(uTile, suv).rgb;
     vec3 tileLin = toLinear(tile);
 
-    // PBR lighting (normal map) — enabled only when uUsePBR==1.
+    // PBR lighting (normal/roughness/AO) — enabled only when uUsePBR==1.
     if(uUsePBR == 1){
+      // Global exposure multiplier from palette JSON (applied in linear space)
+      tileLin *= max(uPbrParams0.x, 0.0);
       tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW);
     }
 
@@ -2315,9 +2376,11 @@ function _blendModeId(blend){
     const nTex = (pbrMaps && pbrMaps.normalTex) ? pbrMaps.normalTex : fb.normal;
     const rTex = (pbrMaps && pbrMaps.roughnessTex) ? pbrMaps.roughnessTex : fb.roughness;
     const aTex = (pbrMaps && pbrMaps.aoTex) ? pbrMaps.aoTex : fb.ao;
+    const hTex = (pbrMaps && pbrMaps.heightTex) ? pbrMaps.heightTex : fb.height;
     _bindTex(7, nTex);
     _bindTex(8, rTex);
     _bindTex(9, aTex);
+    _bindTex(10, hTex);
     _bindTex(3, maskEntry.maskTex);
     _bindTex(4, maskEntry.blurTex);
     // Optional AI depth texture (Patch 4): used for far fade/haze only.
@@ -2333,6 +2396,19 @@ function _blendModeId(blend){
     gl.uniform1i(gl.getUniformLocation(progZone,'uNormalMap'), 7);
     gl.uniform1i(gl.getUniformLocation(progZone,'uRoughnessMap'), 8);
     gl.uniform1i(gl.getUniformLocation(progZone,'uAOMap'), 9);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uHeightMap'), 10);
+
+    // Palette parameters (from bucket JSON) — apply only in PBR mode.
+    const pp = (zone && zone.material && zone.material.params) ? zone.material.params : null;
+    const exposureMult  = (pp && isFinite(pp.exposureMult))  ? pp.exposureMult  : 1.0;
+    const normalScale   = (pp && isFinite(pp.normalScale))   ? pp.normalScale   : 1.0;
+    const specStrength  = (pp && isFinite(pp.specStrength))  ? pp.specStrength  : 1.0;
+    const roughnessMult = (pp && isFinite(pp.roughnessMult)) ? pp.roughnessMult : 1.0;
+    const bumpScale     = (pp && isFinite(pp.bumpScale))     ? pp.bumpScale     : 0.0;
+
+    gl.uniform4f(gl.getUniformLocation(progZone,'uPbrParams0'), exposureMult, normalScale, specStrength, roughnessMult);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uBumpScale'), bumpScale);
+
     gl.uniform1i(gl.getUniformLocation(progZone,'uUsePBR'), usePbr ? 1 : 0);
     // Fixed neutral light (down + slight tilt) for stable relief perception.
     // Next patches can make this photo-aware / user-controlled.
