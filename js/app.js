@@ -323,8 +323,9 @@
           zone.material.maps = {albedo:url};
         }
         // Palette-level/material-level parameters (from bucket JSON). Used by PBR shader.
-        if(t.params) zone.material.params = {...t.params};
-        else zone.material.params = null;
+        // IMPORTANT: do NOT overwrite zone.material.params because it stores user tuning (scale/rotation/opacity/horizon/perspective).
+        // Store palette PBR tuning separately so switching textures within the same shape keeps user tile size & adjustments.
+        zone.material.pbrParams = (t.params ? {...t.params} : null);
         renderTexturesUI();renderZonesUI();ED.render();
       });
       wrap.appendChild(card);
