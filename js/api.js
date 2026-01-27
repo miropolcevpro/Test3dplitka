@@ -120,20 +120,49 @@ function absFromStorageMaybe(p){
   }
 
   function normalizePaletteTextures(pal, shapeId){
-    const out=[];const arr=pal?.textures||pal?.items||pal||[];if(!Array.isArray(arr))return out;
+    const out=[];
+    const arr=pal?.textures||pal?.items||pal||[];
+    if(!Array.isArray(arr)) return out;
+
     for(const it of arr){
       const textureId=it.textureId||it.id||it.slug||it.key;
       const title=it.title||it.name||textureId||"Текстура";
-      const previewUrl=it.preview||it.previewUrl||it.thumb||it.thumbnail||it.image||null;
-      let albedoUrl=null;
-      if(typeof it.albedo==="string")albedoUrl=it.albedo;
-      else if(typeof it.albedoUrl==="string")albedoUrl=it.albedoUrl;
-      else if(it.maps&&typeof it.maps.albedo==="string")albedoUrl=it.maps.albedo;
-      else if(it.maps&&typeof it.maps.baseColor==="string")albedoUrl=it.maps.baseColor;
-      else if(typeof it.baseColor==="string")albedoUrl=it.baseColor;
-      const pUrl = resolveAssetUrl(previewUrl, shapeId, textureId);
-      const aUrl = resolveAssetUrl(albedoUrl, shapeId, textureId) || resolveAssetUrl(previewUrl, shapeId, textureId);
-      out.push({textureId,title,previewUrl:pUrl,albedoUrl:aUrl,raw:it});
+
+      const previewUrlRaw = it.preview||it.previewUrl||it.thumb||it.thumbnail||it.image||null;
+
+      // Albedo: support legacy fields + maps.albedo/baseColor
+      let albedoUrlRaw=null;
+      if(typeof it.albedo==="string") albedoUrlRaw=it.albedo;
+      else if(typeof it.albedoUrl==="string") albedoUrlRaw=it.albedoUrl;
+      else if(it.maps&&typeof it.maps.albedo==="string") albedoUrlRaw=it.maps.albedo;
+      else if(it.maps&&typeof it.maps.baseColor==="string") albedoUrlRaw=it.maps.baseColor;
+      else if(typeof it.baseColor==="string") albedoUrlRaw=it.baseColor;
+
+      const pUrl = resolveAssetUrl(previewUrlRaw, shapeId, textureId);
+      const aUrl = resolveAssetUrl(albedoUrlRaw, shapeId, textureId) || pUrl;
+
+      // PBR maps: strictly from maps.* (no guessing extensions)
+      const nUrl = resolveAssetUrl(it.maps?.normal, shapeId, textureId);
+      const rUrl = resolveAssetUrl(it.maps?.roughness, shapeId, textureId);
+      const aoUrl = resolveAssetUrl(it.maps?.ao, shapeId, textureId);
+      const hUrl = resolveAssetUrl(it.maps?.height, shapeId, textureId); // optional for future Parallax
+
+      out.push({
+        textureId,
+        title,
+        previewUrl: pUrl,
+        albedoUrl: aUrl,
+        maps: {
+          albedo: aUrl,
+          normal: nUrl,
+          roughness: rUrl,
+          ao: aoUrl,
+          height: hUrl,
+        },
+        tileSizeM: (typeof it.tileSizeM==="number" ? it.tileSizeM : (typeof it.tileSize==="number" ? it.tileSize : null)),
+        pbrComplete: !!(aUrl && nUrl && rUrl && aoUrl),
+        raw: it
+      });
     }
     return out;
   }
@@ -180,6 +209,14 @@ function absFromStorageMaybe(p){
     ...t,
     previewUrl: absFromStorageMaybe(t.previewUrl),
     albedoUrl: absFromStorageMaybe(t.albedoUrl),
+    maps: {
+      ...(t.maps||{}),
+      albedo: absFromStorageMaybe(t.maps && t.maps.albedo),
+      normal: absFromStorageMaybe(t.maps && t.maps.normal),
+      roughness: absFromStorageMaybe(t.maps && t.maps.roughness),
+      ao: absFromStorageMaybe(t.maps && t.maps.ao),
+      height: absFromStorageMaybe(t.maps && t.maps.height),
+    }
   }));
   state.catalog.texturesByShape[shapeId]=tex;
   setStatus("Текстур: "+tex.length);

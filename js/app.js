@@ -314,7 +314,16 @@
         pushHistory();
         zone.material.shapeId=shapeId;
         zone.material.textureId=t.textureId;
-        zone.material.textureUrl=url;
+        zone.material.textureUrl=url; // legacy (albedo)
+        // New: keep full maps bundle from palette (auto from bucket palettes/*.json)
+        zone.material.maps = (t && t.maps) ? {
+          albedo: t.maps.albedo || url,
+          normal: t.maps.normal || null,
+          roughness: t.maps.roughness || null,
+          ao: t.maps.ao || null,
+          height: t.maps.height || null,
+        } : { albedo: url };
+        zone.material.tileSizeM = (typeof t.tileSizeM === "number") ? t.tileSizeM : (zone.material.tileSizeM ?? null);
         renderTexturesUI();renderZonesUI();ED.render();
       });
       wrap.appendChild(card);
