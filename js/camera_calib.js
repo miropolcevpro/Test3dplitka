@@ -237,77 +237,205 @@ function _softClamp01(v){
   }
 
   function autoLinesFromContour(contour, imgW, imgH, opts){
+    // New auto heuristic (v2):
+    // 1) Estimate "depth" axis vA using PCA (pick eigenvector closer to screen-up).
+    // 2) Split contour samples into left/right rails by projection on vB (perp to vA) and fit TLS lines => A1/A2.
+    // 3) Split into bottom/top bands by projection on vA and fit TLS lines => B1/B2.
+    // This avoids failures where horizontal edges dominate, while matching the common "bottom->horizon" photo framing.
+
     const W = Math.max(1, imgW||1);
     const H = Math.max(1, imgH||1);
     const o = opts || {};
-    const minLenPx = Math.max(16, (o.minLenPx||0), 0.045*Math.hypot(W,H));
+    const minLenPx = Math.max(18, (o.minLenPx||0), 0.05*Math.hypot(W,H));
     if(!Array.isArray(contour) || contour.length < 4) return {ok:false, reason:"contour_too_small"};
 
-    // build segments
-    const segs = [];
+    // --- Resample contour edges to get stable statistics (avoid short-segment noise).
+    const pts = [];
     for(let i=0;i<contour.length;i++){
       const p1 = contour[i];
       const p2 = contour[(i+1)%contour.length];
       if(!p1||!p2) continue;
       const dx = (p2.x - p1.x);
       const dy = (p2.y - p1.y);
-      const len = Math.hypot(dx,dy);
-      if(!(len > minLenPx)) continue;
-      const ang = _wrapPi(Math.atan2(dy, dx));
-      segs.push({p1, p2, dx, dy, len, ang});
-    }
-    if(segs.length < 4) return {ok:false, reason:"contour_segments_weak"};
-
-    // detect 2 dominant angle modes
-    const peaks = _histPeaks(segs.map(s=>s.ang), 36);
-    if(!peaks) return {ok:false, reason:"no_angle_peaks"};
-
-    const cA = peaks.a1;
-    const cB = peaks.a2;
-    const g1 = [], g2 = [];
-    for(const s of segs){
-      const d1 = _angleDist(s.ang, cA);
-      const d2 = _angleDist(s.ang, cB);
-      (d1 <= d2 ? g1 : g2).push(s);
-    }
-
-    function pickTwo(group){
-      const g = group.slice().sort((a,b)=>b.len-a.len);
-      return g.slice(0,2);
-    }
-
-    const p1 = pickTwo(g1);
-    const p2 = pickTwo(g2);
-    if(p1.length < 2 || p2.length < 2) return {ok:false, reason:"insufficient_groups"};
-
-    // Decide which group is "A" (depth): prefer direction that points upward (y decreasing).
-    function meanDir(group){
-      let sx=0, sy=0;
-      for(const s of group){
-        let ux = s.dx / (s.len||1);
-        let uy = s.dy / (s.len||1);
-        // orient to point upwards
-        if(uy > 0){ ux=-ux; uy=-uy; }
-        sx += ux * s.len;
-        sy += uy * s.len;
+      const L = Math.hypot(dx,dy);
+      if(!(L>1)) continue;
+      const steps = Math.max(1, Math.min(24, Math.floor(L/18)));
+      for(let s=0;s<=steps;s++){
+        const t = s/steps;
+        pts.push({x:p1.x + dx*t, y:p1.y + dy*t});
       }
-      const L = Math.hypot(sx,sy) || 1e-9;
-      return {x:sx/L, y:sy/L};
     }
-    const m1 = meanDir(g1);
-    const m2 = meanDir(g2);
-    const g1IsA = (m1.y < m2.y); // more negative => more "into depth"
+    if(pts.length < 24) return {ok:false, reason:"contour_samples_weak"};
 
-    const A = g1IsA ? p1 : p2;
-    const B = g1IsA ? p2 : p1;
+    // --- PCA on samples.
+    let mx=0,my=0;
+    for(const p of pts){ mx += p.x; my += p.y; }
+    mx/=pts.length; my/=pts.length;
+    let cxx=0,cxy=0,cyy=0;
+    for(const p of pts){
+      const x = p.x-mx, y = p.y-my;
+      cxx += x*x; cxy += x*y; cyy += y*y;
+    }
+    cxx/=pts.length; cxy/=pts.length; cyy/=pts.length;
+
+    // Eigenvectors of 2x2 covariance.
+    const tr = cxx + cyy;
+    const det = cxx*cyy - cxy*cxy;
+    const disc = Math.max(0, tr*tr - 4*det);
+    const sdisc = Math.sqrt(disc);
+    const l1 = 0.5*(tr + sdisc);
+    const l2 = Math.max(EPS, 0.5*(tr - sdisc));
+    const elong = l1 / l2;
+
+    // First eigenvector (for l1)
+    // Handle near-diagonal covariance.
+    let v1;
+    if(Math.abs(cxy) > 1e-8){
+      const a = l1 - cyy;
+      const b = cxy;
+      v1 = _norm({x:a, y:b});
+    } else {
+      v1 = (cxx >= cyy) ? {x:1,y:0} : {x:0,y:1};
+    }
+    // Second eigenvector is orthogonal.
+    const v2 = {x:-v1.y, y:v1.x};
+
+    // Choose vA as the eigenvector closer to screen-up (0,-1).
+    const up = {x:0,y:-1};
+    const d1 = Math.abs(_dot(v1, up));
+    const d2 = Math.abs(_dot(v2, up));
+    let vA = (d1 >= d2) ? v1 : v2;
+    // Ensure vA points upward (y decreasing).
+    if(vA.y > 0){ vA = {x:-vA.x, y:-vA.y}; }
+    let vB = {x:-vA.y, y:vA.x};
+
+    // If contour is too "round/square", PCA can be unreliable. Fallback to a
+    // framing-based axis: connect centroid of bottom band to centroid of top band.
+    const minElong = (o.minElong||1.18);
+    if(elong < minElong){
+      // bottom/top bands in screen Y (not PCA space)
+      let yMin=+Infinity, yMax=-Infinity;
+      for(const p of pts){ if(p.y<yMin) yMin=p.y; if(p.y>yMax) yMax=p.y; }
+      const yRange = Math.max(EPS, yMax-yMin);
+      const yBot = yMax - 0.12*yRange;
+      const yTop = yMin + 0.12*yRange;
+      let cbx=0,cby=0, ctn=0;
+      let ctx=0,cty=0, cbn=0;
+      for(const p of pts){
+        if(p.y >= yBot){ cbx+=p.x; cby+=p.y; cbn++; }
+        if(p.y <= yTop){ ctx+=p.x; cty+=p.y; ctn++; }
+      }
+      if(cbn>=6 && ctn>=6){
+        const Cbot = {x:cbx/cbn, y:cby/cbn};
+        const Ctop = {x:ctx/ctn, y:cty/ctn};
+        const v = _sub(Ctop, Cbot);
+        const L = _len(v);
+        if(L > 20){
+          vA = _norm(v);
+          if(vA.y > 0){ vA = {x:-vA.x, y:-vA.y}; }
+          vB = {x:-vA.y, y:vA.x};
+        }
+      }
+    }
+
+    // Projections for band selection.
+    let minA=+Infinity, maxA=-Infinity, minB=+Infinity, maxB=-Infinity;
+    const proj = new Array(pts.length);
+    for(let i=0;i<pts.length;i++){
+      const p = pts[i];
+      const rx = p.x-mx, ry = p.y-my;
+      const a = rx*vA.x + ry*vA.y;
+      const b = rx*vB.x + ry*vB.y;
+      proj[i] = {p, a, b};
+      if(a<minA) minA=a; if(a>maxA) maxA=a;
+      if(b<minB) minB=b; if(b>maxB) maxB=b;
+    }
+    const rangeA = Math.max(EPS, maxA-minA);
+    const rangeB = Math.max(EPS, maxB-minB);
+
+    // Band helper
+    function pickBand(testFn, minCount){
+      const out=[];
+      for(const q of proj){ if(testFn(q)) out.push(q.p); }
+      if(out.length >= (minCount||12)) return out;
+      return out;
+    }
+
+    // Initial quantiles.
+    let qSide = 0.26;
+    let qDepth = 0.22;
+    let left=[], right=[], bottom=[], top=[];
+    for(let tries=0; tries<4; tries++){
+      const bL = minB + qSide*rangeB;
+      const bR = maxB - qSide*rangeB;
+      const aBot = minA + qDepth*rangeA;
+      const aTop = maxA - qDepth*rangeA;
+      left = pickBand(q=>q.b <= bL, 14);
+      right = pickBand(q=>q.b >= bR, 14);
+      bottom = pickBand(q=>q.a <= aBot, 14);
+      top = pickBand(q=>q.a >= aTop, 14);
+      if(left.length>=14 && right.length>=14 && bottom.length>=14 && top.length>=14) break;
+      qSide = Math.min(0.42, qSide + 0.06);
+      qDepth = Math.min(0.36, qDepth + 0.05);
+    }
+    if(left.length < 10 || right.length < 10) return {ok:false, reason:"rails_weak"};
+    if(bottom.length < 10 || top.length < 10) return {ok:false, reason:"bands_weak"};
+
+    // TLS line fit
+    function fitLineTLS(points){
+      if(!points || points.length < 2) return null;
+      let mx=0,my=0;
+      for(const p of points){ mx+=p.x; my+=p.y; }
+      mx/=points.length; my/=points.length;
+      let cxx=0,cxy=0,cyy=0;
+      for(const p of points){
+        const x=p.x-mx, y=p.y-my;
+        cxx += x*x; cxy += x*y; cyy += y*y;
+      }
+      cxx/=points.length; cxy/=points.length; cyy/=points.length;
+      const tr = cxx+cyy;
+      const det = cxx*cyy - cxy*cxy;
+      const disc = Math.max(0, tr*tr - 4*det);
+      const sdisc = Math.sqrt(disc);
+      const l1 = 0.5*(tr + sdisc);
+      let dir;
+      if(Math.abs(cxy) > 1e-9){
+        dir = _norm({x:(l1-cyy), y:cxy});
+      } else {
+        dir = (cxx >= cyy) ? {x:1,y:0} : {x:0,y:1};
+      }
+      // endpoints from projection spread
+      let tMin=+Infinity, tMax=-Infinity;
+      for(const p of points){
+        const t = (p.x-mx)*dir.x + (p.y-my)*dir.y;
+        if(t<tMin) tMin=t; if(t>tMax) tMax=t;
+      }
+      const p1 = {x:mx + dir.x*tMin, y:my + dir.y*tMin};
+      const p2 = {x:mx + dir.x*tMax, y:my + dir.y*tMax};
+      if(Math.hypot(p2.x-p1.x, p2.y-p1.y) < minLenPx) return null;
+      return {p1,p2, dir};
+    }
+
+    const A1 = fitLineTLS(left);
+    const A2 = fitLineTLS(right);
+    const B1 = fitLineTLS(bottom);
+    const B2 = fitLineTLS(top);
+    if(!A1 || !A2 || !B1 || !B2) return {ok:false, reason:"fit_failed"};
+
+    // Sanity: avoid near-parallel pairs (will explode vanishing). If too parallel, reject.
+    const sA = _sinAngleFromDirs(A1.dir, A2.dir);
+    const sB = _sinAngleFromDirs(B1.dir, B2.dir);
+    if(sA < 0.02) return {ok:false, reason:"A_pair_near_parallel", meta:{sA}};
+    if(sB < 0.02) return {ok:false, reason:"B_pair_near_parallel", meta:{sB}};
 
     const lines = {
-      A1:{p1:A[0].p1, p2:A[0].p2},
-      A2:{p1:A[1].p1, p2:A[1].p2},
-      B1:{p1:B[0].p1, p2:B[0].p2},
-      B2:{p1:B[1].p1, p2:B[1].p2},
+      A1:{p1:A1.p1, p2:A1.p2},
+      A2:{p1:A2.p1, p2:A2.p2},
+      B1:{p1:B1.p1, p2:B1.p2},
+      B2:{p1:B2.p1, p2:B2.p2}
     };
-    return {ok:true, lines, meta:{minLenPx, segs:segs.length}};
+
+    return {ok:true, lines, meta:{minLenPx, samples:pts.length, elongation:elong, qSide, qDepth}};
   }
 
   window.PhotoPaveCameraCalib = {
