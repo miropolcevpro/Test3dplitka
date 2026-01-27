@@ -1061,13 +1061,19 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW);
     }
 
-    // Photo-aware fit: modulate the material by local photo luminance
-    // This helps remove the "sticker" look.
+    // Photo-aware fit:
+    // PhotoFit modes:
+    //  - legacy (per-pixel): modulate by local photo luminance (can cause 'puddles' / instability under horizon changes)
+    //  - global: apply a single exposure multiplier derived from the photo (stable, PBR-friendly)
     float fit = clamp(uPhotoFit, 0.0, 1.0);
-    float shade = mix(1.0, clamp(0.65 + lum * 0.75, 0.55, 1.35), fit);
-    tileLin *= shade;
-
-    // Far fade to reduce moire + add subtle atmospheric integration.
+    if(uUsePBR==1 && uPhotoFitMode==1){
+      float expo = clamp(uPhotoExposure, 0.5, 1.8);
+      tileLin *= mix(1.0, expo, fit);
+    }else{
+      float shade = mix(1.0, clamp(0.65 + lum * 0.75, 0.55, 1.35), fit);
+      tileLin *= shade;
+    }
+// Far fade to reduce moire + add subtle atmospheric integration.
     // If depth is available, prefer it over uv.y, because the real "far" direction may be diagonal.
     float farBase = clamp(uv.y / max(uPlaneD, 1e-6), 0.0, 1.0);
     if(uHasDepth==1){
@@ -2357,7 +2363,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, pbrMaps, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, pbrMaps, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -2550,6 +2556,10 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 0.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
+    // PhotoFit: global exposure by default (stable under horizon changes). Use ?photofit=legacy to revert.
+    const pfMode = (typeof window!=='undefined' && window.__PP_PHOTOFIT_MODE==='legacy') ? 0 : 1;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uPhotoFitMode'), pfMode);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoExposure'), clamp((+photoExposure||1.0), 0.85, 1.15));
     // Ultra AI: while the depth model is still loading/running, the fallback "far fade" based on plane-V
     // can produce a visible left/right dimming on some perspectives. Once AI depth is ready we switch to
     // depth-driven farBase. Disable the far-fade until depth is ready to avoid transient dull/transparent
@@ -2586,6 +2596,7 @@ function _blendModeId(blend){
   }
 
   async function render(state){
+    const photoExposure = clamp(((state && state.assets && +state.assets.photoExposure) || 1.0), 0.85, 1.15);
     const ai = state && state.ai ? state.ai : null; // reserved for Ultra AI (Patch 1), no-op for now
 
     if(!gl) return;
@@ -3238,7 +3249,7 @@ try{
   }
 }catch(_){ cam3d = null; cam3dRef = null; }
     const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-    _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
+    _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -3306,6 +3317,7 @@ const tmp = src; src = dst; dst = tmp;
     if(!gl) throw new Error('WebGL compositor not initialized');
     if(!state?.assets?.photoBitmap || !photoTex) throw new Error('No photo loaded');
 
+    const photoExposure = clamp(((state && state.assets && +state.assets.photoExposure) || 1.0), 0.85, 1.15);
     const ai = state && state.ai ? state.ai : null;
     if(ai){
       try{ _ensureAIDepthTexture(ai); }catch(_){ /*no-op*/ }
@@ -3684,7 +3696,7 @@ try{
 
       const pbrMaps = await _preparePbrMaps(zone, ai);
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure);
       const tmp = src; src = dst; dst = tmp;
     }
 
@@ -3701,6 +3713,7 @@ try{
     if(!state?.assets?.photoBitmap || !photoTex) throw new Error('No photo loaded');
 
     // Reuse exportPNG logic by rendering to a temp RT and reading pixels as Blob.
+    const photoExposure = clamp(((state && state.assets && +state.assets.photoExposure) || 1.0), 0.85, 1.15);
     const ai = state && state.ai ? state.ai : null;
     if(ai){
       try{ _ensureAIDepthTexture(ai); }catch(_){ }
@@ -3909,7 +3922,7 @@ try{
 
       const pbrMaps = await _preparePbrMaps(zone, state.ai);
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx);
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx, photoExposure);
       const tmp = src; src = dst; dst = tmp;
     }
 

@@ -344,6 +344,33 @@
   }
 
   
+  function _pp_computePhotoExposure(bitmap){
+    try{
+      if(!bitmap) return {avgLum:0.5, exposure:1.0};
+      const S=64;
+      const cv=document.createElement('canvas');
+      cv.width=S; cv.height=S;
+      const ctx=cv.getContext('2d',{willReadFrequently:true});
+      if(!ctx) return {avgLum:0.5, exposure:1.0};
+      ctx.drawImage(bitmap,0,0,S,S);
+      const im=ctx.getImageData(0,0,S,S).data;
+      let sum=0, n=0;
+      for(let i=0;i<im.length;i+=4){
+        const r=im[i]/255, g=im[i+1]/255, b=im[i+2]/255;
+        // approximate sRGB->linear for luminance
+        const rl=Math.pow(r,2.2), gl=Math.pow(g,2.2), bl=Math.pow(b,2.2);
+        const lum=0.2126*rl + 0.7152*gl + 0.0722*bl;
+        sum += lum; n++;
+      }
+      const avg = (n>0)? (sum/n) : 0.5;
+      // target mid-gray in linear; keep range tight to avoid visible shifts
+      const target=0.42;
+      let exp = target / Math.max(0.08, avg);
+      exp = Math.max(0.85, Math.min(1.15, exp));
+      return {avgLum: avg, exposure: exp};
+    }catch(_){ return {avgLum:0.5, exposure:1.0}; }
+  }
+
 async function handlePhotoFile(file){
     if(!file) return;
     API.setStatus("Загрузка фото…");
@@ -362,6 +389,12 @@ async function handlePhotoFile(file){
 
     pushHistory();
     state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;
+    // Precompute global photo exposure (Ultra photofit). Keeps stability under horizon changes.
+    try{
+      const st = _pp_computePhotoExposure(resized);
+      state.assets.photoAvgLum = st.avgLum;
+      state.assets.photoExposure = st.exposure;
+    }catch(_){ state.assets.photoAvgLum = 0.5; state.assets.photoExposure = 1.0; }
     try{ if(prevBitmap && prevBitmap.close) prevBitmap.close(); }catch(_){ }
 
     state.zones.forEach(z=>{
@@ -847,6 +880,11 @@ if(calib3dToggleLinesBtn){
         window.__PP_DEBUG_METRICS = true;
         setAiDebugOverlayEnabled(true);
       }
+      // PhotoFit mode: ?photofit=legacy (per-pixel) or default global exposure
+      const pf = qs.get('photofit');
+      if(pf==='legacy'){ window.__PP_PHOTOFIT_MODE = 'legacy'; }
+      else if(pf==='global'){ window.__PP_PHOTOFIT_MODE = 'global'; }
+      else { window.__PP_PHOTOFIT_MODE = 'global'; }
     }catch(_){}
 
     // Dev-only near-metric overlay loop (B2).
