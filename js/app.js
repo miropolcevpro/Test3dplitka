@@ -367,6 +367,23 @@ async function handlePhotoFile(file){
     });
     state.ui.activeCutoutId=null;
 
+    // Reset 3D calibration (manual/auto) when a new photo is loaded to avoid carrying stale lines/results.
+    try{
+      if(state.ai && state.ai.calib3d){
+        const c3 = state.ai.calib3d;
+        c3.active = null;
+        c3.lines = {A1:null,A2:null,B1:null,B2:null};
+        c3.result = null;
+        c3.lastGoodResult = null;
+        c3.status = "idle";
+        c3.error = null;
+        c3.warn = null;
+        // Keep enabled flag as-is, but hide overlays by default.
+        c3.showLines = false;
+      }
+      try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+    }catch(_){}
+
     API.setStatus(`Фото загружено (${nw}×${nh})`);
     setActiveStep("zones");
     ED.setMode("contour");
@@ -464,6 +481,7 @@ async function handlePhotoFile(file){
     const calib3dResetBtn = document.getElementById("calib3dResetBtn");
     const calib3dExitBtn = document.getElementById("calib3dExitBtn");
     const calib3dAutoContourBtn = document.getElementById("calib3dAutoContourBtn");
+    const calib3dToggleLinesBtn = document.getElementById("calib3dToggleLinesBtn");
     function renderAiStatus(){
       if(!aiStatusEl) return;
       const a = state.ai || {};
@@ -529,6 +547,7 @@ async function handlePhotoFile(file){
       if(c3.enabled !== true){ c3.enabled = true; if(calib3dEnableChk) calib3dEnableChk.checked = true; }
       c3.active = key;
       c3.status = "editing";
+      c3.showLines = true;
       // Remember the previous mode for a clean exit
       if(!state.ui._prevMode) state.ui._prevMode = state.ui.mode;
       ED.setMode("calib");
@@ -582,7 +601,15 @@ async function handlePhotoFile(file){
         }
         calib3dStatusText.textContent = msg;
       }
-    }
+    
+      if(calib3dToggleLinesBtn){
+        const hasAnyLine = !!(c3.lines && (c3.lines.A1 || c3.lines.A2 || c3.lines.B1 || c3.lines.B2));
+        // In calibration editing mode we always show lines; outside allow toggle.
+        const forceShow = (state.ui && state.ui.mode === "calib");
+        calib3dToggleLinesBtn.textContent = (forceShow || c3.showLines) ? "Скрыть линии" : "Показать линии";
+        calib3dToggleLinesBtn.disabled = (!hasAnyLine && !forceShow);
+      }
+}
 
     if(calib3dEnableChk){
       calib3dEnableChk.addEventListener("change", ()=>{
@@ -644,6 +671,8 @@ async function handlePhotoFile(file){
 
       // Set synthetic lines and compute
       c3.lines = r.lines;
+      // Auto mode: hide lines by default after applying, user can toggle them.
+      c3.showLines = false;
       const prevOk = (c3.result && c3.result.ok) ? c3.result : (c3.lastGoodResult && c3.lastGoodResult.ok ? c3.lastGoodResult : null);
       const res = window.PhotoPaveCameraCalib.computeFromLines(c3.lines, state.assets.photoW, state.assets.photoH);
       if(res && res.ok){
@@ -673,6 +702,14 @@ async function handlePhotoFile(file){
     }
 
     if(calib3dAutoContourBtn) calib3dAutoContourBtn.addEventListener("click", _autoCalibFromContour);
+if(calib3dToggleLinesBtn){
+      calib3dToggleLinesBtn.addEventListener("click", ()=>{
+        const c3 = _ensureCalib3DState();
+        c3.showLines = !(c3.showLines);
+        try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+        ED.render();
+      });
+    }
 
     window.addEventListener("calib3d:change", ()=>{
       try{ syncSettingsUI(); }catch(_){ }

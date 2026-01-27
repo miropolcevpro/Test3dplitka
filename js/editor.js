@@ -870,6 +870,8 @@ function polyPath(points){
       const a = state.ai;
       const c = a && a.calib3d;
       if(!c || c.enabled !== true) return;
+      const forceShow = (state.ui && state.ui.mode === "calib");
+      if(!forceShow && c.showLines !== true) return;
       if(!state.assets.photoW || !state.assets.photoH) return;
       const rect = getImageRectInCanvas();
       const lines = c.lines || {};
