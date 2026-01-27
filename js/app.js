@@ -463,6 +463,7 @@ async function handlePhotoFile(file){
     const calib3dB2Btn = document.getElementById("calib3dB2Btn");
     const calib3dResetBtn = document.getElementById("calib3dResetBtn");
     const calib3dExitBtn = document.getElementById("calib3dExitBtn");
+    const calib3dAutoContourBtn = document.getElementById("calib3dAutoContourBtn");
     function renderAiStatus(){
       if(!aiStatusEl) return;
       const a = state.ai || {};
@@ -605,6 +606,73 @@ async function handlePhotoFile(file){
     if(calib3dB2Btn) calib3dB2Btn.addEventListener("click", ()=>_enterCalibMode("B2"));
     if(calib3dResetBtn) calib3dResetBtn.addEventListener("click", _resetCalib3D);
     if(calib3dExitBtn) calib3dExitBtn.addEventListener("click", _exitCalibMode);
+
+    // Auto calibration from the already drawn contour (test)
+    async function _autoCalibFromContour(){
+      const c3 = _ensureCalib3DState();
+      if(c3.enabled !== true){ c3.enabled = true; if(calib3dEnableChk) calib3dEnableChk.checked = true; }
+
+      // Need a closed contour
+      const z = S.getActiveZone && S.getActiveZone();
+      if(!z || !z.closed || !Array.isArray(z.contour) || z.contour.length < 4){
+        c3.status = "error";
+        c3.error = "Сначала замкните контур зоны (минимум 4 точки).";
+        try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+        ED.render();
+        return;
+      }
+
+      if(!window.PhotoPaveCameraCalib || typeof window.PhotoPaveCameraCalib.autoLinesFromContour !== "function" || typeof window.PhotoPaveCameraCalib.computeFromLines !== "function"){
+        c3.status = "error";
+        c3.error = "Модуль калибровки не готов.";
+        try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+        ED.render();
+        return;
+      }
+
+      c3.status = "editing";
+      c3.error = null;
+
+      const r = window.PhotoPaveCameraCalib.autoLinesFromContour(z.contour, state.assets.photoW, state.assets.photoH);
+      if(!r || !r.ok || !r.lines){
+        c3.status = "error";
+        c3.error = "Авто по контуру не удалось (" + (r && r.reason ? r.reason : "weak") + "). Попробуйте ручные линии.";
+        try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+        ED.render();
+        return;
+      }
+
+      // Set synthetic lines and compute
+      c3.lines = r.lines;
+      const prevOk = (c3.result && c3.result.ok) ? c3.result : (c3.lastGoodResult && c3.lastGoodResult.ok ? c3.lastGoodResult : null);
+      const res = window.PhotoPaveCameraCalib.computeFromLines(c3.lines, state.assets.photoW, state.assets.photoH);
+      if(res && res.ok){
+        c3.result = res;
+        c3.lastGoodResult = res;
+        c3.status = "ready";
+
+        if(c3.applyToActiveZone !== false){
+          if(z && z.material && z.material.params){
+            z.material.params.horizon = res.autoHorizon;
+            z.material.params.perspective = res.autoPerspective;
+            z.material._ultraTuned = z.material._ultraTuned || {horizon:false, perspective:false};
+            z.material._ultraTuned.horizon = false;
+            z.material._ultraTuned.perspective = false;
+          }
+        }
+        c3.error = null;
+        c3.warn = null;
+      }else{
+        c3.result = prevOk || {ok:false, reason:(res && res.reason) ? String(res.reason) : "calibration_weak", fallback:true};
+        c3.status = "ready";
+        c3.error = null;
+        c3.warn = (res && res.reason) ? String(res.reason) : "calibration_weak";
+      }
+      try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+      ED.render();
+    }
+
+    if(calib3dAutoContourBtn) calib3dAutoContourBtn.addEventListener("click", _autoCalibFromContour);
 
     window.addEventListener("calib3d:change", ()=>{
       try{ syncSettingsUI(); }catch(_){ }

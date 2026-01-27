@@ -193,9 +193,127 @@ function _softClamp01(v){
     };
   }
 
+  // --- Auto (contour-based) calibration helpers ---
+  // Provide a low-friction "auto" entry point based on the already drawn contour.
+  // We infer two dominant directions from contour edges and build synthetic A1/A2/B1/B2
+  // lines (endpoints from the longest contour segments in each direction cluster).
+  // This is intended as a UX convenience; if the contour does not represent road edges,
+  // the solver may reject it and the caller should fall back to the manual mode.
+
+  function _wrapPi(a){
+    // map angle to [0, PI)
+    let x = a % Math.PI;
+    if(x < 0) x += Math.PI;
+    return x;
+  }
+
+  function _angleDist(a,b){
+    // circular distance on [0, PI)
+    const d = Math.abs(a-b);
+    return Math.min(d, Math.PI - d);
+  }
+
+  function _histPeaks(angles, bins){
+    const B = Math.max(8, bins|0);
+    const h = new Array(B).fill(0);
+    for(const a of angles){
+      const ix = Math.max(0, Math.min(B-1, Math.floor((a/Math.PI)*B)));
+      h[ix]++;
+    }
+    // pick top 2 peaks with separation
+    let p1=-1, c1=-1;
+    for(let i=0;i<B;i++){ if(h[i]>c1){ c1=h[i]; p1=i; } }
+    if(p1<0) return null;
+    let p2=-1, c2=-1;
+    for(let i=0;i<B;i++){
+      const sep = Math.abs(i-p1);
+      if(sep < Math.max(2, Math.floor(B*0.12))) continue;
+      if(h[i]>c2){ c2=h[i]; p2=i; }
+    }
+    if(p2<0) return null;
+    const a1 = (p1 + 0.5) * (Math.PI / B);
+    const a2 = (p2 + 0.5) * (Math.PI / B);
+    return {a1, a2, c1, c2};
+  }
+
+  function autoLinesFromContour(contour, imgW, imgH, opts){
+    const W = Math.max(1, imgW||1);
+    const H = Math.max(1, imgH||1);
+    const o = opts || {};
+    const minLenPx = Math.max(16, (o.minLenPx||0), 0.045*Math.hypot(W,H));
+    if(!Array.isArray(contour) || contour.length < 4) return {ok:false, reason:"contour_too_small"};
+
+    // build segments
+    const segs = [];
+    for(let i=0;i<contour.length;i++){
+      const p1 = contour[i];
+      const p2 = contour[(i+1)%contour.length];
+      if(!p1||!p2) continue;
+      const dx = (p2.x - p1.x);
+      const dy = (p2.y - p1.y);
+      const len = Math.hypot(dx,dy);
+      if(!(len > minLenPx)) continue;
+      const ang = _wrapPi(Math.atan2(dy, dx));
+      segs.push({p1, p2, dx, dy, len, ang});
+    }
+    if(segs.length < 4) return {ok:false, reason:"contour_segments_weak"};
+
+    // detect 2 dominant angle modes
+    const peaks = _histPeaks(segs.map(s=>s.ang), 36);
+    if(!peaks) return {ok:false, reason:"no_angle_peaks"};
+
+    const cA = peaks.a1;
+    const cB = peaks.a2;
+    const g1 = [], g2 = [];
+    for(const s of segs){
+      const d1 = _angleDist(s.ang, cA);
+      const d2 = _angleDist(s.ang, cB);
+      (d1 <= d2 ? g1 : g2).push(s);
+    }
+
+    function pickTwo(group){
+      const g = group.slice().sort((a,b)=>b.len-a.len);
+      return g.slice(0,2);
+    }
+
+    const p1 = pickTwo(g1);
+    const p2 = pickTwo(g2);
+    if(p1.length < 2 || p2.length < 2) return {ok:false, reason:"insufficient_groups"};
+
+    // Decide which group is "A" (depth): prefer direction that points upward (y decreasing).
+    function meanDir(group){
+      let sx=0, sy=0;
+      for(const s of group){
+        let ux = s.dx / (s.len||1);
+        let uy = s.dy / (s.len||1);
+        // orient to point upwards
+        if(uy > 0){ ux=-ux; uy=-uy; }
+        sx += ux * s.len;
+        sy += uy * s.len;
+      }
+      const L = Math.hypot(sx,sy) || 1e-9;
+      return {x:sx/L, y:sy/L};
+    }
+    const m1 = meanDir(g1);
+    const m2 = meanDir(g2);
+    const g1IsA = (m1.y < m2.y); // more negative => more "into depth"
+
+    const A = g1IsA ? p1 : p2;
+    const B = g1IsA ? p2 : p1;
+
+    const lines = {
+      A1:{p1:A[0].p1, p2:A[0].p2},
+      A2:{p1:A[1].p1, p2:A[1].p2},
+      B1:{p1:B[0].p1, p2:B[0].p2},
+      B2:{p1:B[1].p1, p2:B[1].p2},
+    };
+    return {ok:true, lines, meta:{minLenPx, segs:segs.length}};
+  }
+
   window.PhotoPaveCameraCalib = {
     lineFromPts,
     intersectLines,
-    computeFromLines
+    computeFromLines,
+    autoLinesFromContour
   };
 })();

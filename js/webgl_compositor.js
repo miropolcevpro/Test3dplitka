@@ -731,15 +731,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     }
 
     // Premium occlusion: if a mask exists, clip the tile under selected objects.
-// The mask is in photo space, so we sample with uvSrc.
-// IMPORTANT: keep this close to binary to avoid "washed / semi-transparent" tiles.
-// Feather is intentionally narrow (done in shader, not by blurring the mask too much).
-if(uHasOcc == 1){
-  float occ = texture(uOcc, uvSrc).r; // 0..1 (mask stored in RGB/alpha)
-  // Narrow transition band: <0.45 -> no cut, >0.55 -> full cut
-  float o = smoothstep(0.45, 0.55, occ);
-  alpha *= (1.0 - o);
-}
+    // The mask is in photo space, so we sample with uvSrc.
+    if(uHasOcc == 1){
+      float occ = texture(uOcc, uvSrc).r; // 0..1
+      float o = smoothstep(0.15, 0.60, occ);
+      alpha *= (1.0 - o);
+    }
 
     if(alpha <= 0.0005){
       outColor = vec4(toSRGB(prevLin), 1.0);
@@ -2251,7 +2248,19 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 0.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
     gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
-    gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), 1.0);
+    // Ultra AI: while the depth model is still loading/running, the fallback "far fade" based on plane-V
+    // can produce a visible left/right dimming on some perspectives. Once AI depth is ready we switch to
+    // depth-driven farBase. Disable the far-fade until depth is ready to avoid transient dull/transparent
+    // patches during long model loads.
+    let farFade = 1.0;
+    try{
+      if(ai && ai.enabled !== false){
+        if(!(ai.depthReady && ai.depthMap)){
+          farFade = 0.0;
+        }
+      }
+    }catch(_){ farFade = 1.0; }
+    gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), farFade);
 
     const invH = _mat3FromArray9(invHArr9);
     gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);
