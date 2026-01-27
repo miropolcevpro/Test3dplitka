@@ -3,16 +3,8 @@ window.PhotoPaveAPI=(function(){
   const {state}=window.PhotoPaveState;
   const setStatus=(t)=>{const el=document.getElementById("statusText");if(el)el.textContent=t||"";};
   async function _headExists(url){
-    // Returns:
-    //   true  - resource exists (HEAD ok)
-    //   false - HEAD responded but not ok (could be 404/403/etc)
-    //   null  - HEAD request failed (network/CORS/proxy); caller should try GET to confirm
-    try{
-      const r = await fetch(url,{method:"HEAD",cache:"no-store"});
-      return r.ok ? true : false;
-    }catch(_){
-      return null;
-    }
+    try{ const r=await fetch(url,{method:"HEAD",cache:"no-store"}); return (r && typeof r.ok==="boolean") ? !!r.ok : false; }
+    catch(_){ return null; }
   }
 
   async function fetchJson(url,opts={}){
@@ -125,41 +117,37 @@ function absFromStorageMaybe(p){
     if(!Array.isArray(arr)) return out;
 
     for(const it of arr){
-      const textureId=it.textureId||it.id||it.slug||it.key;
+      const textureId=it.textureId||it.id||it.slug||it.key||null;
       const title=it.title||it.name||textureId||"Текстура";
+      const previewUrl=it.preview||it.previewUrl||it.thumb||it.thumbnail||it.image||null;
 
-      const previewUrlRaw = it.preview||it.previewUrl||it.thumb||it.thumbnail||it.image||null;
+      // Legacy + modern: albedo may live in it.albedo / it.baseColor / it.maps.albedo
+      let albedoUrl=null;
+      if(typeof it.albedo==="string") albedoUrl=it.albedo;
+      else if(typeof it.albedoUrl==="string") albedoUrl=it.albedoUrl;
+      else if(it.maps && typeof it.maps.albedo==="string") albedoUrl=it.maps.albedo;
+      else if(it.maps && typeof it.maps.baseColor==="string") albedoUrl=it.maps.baseColor;
+      else if(typeof it.baseColor==="string") albedoUrl=it.baseColor;
 
-      // Albedo: support legacy fields + maps.albedo/baseColor
-      let albedoUrlRaw=null;
-      if(typeof it.albedo==="string") albedoUrlRaw=it.albedo;
-      else if(typeof it.albedoUrl==="string") albedoUrlRaw=it.albedoUrl;
-      else if(it.maps&&typeof it.maps.albedo==="string") albedoUrlRaw=it.maps.albedo;
-      else if(it.maps&&typeof it.maps.baseColor==="string") albedoUrlRaw=it.maps.baseColor;
-      else if(typeof it.baseColor==="string") albedoUrlRaw=it.baseColor;
+      const pUrl = resolveAssetUrl(previewUrl, shapeId, textureId);
+      const aUrl = resolveAssetUrl(albedoUrl, shapeId, textureId) || pUrl;
 
-      const pUrl = resolveAssetUrl(previewUrlRaw, shapeId, textureId);
-      const aUrl = resolveAssetUrl(albedoUrlRaw, shapeId, textureId) || pUrl;
-
-      // PBR maps: strictly from maps.* (no guessing extensions)
+      // PBR maps: strictly from it.maps.* (no extension guessing here)
       const nUrl = resolveAssetUrl(it.maps?.normal, shapeId, textureId);
       const rUrl = resolveAssetUrl(it.maps?.roughness, shapeId, textureId);
       const aoUrl = resolveAssetUrl(it.maps?.ao, shapeId, textureId);
-      const hUrl = resolveAssetUrl(it.maps?.height, shapeId, textureId); // optional for future Parallax
+      const hUrl = resolveAssetUrl(it.maps?.height, shapeId, textureId);
+
+      const tileSizeM = (typeof it.tileSizeM==="number") ? it.tileSizeM :
+                        (typeof it.tileSize==="number") ? it.tileSize : null;
 
       out.push({
         textureId,
         title,
         previewUrl: pUrl,
         albedoUrl: aUrl,
-        maps: {
-          albedo: aUrl,
-          normal: nUrl,
-          roughness: rUrl,
-          ao: aoUrl,
-          height: hUrl,
-        },
-        tileSizeM: (typeof it.tileSizeM==="number" ? it.tileSizeM : (typeof it.tileSize==="number" ? it.tileSize : null)),
+        maps: { albedo: aUrl, normal: nUrl, roughness: rUrl, ao: aoUrl, height: hUrl },
+        tileSizeM,
         pbrComplete: !!(aUrl && nUrl && rUrl && aoUrl),
         raw: it
       });
@@ -169,24 +157,30 @@ function absFromStorageMaybe(p){
   async function loadPalette(shapeId){
   setStatus("Загрузка палитры…");
   state.catalog.paletteMissing = state.catalog.paletteMissing || {};
-  if(state.catalog.paletteMissing[shapeId]){
-    setStatus("Палитра недоступна");
-    return {palette:null,textures:[]};
+  // paletteMissing is a soft hint (e.g., confirmed 404). We keep a short TTL to avoid "missing forever".
+  const miss = state.catalog.paletteMissing[shapeId];
+  if(miss){
+    const ts = (typeof miss === "number") ? miss : (miss.ts || 0);
+    if(ts && (Date.now() - ts) < 60000){
+      setStatus("Палитра недоступна");
+      return {palette:null,textures:[]};
+    }
+    // TTL passed -> retry
+    try{ delete state.catalog.paletteMissing[shapeId]; }catch(_){ }
   }
   // Many deployments protect /api/palettes with JWT (401 missing_token).
   // For this public website widget we prefer reading palettes directly from Object Storage.
   const s3Url=state.api.storageBase.replace(/\/$/,"")+"/palettes/"+encodeURIComponent(shapeId)+".json";
   const apiUrl=state.api.apiBase+"/api/palettes/"+encodeURIComponent(shapeId);
   let pal=null;
-  let missingConfirmed=false;
   try{
-    // Prefer direct GET; HEAD is best-effort and may be blocked by CORS/proxies.
-    // We only mark the palette as "missing" after a confirmed 404 on GET.
-    const head = await _headExists(s3Url);
-    pal=await fetchJson(s3Url);
+    // Avoid console noise on missing palette keys: HEAD-check first.
+    // NOTE: some proxies/buckets may block HEAD via CORS while allowing GET.
+    // _headExists returns: true/false/null (null = inconclusive, do NOT treat as missing).
+    const has = await _headExists(s3Url);
+    if(has === false) throw new Error("palette_missing");
+    pal = await fetchJson(s3Url);
   }catch(eS3){
-    const msg = String((eS3 && eS3.message) || eS3 || "");
-    if(/HTTP\s+404\b/.test(msg) || /palette_missing/.test(msg)) missingConfirmed = true;
     // Optional gateway fallback (often returns 401 missing_token). Disabled by default.
     if(state.api && state.api.allowApiPalette){
       try{ pal=await fetchJson(apiUrl); }
@@ -196,8 +190,11 @@ function absFromStorageMaybe(p){
     }
   }
   if(!pal){
-    // Mark as missing only after confirmed 404. HEAD failures can be caused by CORS/proxy rules.
-    if(missingConfirmed) state.catalog.paletteMissing[shapeId]=true;
+    // Mark as missing ONLY for confirmed 404 responses (network/CORS should not poison the cache).
+    const msg = String((eS3 && eS3.message) || "");
+    if(msg.includes("HTTP 404") || msg.includes(" 404 " ) || msg.includes("palette_missing")){
+      state.catalog.paletteMissing[shapeId] = Date.now();
+    }
     state.catalog.palettesByShape[shapeId]=null;
     state.catalog.texturesByShape[shapeId]=[];
     setStatus("Текстуры для этой формы временно недоступны");
@@ -209,19 +206,43 @@ function absFromStorageMaybe(p){
     ...t,
     previewUrl: absFromStorageMaybe(t.previewUrl),
     albedoUrl: absFromStorageMaybe(t.albedoUrl),
-    maps: {
-      ...(t.maps||{}),
-      albedo: absFromStorageMaybe(t.maps && t.maps.albedo),
-      normal: absFromStorageMaybe(t.maps && t.maps.normal),
-      roughness: absFromStorageMaybe(t.maps && t.maps.roughness),
-      ao: absFromStorageMaybe(t.maps && t.maps.ao),
-      height: absFromStorageMaybe(t.maps && t.maps.height),
-    }
+    maps: t.maps ? {
+      albedo: absFromStorageMaybe(t.maps.albedo),
+      normal: absFromStorageMaybe(t.maps.normal),
+      roughness: absFromStorageMaybe(t.maps.roughness),
+      ao: absFromStorageMaybe(t.maps.ao),
+      height: absFromStorageMaybe(t.maps.height),
+    } : null
   }));
   state.catalog.texturesByShape[shapeId]=tex;
   setStatus("Текстур: "+tex.length);
   return {palette:pal,textures:tex};
 }
+
+  // Strict CORS-only image loader (no no-CORS fallback).
+  // Use this for WebGL texture uploads of data maps (normal/roughness/ao/height) to avoid taint/security errors.
+  async function loadImageStrict(url){
+    async function tryLoad(u){
+      return await new Promise((resolve,reject)=>{
+        const img=new Image();
+        img.crossOrigin="anonymous";
+        img.onload=()=>resolve(img);
+        img.onerror=()=>reject(new Error("Image load failed: "+u+" (CORS-only)"));
+        img.src=u;
+      });
+    }
+    let finalUrl=url;
+    try{
+      return await tryLoad(finalUrl);
+    }catch(e1){
+      const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(finalUrl, null, null) : null;
+      if(alt && alt!==finalUrl){
+        return await tryLoad(alt);
+      }
+      throw e1;
+    }
+  }
+
   async function loadImage(url){
     const cache=state.assets.textureCache;
     // Cache key should be the final URL actually used.
@@ -275,5 +296,5 @@ function absFromStorageMaybe(p){
     }
     return img;
   }
-  return {setStatus,loadConfig,loadShapes,loadPalette,loadImage};
+  return {setStatus,loadConfig,loadShapes,loadPalette,loadImage,loadImageStrict};
 })();

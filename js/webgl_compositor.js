@@ -410,6 +410,125 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
   const tileCache = new Map(); // url -> {tex,w,h,ts}
   const maskCache = new Map(); // key -> {maskTex, blurTex, w,h, ts}
+
+  // PBR map textures (infrastructure only; Patch 2.2.102)
+  // Patch 2.2.103 wires the normal map into lighting (Ultra mode only).
+  const pbrMapCache = new Map(); // url -> {tex, ts}
+  let _pbrFallback = null; // {normal, roughness, ao, height}
+
+  function _isPowerOf2(v){ return (v & (v-1)) === 0; }
+
+  function _makeSolidTextureRGBA(r,g,b,a){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const data = new Uint8Array([r|0,g|0,b|0,a|0]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+  }
+
+  function _ensurePbrFallback(){
+    if(_pbrFallback) return _pbrFallback;
+    // normal: (0.5,0.5,1.0)
+    const normal = _makeSolidTextureRGBA(128,128,255,255);
+    // roughness: 0.7
+    const roughness = _makeSolidTextureRGBA(179,179,179,255);
+    // ao: 1.0
+    const ao = _makeSolidTextureRGBA(255,255,255,255);
+    // height: 0.0 (reserved for Parallax later)
+    const height = _makeSolidTextureRGBA(0,0,0,255);
+    _pbrFallback = {normal, roughness, ao, height};
+    return _pbrFallback;
+  }
+
+  function _makePbrMapTexture(img, {repeat=true}={}){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    // Preserve global pixelStore state (do not affect existing albedo pipeline)
+    let prevFlip=false, prevCs=null;
+    try{ prevFlip = !!gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL); }catch(_){ prevFlip=false; }
+    try{ prevCs = gl.getParameter(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL); }catch(_){ prevCs=null; }
+    try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); }catch(_){/*noop*/}
+    try{ if(prevCs!=null) gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE); }catch(_){/*noop*/}
+
+    const pot = img && _isPowerOf2(img.width|0) && _isPowerOf2(img.height|0);
+
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if(repeat && pot){
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    }else{
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
+
+    try{
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      if(repeat && pot) gl.generateMipmap(gl.TEXTURE_2D);
+      if(repeat && pot && extAniso){
+        const maxA = gl.getParameter(extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 4;
+        gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, maxA));
+      }
+    }finally{
+      // restore pixelStore state
+      try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, prevFlip); }catch(_){/*noop*/}
+      try{ if(prevCs!=null) gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, prevCs); }catch(_){/*noop*/}
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    return tex;
+  }
+
+  // Async loader (not used yet): prepares WebGL textures for maps.normal/roughness/ao/height.
+  async function _getPbrMapTexture(url, kind){
+    const fb = _ensurePbrFallback();
+    if(!url || typeof url !== "string") return fb[kind] || null;
+
+    if(pbrMapCache.has(url)){
+      const e = pbrMapCache.get(url); e.ts = Date.now(); return e.tex;
+    }
+
+    // CORS-only load for WebGL safety (do not taint exports / avoid WebGL security errors)
+    let img = null;
+    try{ img = await API.loadImageStrict(url); }
+    catch(_){
+      // silent fallback (do not spam console)
+      return fb[kind] || null;
+    }
+    let tex = null;
+    try{
+      tex = _makePbrMapTexture(img, {repeat:true});
+    }catch(_){
+      return fb[kind] || null;
+    }
+    pbrMapCache.set(url, {tex, ts: Date.now()});
+    if(pbrMapCache.size > 24){
+      const entries = [...pbrMapCache.entries()].sort((a,b)=>a[1].ts-b[1].ts);
+      for(let i=0;i<Math.max(1, pbrMapCache.size-24);i++){
+        try{ gl.deleteTexture(entries[i][1].tex); }catch(_){ }
+        pbrMapCache.delete(entries[i][0]);
+      }
+    }
+    return tex;
+  }
+
+  // Prepare zone PBR map set. In Patch 2.2.103 we enable normal-mapped lighting
+  // only when Ultra is enabled AND the palette provides a normal map.
+  async function _preparePbrMaps(zone, ai){
+    const maps = zone && zone.material ? zone.material.maps : null;
+    const hasNormal = !!(maps && typeof maps.normal === 'string' && maps.normal);
+    const ultraEnabled = !!(ai && ai.enabled !== false);
+    if(!(ultraEnabled && hasNormal)) return {usePBR:false};
+    const normalTex = await _getPbrMapTexture(maps.normal, 'normal');
+    // roughness/ao reserved for next patch, keep fallbacks bound.
+    return {usePBR:true, normalTex};
+  }
   const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
   // Drag-stabilization: while the user drags contour points, keep the inferred "near/far" scanlines
   // anchored to the pre-drag extrema to avoid sudden quad jumps when a different point becomes yMin/yMax.
@@ -635,6 +754,13 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform sampler2D uPrev;
   uniform sampler2D uPhoto;
   uniform sampler2D uTile;
+  // PBR maps (Patch 2.2.103): normal/roughness/ao are loaded from palette maps.
+  // Only normal is used in this patch (lighting). Roughness/AO are reserved for the next step.
+  uniform sampler2D uNormalMap;
+  uniform sampler2D uRoughnessMap;
+  uniform sampler2D uAOMap;
+  uniform int uUsePBR;      // 0/1
+  uniform vec3 uLightDirW;  // world-space directional light (normalized)
   uniform sampler2D uMask;
   uniform sampler2D uMaskBlur;
   uniform sampler2D uDepth;
@@ -667,6 +793,33 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
   vec3 toLinear(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
   vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
+
+  // Simple normal-mapped lambert + subtle spec. World-space is the plane space (x,y) with z=0.
+  vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW){
+    // Tangent basis aligned to the texture axes.
+    float c = cos(rotRad);
+    float s = sin(rotRad);
+    // Texture V is flipped (suv.y = 1 - suv.y), so flip the bitangent to keep a right-handed basis.
+    vec3 T = normalize(vec3(c, s, 0.0));
+    vec3 B = normalize(vec3(s, -c, 0.0));
+    vec3 N0 = vec3(0.0, 0.0, 1.0);
+
+    vec3 n = texture(uNormalMap, suv).rgb;
+    vec3 nTS = normalize(n * 2.0 - 1.0);
+    vec3 Nw = normalize(T * nTS.x + B * nTS.y + N0 * nTS.z);
+
+    vec3 L = normalize(uLightDirW);
+    float ndl = max(dot(Nw, L), 0.0);
+    float amb = 0.35;
+    float diff = 0.85 * ndl;
+
+    // Very subtle specular (kept small to avoid changing the look too aggressively in this patch).
+    vec3 V = normalize(viewDirW);
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(Nw, H), 0.0), 48.0) * 0.05;
+
+    return baseLin * (amb + diff) + spec;
+  }
 
   void main(){
     // Coordinate conventions:
@@ -747,6 +900,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     // - Default: inverse homography (fast)
     // - 3D camera (Variant B): cast a ray through the pixel and intersect with the plane z=0
     vec2 uv;
+    vec3 viewDirW = vec3(0.0, 0.0, 1.0);
     if(uUseCam3D == 1){
       // Camera ray in camera coordinates (y-down convention)
       vec3 rayCam = uKinv * vec3(fragPx, 1.0);
@@ -756,6 +910,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       mat3 Rcw = transpose(uRwc);
       vec3 camPosW = -(Rcw * uTwc);
       vec3 rayW = normalize(Rcw * rayCam);
+      viewDirW = normalize(-rayW);
 
       // Intersect with plane z=0 in world space
       float denom = rayW.z;
@@ -800,6 +955,11 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     suv.y = 1.0 - suv.y;
     vec3 tile = texture(uTile, suv).rgb;
     vec3 tileLin = toLinear(tile);
+
+    // PBR lighting (normal map) — enabled only when uUsePBR==1.
+    if(uUsePBR == 1){
+      tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW);
+    }
 
     // Photo-aware fit: modulate the material by local photo luminance
     // This helps remove the "sticker" look.
@@ -854,6 +1014,17 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       try{ if(gl && e && e.tex) gl.deleteTexture(e.tex); }catch(_){ }
     }
     tileCache.clear();
+    for(const e of pbrMapCache.values()){
+      try{ if(gl && e && e.tex) gl.deleteTexture(e.tex); }catch(_){ }
+    }
+    pbrMapCache.clear();
+    if(_pbrFallback){
+      try{ if(gl) gl.deleteTexture(_pbrFallback.normal); }catch(_){ }
+      try{ if(gl) gl.deleteTexture(_pbrFallback.roughness); }catch(_){ }
+      try{ if(gl) gl.deleteTexture(_pbrFallback.ao); }catch(_){ }
+      try{ if(gl) gl.deleteTexture(_pbrFallback.height); }catch(_){ }
+      _pbrFallback = null;
+    }
     for(const e of maskCache.values()){
       try{ if(gl && e && e.maskTex) gl.deleteTexture(e.maskTex); }catch(_){ }
       try{ if(gl && e && e.blurTex) gl.deleteTexture(e.blurTex); }catch(_){ }
@@ -2086,7 +2257,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, pbrMaps, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -2099,6 +2270,15 @@ function _blendModeId(blend){
     _bindTex(0, prevTex);
     _bindTex(1, photoTex);
     _bindTex(2, tileTex);
+    // PBR maps (Patch 2.2.103): normal is used for lighting; roughness/AO are reserved for next patches.
+    const fb = _ensurePbrFallback();
+    const usePbr = !!(pbrMaps && pbrMaps.usePBR);
+    const nTex = (pbrMaps && pbrMaps.normalTex) ? pbrMaps.normalTex : fb.normal;
+    const rTex = (pbrMaps && pbrMaps.roughnessTex) ? pbrMaps.roughnessTex : fb.roughness;
+    const aTex = (pbrMaps && pbrMaps.aoTex) ? pbrMaps.aoTex : fb.ao;
+    _bindTex(7, nTex);
+    _bindTex(8, rTex);
+    _bindTex(9, aTex);
     _bindTex(3, maskEntry.maskTex);
     _bindTex(4, maskEntry.blurTex);
     // Optional AI depth texture (Patch 4): used for far fade/haze only.
@@ -2111,6 +2291,13 @@ function _blendModeId(blend){
     gl.uniform1i(gl.getUniformLocation(progZone,'uPrev'), 0);
     gl.uniform1i(gl.getUniformLocation(progZone,'uPhoto'), 1);
     gl.uniform1i(gl.getUniformLocation(progZone,'uTile'), 2);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uNormalMap'), 7);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uRoughnessMap'), 8);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uAOMap'), 9);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uUsePBR'), usePbr ? 1 : 0);
+    // Fixed neutral light (down + slight tilt) for stable relief perception.
+    // Next patches can make this photo-aware / user-controlled.
+    gl.uniform3f(gl.getUniformLocation(progZone,'uLightDirW'), 0.25, 0.35, 0.90);
     gl.uniform1i(gl.getUniformLocation(progZone,'uMask'), 3);
     gl.uniform1i(gl.getUniformLocation(progZone,'uMaskBlur'), 4);
     gl.uniform1i(gl.getUniformLocation(progZone,'uDepth'), 5);
@@ -2351,18 +2538,19 @@ function _blendModeId(blend){
       const url = zone.material?.textureUrl;
       if(!url) continue;
 
-      // Tile texture: avoid re-loading the same image every frame when GPU texture is already cached.
-      // This prevents micro-stutters and improves stability on weaker GPUs/CPUs.
-      let tileTex;
+      // Tile texture: avoid re-loading the same image every frame.
+      // If the WebGL texture is already cached, reuse it immediately.
+      let tileTex = null;
       if(tileCache.has(url)){
-        const e = tileCache.get(url);
-        e.ts = Date.now();
-        tileTex = e.tex;
+        tileTex = _getTileTex(url, null);
       }else{
         // Load image (may throw). We rely on proper CORS for WebGL.
         const img = await API.loadImage(url);
         tileTex = _getTileTex(url, img);
       }
+
+      // PBR maps (Patch 2.2.103): prepare GPU normal map texture (Ultra only).
+      const pbrMaps = await _preparePbrMaps(zone, ai);
 
       // Build mask textures (cache by geometry + render size)
       const key = [
@@ -2935,7 +3123,7 @@ try{
   }
 }catch(_){ cam3d = null; cam3dRef = null; }
     const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-    _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
+    _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -3379,8 +3567,9 @@ try{
       }catch(_){ cam3d = null; cam3dRef = null; }
       }
 
+      const pbrMaps = await _preparePbrMaps(zone, ai);
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx);
       const tmp = src; src = dst; dst = tmp;
     }
 
@@ -3603,8 +3792,9 @@ try{
         }
       }catch(_){ cam3d = null; cam3dRef = null; }
 
+      const pbrMaps = await _preparePbrMaps(zone, state.ai);
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      _renderZonePass(src.tex, dst, zone, tileTex, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx);
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx);
       const tmp = src; src = dst; dst = tmp;
     }
 
