@@ -474,7 +474,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       if(repeat && pot) gl.generateMipmap(gl.TEXTURE_2D);
       if(repeat && pot && extAniso){
         const maxA = gl.getParameter(extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 4;
-        gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, maxA));
+        gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, maxA));
       }
     }finally{
       // restore pixelStore state
@@ -783,6 +783,10 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform vec4 uPbrParams0;
   // Height/parallax strength in UV units (bumpScale). Keep conservative.
   uniform float uBumpScale;
+  // Contact shadow (in-mask) to improve integration with the photo (inward-only).
+  uniform float uContactShadowStrength; // 0..1
+  uniform float uContactShadowWidth;    // in mask-blur units above 0.5 (0..0.5)
+  uniform float uContactShadowPower;    // curve shaping
   uniform int uUsePBR;      // 0/1
   uniform vec3 uLightDirW;  // world-space directional light (normalized)
   uniform sampler2D uMask;
@@ -1073,6 +1077,20 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       float shade = mix(1.0, clamp(0.65 + lum * 0.75, 0.55, 1.35), fit);
       tileLin *= shade;
     }
+
+    // Contact shadow (in-mask only): subtle darkening near the contour boundary to 'seat' the paving into the photo.
+    // Uses the blurred mask gradient (mb01) but is strictly limited to inside by the hard mask and alphaEdge.
+    // Enabled only in PBR/Ultra path to avoid changing legacy look.
+    if(uUsePBR==1 && uContactShadowStrength > 0.00001){
+      float wMb = clamp(uContactShadowWidth, 0.02, 0.45);
+      // mb01 is ~0.5 at the edge and ->1.0 inside. Map [0.5 .. 0.5+wMb] to [1..0]
+      float tEdge = clamp((0.5 + wMb - mb01) / wMb, 0.0, 1.0);
+      float cs = pow(tEdge, clamp(uContactShadowPower, 0.6, 4.0)) * clamp(uContactShadowStrength, 0.0, 1.0);
+      // Fade contact shadow with edge alpha so very soft feather doesn't create a dark halo.
+      cs *= alphaEdge;
+      tileLin *= (1.0 - cs);
+    }
+
 // Far fade to reduce moire + add subtle atmospheric integration.
     // If depth is available, prefer it over uv.y, because the real "far" direction may be diagonal.
     float farBase = clamp(uv.y / max(uPlaneD, 1e-6), 0.0, 1.0);
@@ -1236,7 +1254,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       gl.generateMipmap(gl.TEXTURE_2D);
       if(extAniso){
         const maxA = gl.getParameter(extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 4;
-        gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, maxA));
+        gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, maxA));
       }
     }catch(e){
       gl.bindTexture(gl.TEXTURE_2D, null);
@@ -2405,7 +2423,7 @@ function _blendModeId(blend){
     gl.uniform1i(gl.getUniformLocation(progZone,'uHeightMap'), 10);
 
     // Palette parameters (from bucket JSON) — apply only in PBR mode.
-    const pp = (zone && zone.material && zone.material.params) ? zone.material.params : null;
+    const pp = (zone && zone.material && (zone.material.pbrParams || zone.material.params)) ? (zone.material.pbrParams || zone.material.params) : null;
     const exposureMult  = (pp && isFinite(pp.exposureMult))  ? pp.exposureMult  : 1.0;
     const normalScale   = (pp && isFinite(pp.normalScale))   ? pp.normalScale   : 1.0;
     const specStrength  = (pp && isFinite(pp.specStrength))  ? pp.specStrength  : 1.0;
@@ -2414,6 +2432,9 @@ function _blendModeId(blend){
 
     gl.uniform4f(gl.getUniformLocation(progZone,'uPbrParams0'), exposureMult, normalScale, specStrength, roughnessMult);
     gl.uniform1f(gl.getUniformLocation(progZone,'uBumpScale'), bumpScale);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowStrength'), (pp && isFinite(pp.contactShadowStrength)) ? pp.contactShadowStrength : ((pp && isFinite(pp.edgeShadowStrength)) ? pp.edgeShadowStrength : 0.12));
+    gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowWidth'), (pp && isFinite(pp.contactShadowWidth)) ? pp.contactShadowWidth : 0.22);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowPower'), (pp && isFinite(pp.contactShadowPower)) ? pp.contactShadowPower : 1.6);
 
     gl.uniform1i(gl.getUniformLocation(progZone,'uUsePBR'), usePbr ? 1 : 0);
     // Fixed neutral light (down + slight tilt) for stable relief perception.
