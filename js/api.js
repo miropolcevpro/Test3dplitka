@@ -3,7 +3,16 @@ window.PhotoPaveAPI=(function(){
   const {state}=window.PhotoPaveState;
   const setStatus=(t)=>{const el=document.getElementById("statusText");if(el)el.textContent=t||"";};
   async function _headExists(url){
-    try{ const r=await fetch(url,{method:"HEAD",cache:"no-store"}); return !!r.ok; }catch(_){ return false; }
+    // Returns:
+    //   true  - resource exists (HEAD ok)
+    //   false - HEAD responded but not ok (could be 404/403/etc)
+    //   null  - HEAD request failed (network/CORS/proxy); caller should try GET to confirm
+    try{
+      const r = await fetch(url,{method:"HEAD",cache:"no-store"});
+      return r.ok ? true : false;
+    }catch(_){
+      return null;
+    }
   }
 
   async function fetchJson(url,opts={}){
@@ -140,12 +149,15 @@ function absFromStorageMaybe(p){
   const s3Url=state.api.storageBase.replace(/\/$/,"")+"/palettes/"+encodeURIComponent(shapeId)+".json";
   const apiUrl=state.api.apiBase+"/api/palettes/"+encodeURIComponent(shapeId);
   let pal=null;
+  let missingConfirmed=false;
   try{
-    // Avoid console noise on missing palette keys: HEAD-check first.
-    const has = await _headExists(s3Url);
-    if(!has) throw new Error("palette_missing");
+    // Prefer direct GET; HEAD is best-effort and may be blocked by CORS/proxies.
+    // We only mark the palette as "missing" after a confirmed 404 on GET.
+    const head = await _headExists(s3Url);
     pal=await fetchJson(s3Url);
   }catch(eS3){
+    const msg = String((eS3 && eS3.message) || eS3 || "");
+    if(/HTTP\s+404\b/.test(msg) || /palette_missing/.test(msg)) missingConfirmed = true;
     // Optional gateway fallback (often returns 401 missing_token). Disabled by default.
     if(state.api && state.api.allowApiPalette){
       try{ pal=await fetchJson(apiUrl); }
@@ -154,7 +166,14 @@ function absFromStorageMaybe(p){
       pal=null;
     }
   }
-  if(!pal){ state.catalog.paletteMissing[shapeId]=true; state.catalog.palettesByShape[shapeId]=null; state.catalog.texturesByShape[shapeId]=[]; setStatus("Текстуры для этой формы временно недоступны"); return {palette:null,textures:[]}; }
+  if(!pal){
+    // Mark as missing only after confirmed 404. HEAD failures can be caused by CORS/proxy rules.
+    if(missingConfirmed) state.catalog.paletteMissing[shapeId]=true;
+    state.catalog.palettesByShape[shapeId]=null;
+    state.catalog.texturesByShape[shapeId]=[];
+    setStatus("Текстуры для этой формы временно недоступны");
+    return {palette:null,textures:[]};
+  }
 
   state.catalog.palettesByShape[shapeId]=pal;
   const tex=normalizePaletteTextures(pal, shapeId).map(t=>({

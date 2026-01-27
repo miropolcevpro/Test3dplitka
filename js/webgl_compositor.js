@@ -2351,9 +2351,18 @@ function _blendModeId(blend){
       const url = zone.material?.textureUrl;
       if(!url) continue;
 
-      // Load image (may throw). We rely on proper CORS for WebGL.
-      const img = await API.loadImage(url);
-      const tileTex = _getTileTex(url, img);
+      // Tile texture: avoid re-loading the same image every frame when GPU texture is already cached.
+      // This prevents micro-stutters and improves stability on weaker GPUs/CPUs.
+      let tileTex;
+      if(tileCache.has(url)){
+        const e = tileCache.get(url);
+        e.ts = Date.now();
+        tileTex = e.tex;
+      }else{
+        // Load image (may throw). We rely on proper CORS for WebGL.
+        const img = await API.loadImage(url);
+        tileTex = _getTileTex(url, img);
+      }
 
       // Build mask textures (cache by geometry + render size)
       const key = [
