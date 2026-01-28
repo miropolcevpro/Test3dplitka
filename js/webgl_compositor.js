@@ -788,10 +788,20 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform float uContactShadowWidth;    // in mask-blur units above 0.5 (0..0.5)
   uniform float uContactShadowPower;    // curve shaping
   uniform int uUsePBR;      // 0/1
+  uniform int uUseGGX;      // 0=legacy spec, 1=GGX (Ultra)
+
+  // Stochastic tiling (Ultra-only): breaks visible repetition by applying a random transform per large super-tile.
+  // Mode 0=off, 1=Level A (single-sample random super-tile).
+  uniform int uStochMode;
+  uniform float uStochSuperTile;
+  uniform float uStochShiftAmp;
+  uniform int uStochRot;
   // PhotoFit mode: 0=legacy per-pixel, 1=global exposure
   uniform int uPhotoFitMode;
   uniform float uPhotoExposure;
   uniform vec3 uLightDirW;  // world-space directional light (normalized)
+  uniform float uLightStrength;
+  uniform float uAmbientStrength;
   uniform sampler2D uMask;
   uniform sampler2D uMaskBlur;
   uniform sampler2D uDepth;
@@ -825,6 +835,35 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   vec3 toLinear(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
   vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
 
+  // --- Stochastic tiling helpers (Ultra-only, safe default OFF) ---
+  float hash12(vec2 p){
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+  vec2 hash22(vec2 p){
+    float n = hash12(p);
+    return vec2(n, hash12(p + n + 19.19));
+  }
+  vec2 stochApply(vec2 tuv){
+    float st = max(1.0, uStochSuperTile);
+    vec2 cell = floor(tuv / st);
+    vec2 rnd = hash22(cell);
+    vec2 shift = (rnd - 0.5) * clamp(uStochShiftAmp, 0.0, st * 0.45);
+
+    // Optional 90deg rotation around the super-tile center (default off).
+    if(uStochRot == 1){
+      vec2 f = fract(tuv / st) - 0.5;
+      float r = floor(rnd.x * 4.0 + 1e-4);
+      vec2 fr = f;
+      if(r < 1.0){ fr = vec2( f.x,  f.y); }
+      else if(r < 2.0){ fr = vec2(-f.y,  f.x); }
+      else if(r < 3.0){ fr = vec2(-f.x, -f.y); }
+      else { fr = vec2( f.y, -f.x); }
+      tuv = (cell + (fr + 0.5)) * st;
+    }
+
+    return tuv + shift;
+  }
+
   // Simple normal-mapped lambert + subtle spec. World-space is the plane space (x,y) with z=0.
   vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW){
     // Tangent basis aligned to the texture axes.
@@ -856,26 +895,61 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     float ndl = max(dot(Nw, L), 0.0);
 
     // Base terms (kept conservative to avoid a sudden "look change")
-    float amb = 0.32;
-    float diff = 0.90 * ndl;
+    float amb = clamp(uAmbientStrength, 0.0, 1.2);
+    float diff = clamp(uLightStrength, 0.0, 2.5) * ndl;
 
     // Apply AO to diffuse/ambient (not to the albedo itself, so color remains stable)
     float lit = (amb + diff) * aoF;
 
-    // Roughness-driven subtle specular
-    float gloss = 1.0 - rough;
-    float shin = mix(14.0, 220.0, gloss * gloss);
-    float specStr = mix(0.012, 0.060, gloss);
-
+    // Specular: legacy Blinn-Phong (stable) or GGX+Fresnel (Ultra)
     vec3 V = normalize(viewDirW);
     vec3 H = normalize(L + V);
-    float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
-    spec *= max(uPbrParams0.z, 0.0);
+    float ndv = max(dot(Nw, V), 0.0);
+    float ndh = max(dot(Nw, H), 0.0);
+    float vdh = max(dot(V, H), 0.0);
 
+    vec3 specCol = vec3(0.0);
+
+    if(uUseGGX == 1){
+      // GGX microfacet BRDF (dielectric). Designed to be a drop-in replacement
+      // for the legacy spec without changing the diffuse/ambient balance.
+      // Roughness remap: alpha = rough^2, clamped to avoid fireflies.
+      float a = max(0.045, rough * rough);
+      float a2 = a * a;
+
+      // NDF: Trowbridge-Reitz GGX
+      float denom = (ndh * ndh * (a2 - 1.0) + 1.0);
+      float D = a2 / max(3.14159265 * denom * denom, 1e-6);
+
+      // Smith geometry (Schlick-GGX)
+      float k = (a + 1.0);
+      k = (k * k) / 8.0;
+      float Gv = ndv / max(ndv * (1.0 - k) + k, 1e-6);
+      float Gl = ndl / max(ndl * (1.0 - k) + k, 1e-6);
+      float G = Gv * Gl;
+
+      // Fresnel (Schlick)
+      vec3 F0 = vec3(0.04) * clamp(uPbrParams0.z, 0.0, 3.0);
+      vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
+
+      vec3 specBRDF = (D * G) * F / max(4.0 * ndl * ndv, 1e-4);
+
+      // Calibrate to match the previous spec energy range (keeps look stable).
+      specCol = specBRDF * (ndl * (0.35 * clamp(uLightStrength, 0.0, 2.5)));
+
+    }else{
+      // Legacy: roughness-driven subtle specular
+      float gloss = 1.0 - rough;
+      float shin = mix(14.0, 220.0, gloss * gloss);
+      float specStr = mix(0.012, 0.060, gloss);
+      float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
+      spec *= max(uPbrParams0.z, 0.0);
+      specCol = vec3(spec);
+    }
     // Slightly occlude specular in crevices
-    spec *= mix(1.0, aoTex, aoStr * 0.5);
+    specCol *= mix(1.0, aoTex, aoStr * 0.5);
 
-    return baseLin * lit + vec3(spec);
+    return baseLin * lit + specCol;
   }
 
   vec2 parallaxUv(vec2 uv, float rotRad, vec3 viewDirW){
@@ -1046,6 +1120,10 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
+    // Stochastic tiling (Ultra-only, opt-in). Applied in tile-space so it affects all maps consistently.
+    if(uStochMode == 1){
+      tuv = stochApply(tuv);
+    }
     // Phase lock: keep texture anchored so it does not "swim" when
     // horizon/perspective are adjusted.
     vec2 suv = fract(tuv + uPhase);
@@ -2384,7 +2462,7 @@ function _blendModeId(blend){
     gl.bindVertexArray(null);
   }
 
-  function _renderZonePass(prevTex, dstRT, zone, tileTex, pbrMaps, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure){
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, pbrMaps, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight){
     gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
     gl.viewport(0,0,dstRT.w,dstRT.h);
     gl.useProgram(progZone);
@@ -2440,9 +2518,60 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowPower'), (pp && isFinite(pp.contactShadowPower)) ? pp.contactShadowPower : 1.6);
 
     gl.uniform1i(gl.getUniformLocation(progZone,'uUsePBR'), usePbr ? 1 : 0);
-    // Fixed neutral light (down + slight tilt) for stable relief perception.
-    // Next patches can make this photo-aware / user-controlled.
-    gl.uniform3f(gl.getUniformLocation(progZone,'uLightDirW'), 0.25, 0.35, 0.90);
+    // GGX specular (Ultra): enabled by default. Can be disabled via ?ggx=0 or per-material params.
+    let ggxOn = 1;
+    try{
+      if(typeof window !== 'undefined' && window.__PP_GGX === 0) ggxOn = 0;
+    }catch(_){}
+    if(pp && (pp.ggx === 0 || pp.useGGX === 0)) ggxOn = 0;
+    if(pp && (pp.ggx === 1 || pp.useGGX === 1)) ggxOn = 1;
+    const useGGX = (usePbr && ggxOn) ? 1 : 0;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uUseGGX'), useGGX);
+    // Stochastic tiling (Ultra-only, opt-in via URL): ?stoch=1
+    let stochMode = 0;
+    let stochSuper = 16.0;
+    let stochShift = 2.25;
+    let stochRot = 0;
+    try{
+      if(typeof window !== 'undefined' && window.__PP_STOCH === 1){ stochMode = 1; }
+      if(typeof window !== 'undefined' && window.__PP_STOCH_ROT === 1){ stochRot = 1; }
+      if(typeof window !== 'undefined' && window.__PP_STOCH_ROT === 0){ stochRot = 0; }
+    }catch(_){}
+    // Gate to Ultra/PBR only to avoid any regression risk in the classic mode.
+    if(!(usePbr && ai && ai.enabled)){ stochMode = 0; }
+    if(stochMode){
+      let tier = null;
+      try{ if(typeof window !== 'undefined' && window.__PP_STOCH_TIER) tier = window.__PP_STOCH_TIER; }catch(_){}
+      if(!tier && ai && ai.device && ai.device.tier) tier = ai.device.tier;
+      // Tier tuning: bigger super-tiles on weaker devices to reduce potential boundary visibility.
+      if(tier === 'high'){ stochSuper = 12.0; stochShift = 2.0; }
+      else if(tier === 'low'){ stochSuper = 22.0; stochShift = 2.5; }
+      else { stochSuper = 16.0; stochShift = 2.25; }
+    }
+    gl.uniform1i(gl.getUniformLocation(progZone,'uStochMode'), stochMode);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uStochSuperTile'), stochSuper);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uStochShiftAmp'), stochShift);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uStochRot'), stochRot);
+    // Light controls:
+    // - per-material overrides come from palette JSON: params.lightAzimuth/lightElevation/lightStrength/ambientStrength
+    // - otherwise we use a photo-derived preset (state.assets.photoLight)
+    // - fallback: neutral stable light
+    const lAz = (pp && isFinite(pp.lightAzimuth)) ? pp.lightAzimuth : (photoLight && isFinite(photoLight.azimuth) ? photoLight.azimuth : 120);
+    const lEl = (pp && isFinite(pp.lightElevation)) ? pp.lightElevation : (photoLight && isFinite(photoLight.elevation) ? photoLight.elevation : 35);
+    const lStr = (pp && isFinite(pp.lightStrength)) ? pp.lightStrength : (photoLight && isFinite(photoLight.lightStrength) ? photoLight.lightStrength : 1.0);
+    const aStr = (pp && isFinite(pp.ambientStrength)) ? pp.ambientStrength : (photoLight && isFinite(photoLight.ambientStrength) ? photoLight.ambientStrength : 0.32);
+
+    const ar = (lAz * Math.PI) / 180.0;
+    const er = (lEl * Math.PI) / 180.0;
+    // Direction from surface towards light (z-up)
+    let lx = Math.cos(ar) * Math.cos(er);
+    let ly = Math.sin(ar) * Math.cos(er);
+    let lz = Math.sin(er);
+    const llen = Math.hypot(lx,ly,lz) || 1.0;
+    lx/=llen; ly/=llen; lz/=llen;
+    gl.uniform3f(gl.getUniformLocation(progZone,'uLightDirW'), lx, ly, lz);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uLightStrength'), clamp(+lStr||0.0, 0.0, 2.5));
+    gl.uniform1f(gl.getUniformLocation(progZone,'uAmbientStrength'), clamp(+aStr||0.0, 0.0, 1.2));
     gl.uniform1i(gl.getUniformLocation(progZone,'uMask'), 3);
     gl.uniform1i(gl.getUniformLocation(progZone,'uMaskBlur'), 4);
     gl.uniform1i(gl.getUniformLocation(progZone,'uDepth'), 5);
@@ -3273,7 +3402,8 @@ try{
   }
 }catch(_){ cam3d = null; cam3dRef = null; }
     const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-    _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure);
+    const photoLight = (state && state.assets && state.assets.photoLight) ? state.assets.photoLight : null;
+    _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight);
 const tmp = src; src = dst; dst = tmp;
     }
 
@@ -3720,7 +3850,8 @@ try{
 
       const pbrMaps = await _preparePbrMaps(zone, ai);
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure);
+      const photoLight = (state && state.assets && state.assets.photoLight) ? state.assets.photoLight : null;
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight);
       const tmp = src; src = dst; dst = tmp;
     }
 
@@ -3946,7 +4077,8 @@ try{
 
       const pbrMaps = await _preparePbrMaps(zone, state.ai);
       const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
-      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx, photoExposure);
+      const photoLight = (state && state.assets && state.assets.photoLight) ? state.assets.photoLight : null;
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight);
       const tmp = src; src = dst; dst = tmp;
     }
 

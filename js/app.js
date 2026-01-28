@@ -371,6 +371,60 @@
     }catch(_){ return {avgLum:0.5, exposure:1.0}; }
   }
 
+  // Estimate a reasonable directional light preset from the photo.
+  // This is NOT AI: a tiny luminance-gradient heuristic to get a stable default.
+  // Output is in degrees: azimuth (0..360), elevation (0..89).
+  function _pp_estimatePhotoLight(bitmap){
+    try{
+      if(!bitmap) return { azimuth: 120, elevation: 35, lightStrength: 1.0, ambientStrength: 0.32 };
+      const S=64;
+      const cv=document.createElement('canvas');
+      cv.width=S; cv.height=S;
+      const ctx=cv.getContext('2d',{willReadFrequently:true});
+      if(!ctx) return { azimuth: 120, elevation: 35, lightStrength: 1.0, ambientStrength: 0.32 };
+      ctx.drawImage(bitmap,0,0,S,S);
+      const im=ctx.getImageData(0,0,S,S).data;
+      const lum=new Float32Array(S*S);
+      for(let y=0;y<S;y++){
+        for(let x=0;x<S;x++){
+          const i=(y*S+x)*4;
+          const r=im[i]/255, g=im[i+1]/255, b=im[i+2]/255;
+          // approximate sRGB->linear for luminance
+          const rl=Math.pow(r,2.2), gl=Math.pow(g,2.2), bl=Math.pow(b,2.2);
+          lum[y*S+x]=0.2126*rl + 0.7152*gl + 0.0722*bl;
+        }
+      }
+      let gx=0, gy=0, wsum=0;
+      for(let y=1;y<S-1;y++){
+        for(let x=1;x<S-1;x++){
+          const lxm=lum[y*S+(x-1)], lxp=lum[y*S+(x+1)];
+          const lym=lum[(y-1)*S+x], lyp=lum[(y+1)*S+x];
+          const dx=(lxp-lxm);
+          const dy=(lyp-lym);
+          const mag=Math.hypot(dx,dy);
+          if(mag>1e-6){
+            // Image Y is down; map to a conventional up-axis by flipping dy.
+            gx += dx*mag;
+            gy += (-dy)*mag;
+            wsum += mag;
+          }
+        }
+      }
+      if(wsum < 1e-6) return { azimuth: 120, elevation: 35, lightStrength: 1.0, ambientStrength: 0.32 };
+      gx/=wsum; gy/=wsum;
+      let az = Math.atan2(gy, gx) * 180/Math.PI; // direction towards brighter side
+      az = ((az % 360) + 360) % 360;
+
+      // Conservative defaults: do not swing elevation wildly (keeps stability).
+      // You can override per material in palette JSON.
+      const elevation = 35;
+
+      return { azimuth: az, elevation, lightStrength: 1.0, ambientStrength: 0.32 };
+    }catch(_){
+      return { azimuth: 120, elevation: 35, lightStrength: 1.0, ambientStrength: 0.32 };
+    }
+  }
+
 async function handlePhotoFile(file){
     if(!file) return;
     API.setStatus("Загрузка фото…");
@@ -395,6 +449,12 @@ async function handlePhotoFile(file){
       state.assets.photoAvgLum = st.avgLum;
       state.assets.photoExposure = st.exposure;
     }catch(_){ state.assets.photoAvgLum = 0.5; state.assets.photoExposure = 1.0; }
+
+    // Precompute a stable default light preset from the photo (Ultra PBR).
+    // Material JSON can override this per palette/texture.
+    try{
+      state.assets.photoLight = _pp_estimatePhotoLight(resized);
+    }catch(_){ state.assets.photoLight = { azimuth:120, elevation:35, lightStrength:1.0, ambientStrength:0.32 }; }
     try{ if(prevBitmap && prevBitmap.close) prevBitmap.close(); }catch(_){ }
 
     state.zones.forEach(z=>{
@@ -885,6 +945,25 @@ if(calib3dToggleLinesBtn){
       if(pf==='legacy'){ window.__PP_PHOTOFIT_MODE = 'legacy'; }
       else if(pf==='global'){ window.__PP_PHOTOFIT_MODE = 'global'; }
       else { window.__PP_PHOTOFIT_MODE = 'global'; }
+
+      // GGX specular (Ultra/PBR): enabled by default.
+      // Use ?ggx=0 to force-disable (fallback to legacy spec), or ?ggx=1 to force-enable.
+      const ggx = qs.get('ggx');
+      if(ggx === '0'){ window.__PP_GGX = 0; }
+      else if(ggx === '1'){ window.__PP_GGX = 1; }
+      else { window.__PP_GGX = 1; }
+
+      // Stochastic tiling (Ultra-only): breaks visible repetition by applying a large-scale random phase/rotation per super-tile.
+      // Default is OFF (safe). Enable with ?stoch=1. Optional: ?stochTier=low|mid|high, ?stochRot=1.
+      const st = qs.get('stoch');
+      if(st === '1'){ window.__PP_STOCH = 1; }
+      else { window.__PP_STOCH = 0; }
+      const stTier = qs.get('stochTier');
+      if(stTier === 'low' || stTier === 'mid' || stTier === 'high'){ window.__PP_STOCH_TIER = stTier; }
+      const stRot = qs.get('stochRot');
+      if(stRot === '1'){ window.__PP_STOCH_ROT = 1; }
+      else if(stRot === '0'){ window.__PP_STOCH_ROT = 0; }
+
     }catch(_){}
 
     // Dev-only near-metric overlay loop (B2).

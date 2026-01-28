@@ -116,7 +116,8 @@ function absFromStorageMaybe(p){
 
   // Palette/material params (from bucket JSON). Supports Russian key "параметры" and English "params".
   // Contract (current bucket):
-  //   normalScale, bumpScale, exposureMult, specStrength, roughnessMult
+  //   normalScale, bumpScale, exposureMult, specStrength, roughnessMult,
+  //   lightAzimuth, lightElevation, lightStrength, ambientStrength
   // We normalize to:
   //   normalScale, bumpScale, exposureMult, specStrength, roughnessMult (same keys, sanitized)
   function sanitizePaletteParams(p){
@@ -128,12 +129,23 @@ function absFromStorageMaybe(p){
     const ss = Number(p.specStrength);
     const rm = Number(p.roughnessMult);
 
+    const la = Number(p.lightAzimuth);
+    const le = Number(p.lightElevation);
+    const ls = Number(p.lightStrength);
+    const am = Number(p.ambientStrength);
+
     out.normalScale   = isFinite(ns) ? _clamp(ns, 0.0, 2.5) : 1.0;
     // bumpScale is reserved for height/parallax: keep conservative
     out.bumpScale     = isFinite(bs) ? _clamp(bs, 0.0, 0.12) : 0.0;
     out.exposureMult  = isFinite(em) ? _clamp(em, 0.5, 1.8) : 1.0;
     out.specStrength  = isFinite(ss) ? _clamp(ss, 0.0, 2.0) : 1.0;
     out.roughnessMult = isFinite(rm) ? _clamp(rm, 0.25, 2.5) : 1.0;
+
+    // Lighting controls (degrees + strengths). Used by the PBR shader (Ultra only).
+    out.lightAzimuth   = isFinite(la) ? (((la % 360) + 360) % 360) : null; // 0..360
+    out.lightElevation = isFinite(le) ? _clamp(le, 0.0, 89.0) : null;      // degrees above horizon
+    out.lightStrength  = isFinite(ls) ? _clamp(ls, 0.0, 2.5) : null;
+    out.ambientStrength= isFinite(am) ? _clamp(am, 0.0, 1.2) : null;
     return out;
   }
 
