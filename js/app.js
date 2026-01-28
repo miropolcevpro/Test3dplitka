@@ -964,6 +964,13 @@ if(calib3dToggleLinesBtn){
       if(stRot === '1'){ window.__PP_STOCH_ROT = 1; }
       else if(stRot === '0'){ window.__PP_STOCH_ROT = 0; }
 
+      // Stochastic Level B (3-tap blend) control. Intended for desktop/high tier only.
+      // Default is AUTO (enabled on desktop when stochTier=high).
+      // Force-enable: ?stoch3=1, force-disable: ?stoch3=0.
+      const st3 = qs.get('stoch3');
+      if(st3 === '1'){ window.__PP_STOCH_3TAP = 1; }
+      else if(st3 === '0'){ window.__PP_STOCH_3TAP = 0; }
+
     }catch(_){}
 
     // Dev-only near-metric overlay loop (B2).
