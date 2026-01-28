@@ -796,6 +796,9 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform float uStochSuperTile;
   uniform float uStochShiftAmp;
   uniform int uStochRot;
+  // Micro-variation (Ultra-only): subtle per-tile variations (brightness/roughness/spec)
+  uniform int uMicroVar;
+  uniform vec3 uMicroParams; // x=albedoAmp, y=roughAmp, z=specAmp
   // PhotoFit mode: 0=legacy per-pixel, 1=global exposure
   uniform int uPhotoFitMode;
   uniform float uPhotoExposure;
@@ -906,8 +909,27 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     }
   }
 
+  // --- Micro-variation helpers (Ultra-only, no extra texture fetch) ---
+  vec3 hash33(vec2 p){
+    float n1 = hash12(p + vec2(0.0, 0.0));
+    float n2 = hash12(p + vec2(13.7, 9.2));
+    float n3 = hash12(p + vec2(42.3, 17.1));
+    return vec3(n1, n2, n3);
+  }
+  void microFactors(vec2 tileId, out float albMul, out float roughMul, out float specMul){
+    albMul = 1.0; roughMul = 1.0; specMul = 1.0;
+    if(uMicroVar == 0) return;
+    vec3 r = hash33(tileId);
+    float a = clamp(uMicroParams.x, 0.0, 0.12);
+    float rr = clamp(uMicroParams.y, 0.0, 0.25);
+    float ss = clamp(uMicroParams.z, 0.0, 0.25);
+    albMul  = 1.0 + (r.x - 0.5) * 2.0 * a;
+    roughMul= 1.0 + (r.y - 0.5) * 2.0 * rr;
+    specMul = 1.0 + (r.z - 0.5) * 2.0 * ss;
+  }
+
   // Simple normal-mapped lambert + subtle spec. World-space is the plane space (x,y) with z=0.
-  vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW){
+  vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW, vec2 tileId){
     // Tangent basis aligned to the texture axes.
     float c = cos(rotRad);
     float s = sin(rotRad);
@@ -927,6 +949,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     // Material maps (linear)
     float rough = clamp(texture(uRoughnessMap, suv).r, 0.0, 1.0);
     rough = clamp(rough * max(uPbrParams0.w, 0.0), 0.0, 1.0);
+
+    // Micro-variation (Ultra-only): subtle per-tile variation (kept tiny).
+    float microAlb=1.0, microR=1.0, microS=1.0;
+    microFactors(tileId, microAlb, microR, microS);
+    rough = clamp(rough * microR, 0.0, 1.0);
+
     float aoTex = clamp(texture(uAOMap, suv).r, 0.0, 1.0);
 
     // AO strength (0..1) – reuse existing UI/logic knob (kept at 1.0 by default).
@@ -942,6 +970,10 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
     // Apply AO to diffuse/ambient (not to the albedo itself, so color remains stable)
     float lit = (amb + diff) * aoF;
+
+    // Apply micro brightness variation in linear space (kept subtle).
+    baseLin *= microAlb;
+
 
     // Specular: legacy Blinn-Phong (stable) or GGX+Fresnel (Ultra)
     vec3 V = normalize(viewDirW);
@@ -971,7 +1003,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       float G = Gv * Gl;
 
       // Fresnel (Schlick)
-      vec3 F0 = vec3(0.04) * clamp(uPbrParams0.z, 0.0, 3.0);
+      vec3 F0 = vec3(0.04) * clamp(uPbrParams0.z * microS, 0.0, 3.0);
       vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
 
       vec3 specBRDF = (D * G) * F / max(4.0 * ndl * ndv, 1e-4);
@@ -985,7 +1017,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       float shin = mix(14.0, 220.0, gloss * gloss);
       float specStr = mix(0.012, 0.060, gloss);
       float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
-      spec *= max(uPbrParams0.z, 0.0);
+      spec *= max(uPbrParams0.z * microS, 0.0);
       specCol = vec3(spec);
     }
     // Slightly occlude specular in crevices
@@ -999,7 +1031,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   //  - nTS_raw: tangent-space normal (decoded to [-1..1])
   //  - rough_raw: roughness [0..1] prior to palette multiplier
   //  - ao_raw: AO [0..1]
-  vec3 applyPBRLightingFromMaps(vec3 baseLin, vec3 nTS_raw, float rough_raw, float ao_raw, float rotRad, vec3 viewDirW){
+  vec3 applyPBRLightingFromMaps(vec3 baseLin, vec3 nTS_raw, float rough_raw, float ao_raw, float rotRad, vec3 viewDirW, float microSpecMul){
     float c = cos(rotRad);
     float s = sin(rotRad);
     vec3 T = normalize(vec3(c, s, 0.0));
@@ -1046,12 +1078,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       float F0 = 0.04;
       float F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
       float spec = (D * G * F) / max(4.0 * ndv * ndl, 1e-4);
-      float specStr = clamp(uSpecStrength, 0.0, 2.0) * max(uPbrParams0.z, 0.0);
+      float specStr = max(uPbrParams0.z * microSpecMul, 0.0);
       specCol = vec3(spec * specStr);
     }else{
       float shin = mix(8.0, 200.0, pow(1.0 - rough, 2.0));
       float specPow = pow(ndh, shin);
-      float specStr = clamp(uSpecStrength, 0.0, 2.0) * max(uPbrParams0.z, 0.0);
+      float specStr = max(uPbrParams0.z * microSpecMul, 0.0);
       specCol = vec3(specPow * specStr) * ndl;
     }
 
@@ -1246,6 +1278,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       suv1.y = 1.0 - suv1.y;
       suv2.y = 1.0 - suv2.y;
 
+      // Micro-variation tile ids (stable in tile-space, consistent across maps)
+      vec2 tileId0 = floor(t0 + uPhase);
+      vec2 tileId1 = floor(t1 + uPhase);
+      vec2 tileId2 = floor(t2 + uPhase);
+
+
       if(uBumpScale > 0.00001){
         suv0 = fract(parallaxUv(suv0, rot, viewDirW));
         suv1 = fract(parallaxUv(suv1, rot, viewDirW));
@@ -1255,7 +1293,15 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       vec3 c0 = texture(uTile, suv0).rgb;
       vec3 c1 = texture(uTile, suv1).rgb;
       vec3 c2 = texture(uTile, suv2).rgb;
-      tileLin = toLinear(c0) * w.x + toLinear(c1) * w.y + toLinear(c2) * w.z;
+
+      float mAlb0=1.0,mR0=1.0,mS0=1.0;
+      float mAlb1=1.0,mR1=1.0,mS1=1.0;
+      float mAlb2=1.0,mR2=1.0,mS2=1.0;
+      microFactors(tileId0, mAlb0, mR0, mS0);
+      microFactors(tileId1, mAlb1, mR1, mS1);
+      microFactors(tileId2, mAlb2, mR2, mS2);
+
+      tileLin = toLinear(c0) * (w.x * mAlb0) + toLinear(c1) * (w.y * mAlb1) + toLinear(c2) * (w.z * mAlb2);
 
       // Blend material maps in their native linear space.
       vec3 n0 = texture(uNormalMap, suv0).rgb * 2.0 - 1.0;
@@ -1266,6 +1312,10 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       float r0 = texture(uRoughnessMap, suv0).r;
       float r1 = texture(uRoughnessMap, suv1).r;
       float r2 = texture(uRoughnessMap, suv2).r;
+      r0 = clamp(r0 * mR0, 0.0, 1.0);
+      r1 = clamp(r1 * mR1, 0.0, 1.0);
+      r2 = clamp(r2 * mR2, 0.0, 1.0);
+
       float roughRaw = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
 
       float a0 = texture(uAOMap, suv0).r;
@@ -1275,7 +1325,8 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
       // Global exposure multiplier from palette JSON (applied in linear space)
       tileLin *= max(uPbrParams0.x, 0.0);
-      tileLin = applyPBRLightingFromMaps(tileLin, nTS, roughRaw, aoRaw, rot, viewDirW);
+            float microSpecBlend = clamp(mS0 * w.x + mS1 * w.y + mS2 * w.z, 0.0, 2.0);
+      tileLin = applyPBRLightingFromMaps(tileLin, nTS, roughRaw, aoRaw, rot, viewDirW, microSpecBlend);
 
       // Keep a representative UV for any downstream debug/aux ops.
       suv = suv0;
@@ -1297,7 +1348,8 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
       if(uUsePBR == 1){
         tileLin *= max(uPbrParams0.x, 0.0);
-        tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW);
+        vec2 tileId = floor(tuv + uPhase);
+        tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW, tileId);
       }
     }
 
@@ -2723,6 +2775,26 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uStochSuperTile'), stochSuper);
     gl.uniform1f(gl.getUniformLocation(progZone,'uStochShiftAmp'), stochShift);
     gl.uniform1i(gl.getUniformLocation(progZone,'uStochRot'), stochRot);
+    // Micro-variation (Ultra-only): enabled when stochastic tiling is active (can be overridden via ?micro=0/1).
+    let microOn = (stochMode > 0) ? 1 : 0;
+    let microA = 0.035, microR = 0.06, microS = 0.04;
+    try{
+      if(typeof window !== 'undefined' && (window.__PP_MICRO === 0 || window.__PP_MICRO === 1)) microOn = window.__PP_MICRO;
+      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_A)) microA = window.__PP_MICRO_A;
+      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_R)) microR = window.__PP_MICRO_R;
+      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_S)) microS = window.__PP_MICRO_S;
+    }catch(_){ }
+    // Per-material overrides (optional)
+    if(pp && isFinite(pp.microAlbedo)) microA = pp.microAlbedo;
+    if(pp && isFinite(pp.microRough)) microR = pp.microRough;
+    if(pp && isFinite(pp.microSpec)) microS = pp.microSpec;
+    microA = clamp(+microA||0.0, 0.0, 0.12);
+    microR = clamp(+microR||0.0, 0.0, 0.25);
+    microS = clamp(+microS||0.0, 0.0, 0.25);
+    if(!(usePbr && ai && ai.enabled)) microOn = 0;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uMicroVar'), microOn ? 1 : 0);
+    gl.uniform3f(gl.getUniformLocation(progZone,'uMicroParams'), microA, microR, microS);
+
     // Light controls:
     // - per-material overrides come from palette JSON: params.lightAzimuth/lightElevation/lightStrength/ambientStrength
     // - otherwise we use a photo-derived preset (state.assets.photoLight)

@@ -964,6 +964,19 @@ if(calib3dToggleLinesBtn){
       if(stRot === '1'){ window.__PP_STOCH_ROT = 1; }
       else if(stRot === '0'){ window.__PP_STOCH_ROT = 0; }
 
+      // Micro-variation (Ultra-only): subtle per-tile variations to reduce "wallpaper" look.
+      // Default: AUTO (enabled when stochastic tiling is enabled). Override: ?micro=0 or ?micro=1.
+      const micro = qs.get('micro');
+      if(micro === '0'){ window.__PP_MICRO = 0; }
+      else if(micro === '1'){ window.__PP_MICRO = 1; }
+      // Optional tuning (safe ranges): ?microAlbedo=0.035&microRough=0.06&microSpec=0.04
+      const mA = qs.get('microAlbedo');
+      const mR = qs.get('microRough');
+      const mS = qs.get('microSpec');
+      if(mA !== null && mA !== ''){ const v = parseFloat(mA); if(isFinite(v)) window.__PP_MICRO_A = v; }
+      if(mR !== null && mR !== ''){ const v = parseFloat(mR); if(isFinite(v)) window.__PP_MICRO_R = v; }
+      if(mS !== null && mS !== ''){ const v = parseFloat(mS); if(isFinite(v)) window.__PP_MICRO_S = v; }
+
       // Stochastic Level B (3-tap blend) control. Intended for desktop/high tier only.
       // Default is AUTO (enabled on desktop when stochTier=high).
       // Force-enable: ?stoch3=1, force-disable: ?stoch3=0.
