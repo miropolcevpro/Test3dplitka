@@ -21,19 +21,6 @@
   // -------- Utilities
   function nowMs(){ return (typeof performance!=="undefined" && performance.now) ? performance.now() : Date.now(); }
 
-  // OpenCV-based auto-calibration is optional and may be unstable on some hosts/browsers.
-  // To keep Ultra rendering robust, we enable it only when explicitly requested.
-  function _pp_allowOpenCVAutoCalib(){
-    try{
-      const qs = new URLSearchParams(location.search || "");
-      if(qs.get("autocalib") === "1" || qs.get("opencv") === "1") return true;
-      const g = (window.__PP && window.__PP.autocalib) || window.__PP_AUTOCALIB;
-      if(g === 1 || g === true) return true;
-      try{ if(localStorage.getItem("pp_autocalib") === "1") return true; }catch(_){ }
-    }catch(_){ }
-    return false;
-  }
-
   async function sha1HexFromString(str){
     try{
       if(window.crypto && crypto.subtle){
@@ -613,13 +600,7 @@
       // Patch D (Auto-calibration): start vanishing/horizon calibration asynchronously.
       // This must NEVER block the UI or the depth stage.
       try{
-        // IMPORTANT: OpenCV auto-calibration is opt-in only.
-        // If it crashes for any reason, Ultra must keep rendering unaffected.
-        if(
-          _pp_allowOpenCVAutoCalib() &&
-          ai.calib && ai.calib.enabled !== false &&
-          window.AIAutoCalib && typeof window.AIAutoCalib.run === "function"
-        ){
+        if(ai.calib && ai.calib.enabled !== false && window.AIAutoCalib && typeof window.AIAutoCalib.run === "function"){
           window.AIAutoCalib.run({ bitmap: info?.bitmap, photoHash }).catch(()=>{});
         }
       }catch(_){/* no-op */}

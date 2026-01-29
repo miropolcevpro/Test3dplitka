@@ -791,14 +791,11 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform int uUseGGX;      // 0=legacy spec, 1=GGX (Ultra)
 
   // Stochastic tiling (Ultra-only): breaks visible repetition by applying a random transform per large super-tile.
-  // Mode 0=off, 1=Level A (single-sample random super-tile), 2=Level B (3-tap blend).
+  // Mode 0=off, 1=Level A (single-sample random super-tile).
   uniform int uStochMode;
   uniform float uStochSuperTile;
   uniform float uStochShiftAmp;
   uniform int uStochRot;
-  // Micro-variation (Ultra-only): subtle per-tile variations (brightness/roughness/spec)
-  uniform int uMicroVar;
-  uniform vec3 uMicroParams; // x=albedoAmp, y=roughAmp, z=specAmp
   // PhotoFit mode: 0=legacy per-pixel, 1=global exposure
   uniform int uPhotoFitMode;
   uniform float uPhotoExposure;
@@ -867,69 +864,8 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     return tuv + shift;
   }
 
-  // Same transform as stochApply, but using an explicit cell id.
-  vec2 stochApplyCell(vec2 tuv, vec2 cell){
-    float st = max(1.0, uStochSuperTile);
-    vec2 rnd = hash22(cell);
-    vec2 shift = (rnd - 0.5) * clamp(uStochShiftAmp, 0.0, st * 0.45);
-    if(uStochRot == 1){
-      vec2 f = fract(tuv / st) - 0.5;
-      float r = floor(rnd.x * 4.0 + 1e-4);
-      vec2 fr = f;
-      if(r < 1.0){ fr = vec2( f.x,  f.y); }
-      else if(r < 2.0){ fr = vec2(-f.y,  f.x); }
-      else if(r < 3.0){ fr = vec2(-f.x, -f.y); }
-      else { fr = vec2( f.y, -f.x); }
-      tuv = (cell + (fr + 0.5)) * st;
-    }else{
-      // Keep the same coordinate system as Level A to preserve continuity.
-      tuv = tuv + (cell - floor(tuv / st)) * st;
-    }
-    return tuv + shift;
-  }
-
-  // Level B: 3-tap stochastic blending (triangle barycentric weights inside a super-tile).
-  // Produces 3 transformed tile-uvs (t0/t1/t2) and weights w (sum=1).
-  void stochGet3(vec2 tuv, out vec2 t0, out vec2 t1, out vec2 t2, out vec3 w){
-    float st = max(1.0, uStochSuperTile);
-    vec2 cell = floor(tuv / st);
-    vec2 f = fract(tuv / st);
-    if(f.x + f.y < 1.0){
-      // Lower triangle: (0,0), (1,0), (0,1)
-      w = vec3(1.0 - f.x - f.y, f.x, f.y);
-      t0 = stochApplyCell(tuv, cell + vec2(0.0, 0.0));
-      t1 = stochApplyCell(tuv, cell + vec2(1.0, 0.0));
-      t2 = stochApplyCell(tuv, cell + vec2(0.0, 1.0));
-    }else{
-      // Upper triangle: (1,1), (0,1), (1,0)
-      w = vec3(f.x + f.y - 1.0, 1.0 - f.x, 1.0 - f.y);
-      t0 = stochApplyCell(tuv, cell + vec2(1.0, 1.0));
-      t1 = stochApplyCell(tuv, cell + vec2(0.0, 1.0));
-      t2 = stochApplyCell(tuv, cell + vec2(1.0, 0.0));
-    }
-  }
-
-  // --- Micro-variation helpers (Ultra-only, no extra texture fetch) ---
-  vec3 hash33(vec2 p){
-    float n1 = hash12(p + vec2(0.0, 0.0));
-    float n2 = hash12(p + vec2(13.7, 9.2));
-    float n3 = hash12(p + vec2(42.3, 17.1));
-    return vec3(n1, n2, n3);
-  }
-  void microFactors(vec2 tileId, out float albMul, out float roughMul, out float specMul){
-    albMul = 1.0; roughMul = 1.0; specMul = 1.0;
-    if(uMicroVar == 0) return;
-    vec3 r = hash33(tileId);
-    float a = clamp(uMicroParams.x, 0.0, 0.12);
-    float rr = clamp(uMicroParams.y, 0.0, 0.25);
-    float ss = clamp(uMicroParams.z, 0.0, 0.25);
-    albMul  = 1.0 + (r.x - 0.5) * 2.0 * a;
-    roughMul= 1.0 + (r.y - 0.5) * 2.0 * rr;
-    specMul = 1.0 + (r.z - 0.5) * 2.0 * ss;
-  }
-
   // Simple normal-mapped lambert + subtle spec. World-space is the plane space (x,y) with z=0.
-  vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW, vec2 tileId){
+  vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW){
     // Tangent basis aligned to the texture axes.
     float c = cos(rotRad);
     float s = sin(rotRad);
@@ -949,12 +885,6 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     // Material maps (linear)
     float rough = clamp(texture(uRoughnessMap, suv).r, 0.0, 1.0);
     rough = clamp(rough * max(uPbrParams0.w, 0.0), 0.0, 1.0);
-
-    // Micro-variation (Ultra-only): subtle per-tile variation (kept tiny).
-    float microAlb=1.0, microR=1.0, microS=1.0;
-    microFactors(tileId, microAlb, microR, microS);
-    rough = clamp(rough * microR, 0.0, 1.0);
-
     float aoTex = clamp(texture(uAOMap, suv).r, 0.0, 1.0);
 
     // AO strength (0..1) – reuse existing UI/logic knob (kept at 1.0 by default).
@@ -970,10 +900,6 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
     // Apply AO to diffuse/ambient (not to the albedo itself, so color remains stable)
     float lit = (amb + diff) * aoF;
-
-    // Apply micro brightness variation in linear space (kept subtle).
-    baseLin *= microAlb;
-
 
     // Specular: legacy Blinn-Phong (stable) or GGX+Fresnel (Ultra)
     vec3 V = normalize(viewDirW);
@@ -1003,7 +929,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       float G = Gv * Gl;
 
       // Fresnel (Schlick)
-      vec3 F0 = vec3(0.04) * clamp(uPbrParams0.z * microS, 0.0, 3.0);
+      vec3 F0 = vec3(0.04) * clamp(uPbrParams0.z, 0.0, 3.0);
       vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
 
       vec3 specBRDF = (D * G) * F / max(4.0 * ndl * ndv, 1e-4);
@@ -1017,77 +943,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       float shin = mix(14.0, 220.0, gloss * gloss);
       float specStr = mix(0.012, 0.060, gloss);
       float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
-      spec *= max(uPbrParams0.z * microS, 0.0);
+      spec *= max(uPbrParams0.z, 0.0);
       specCol = vec3(spec);
     }
     // Slightly occlude specular in crevices
     specCol *= mix(1.0, aoTex, aoStr * 0.5);
 
-    return baseLin * lit + specCol;
-  }
-
-  // Variant for stochastic Level B: lighting using pre-sampled / blended maps.
-  // Inputs:
-  //  - nTS_raw: tangent-space normal (decoded to [-1..1])
-  //  - rough_raw: roughness [0..1] prior to palette multiplier
-  //  - ao_raw: AO [0..1]
-  vec3 applyPBRLightingFromMaps(vec3 baseLin, vec3 nTS_raw, float rough_raw, float ao_raw, float rotRad, vec3 viewDirW, float microSpecMul){
-    float c = cos(rotRad);
-    float s = sin(rotRad);
-    vec3 T = normalize(vec3(c, s, 0.0));
-    vec3 B = normalize(vec3(s, -c, 0.0));
-    vec3 N0 = vec3(0.0, 0.0, 1.0);
-
-    vec3 nTS = normalize(nTS_raw);
-    nTS.xy *= max(uPbrParams0.y, 0.0);
-    nTS = normalize(nTS);
-    vec3 Nw = normalize(T * nTS.x + B * nTS.y + N0 * nTS.z);
-
-    float rough = clamp(rough_raw, 0.0, 1.0);
-    rough = clamp(rough * max(uPbrParams0.w, 0.0), 0.0, 1.0);
-    float aoTex = clamp(ao_raw, 0.0, 1.0);
-
-    float aoStr = clamp(uAO, 0.0, 1.0);
-    float aoF = mix(1.0, aoTex, aoStr);
-
-    vec3 L = normalize(uLightDirW);
-    float ndl = max(dot(Nw, L), 0.0);
-
-    float amb = clamp(uAmbientStrength, 0.0, 1.2);
-    float diff = clamp(uLightStrength, 0.0, 2.5) * ndl;
-    float lit = (amb + diff) * aoF;
-
-    vec3 V = normalize(viewDirW);
-    vec3 H = normalize(L + V);
-    float ndv = max(dot(Nw, V), 0.0);
-    float ndh = max(dot(Nw, H), 0.0);
-    float vdh = max(dot(V, H), 0.0);
-
-    vec3 specCol = vec3(0.0);
-
-    if(uUseGGX == 1){
-      float a = max(0.045, rough * rough);
-      float a2 = a * a;
-      float denom = (ndh * ndh * (a2 - 1.0) + 1.0);
-      float D = a2 / (3.14159265 * denom * denom);
-      float k = (a + 1.0);
-      k = (k * k) / 8.0;
-      float Gv = ndv / (ndv * (1.0 - k) + k);
-      float Gl = ndl / (ndl * (1.0 - k) + k);
-      float G = Gv * Gl;
-      float F0 = 0.04;
-      float F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
-      float spec = (D * G * F) / max(4.0 * ndv * ndl, 1e-4);
-      float specStr = max(uPbrParams0.z * microSpecMul, 0.0);
-      specCol = vec3(spec * specStr);
-    }else{
-      float shin = mix(8.0, 200.0, pow(1.0 - rough, 2.0));
-      float specPow = pow(ndh, shin);
-      float specStr = max(uPbrParams0.z * microSpecMul, 0.0);
-      specCol = vec3(specPow * specStr) * ndl;
-    }
-
-    specCol *= mix(1.0, aoTex, aoStr * 0.5);
     return baseLin * lit + specCol;
   }
 
@@ -1259,98 +1120,30 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
+    // Stochastic tiling (Ultra-only, opt-in). Applied in tile-space so it affects all maps consistently.
+    if(uStochMode == 1){
+      tuv = stochApply(tuv);
+    }
+    // Phase lock: keep texture anchored so it does not "swim" when
+    // horizon/perspective are adjusted.
+    vec2 suv = fract(tuv + uPhase);
+    // Flip Y for uploaded tile texture (top-left origin) while preserving repeat.
+    suv.y = 1.0 - suv.y;
 
-    // Phase lock: keep texture anchored so it does not "swim" when horizon/perspective are adjusted.
-    // Stochastic Level A/B is applied in tile-space so it affects all maps consistently.
-    vec2 suv = vec2(0.0);
-    vec3 tileLin = vec3(0.0);
+    // Height/parallax (safe): only in PBR mode and only if bumpScale > 0.
+    if(uUsePBR == 1 && uBumpScale > 0.00001){
+      suv = parallaxUv(suv, rot, viewDirW);
+      suv = fract(suv);
+    }
 
-    if(uUsePBR == 1 && uStochMode == 2){
-      // Level B (3-tap) — blend three randomly transformed samples using triangle barycentric weights.
-      vec2 t0, t1, t2;
-      vec3 w;
-      stochGet3(tuv, t0, t1, t2, w);
+    vec3 tile = texture(uTile, suv).rgb;
+    vec3 tileLin = toLinear(tile);
 
-      vec2 suv0 = fract(t0 + uPhase);
-      vec2 suv1 = fract(t1 + uPhase);
-      vec2 suv2 = fract(t2 + uPhase);
-      suv0.y = 1.0 - suv0.y;
-      suv1.y = 1.0 - suv1.y;
-      suv2.y = 1.0 - suv2.y;
-
-      // Micro-variation tile ids (stable in tile-space, consistent across maps)
-      vec2 tileId0 = floor(t0 + uPhase);
-      vec2 tileId1 = floor(t1 + uPhase);
-      vec2 tileId2 = floor(t2 + uPhase);
-
-
-      if(uBumpScale > 0.00001){
-        suv0 = fract(parallaxUv(suv0, rot, viewDirW));
-        suv1 = fract(parallaxUv(suv1, rot, viewDirW));
-        suv2 = fract(parallaxUv(suv2, rot, viewDirW));
-      }
-
-      vec3 c0 = texture(uTile, suv0).rgb;
-      vec3 c1 = texture(uTile, suv1).rgb;
-      vec3 c2 = texture(uTile, suv2).rgb;
-
-      float mAlb0=1.0,mR0=1.0,mS0=1.0;
-      float mAlb1=1.0,mR1=1.0,mS1=1.0;
-      float mAlb2=1.0,mR2=1.0,mS2=1.0;
-      microFactors(tileId0, mAlb0, mR0, mS0);
-      microFactors(tileId1, mAlb1, mR1, mS1);
-      microFactors(tileId2, mAlb2, mR2, mS2);
-
-      tileLin = toLinear(c0) * (w.x * mAlb0) + toLinear(c1) * (w.y * mAlb1) + toLinear(c2) * (w.z * mAlb2);
-
-      // Blend material maps in their native linear space.
-      vec3 n0 = texture(uNormalMap, suv0).rgb * 2.0 - 1.0;
-      vec3 n1 = texture(uNormalMap, suv1).rgb * 2.0 - 1.0;
-      vec3 n2 = texture(uNormalMap, suv2).rgb * 2.0 - 1.0;
-      vec3 nTS = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
-
-      float r0 = texture(uRoughnessMap, suv0).r;
-      float r1 = texture(uRoughnessMap, suv1).r;
-      float r2 = texture(uRoughnessMap, suv2).r;
-      r0 = clamp(r0 * mR0, 0.0, 1.0);
-      r1 = clamp(r1 * mR1, 0.0, 1.0);
-      r2 = clamp(r2 * mR2, 0.0, 1.0);
-
-      float roughRaw = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
-
-      float a0 = texture(uAOMap, suv0).r;
-      float a1 = texture(uAOMap, suv1).r;
-      float a2 = texture(uAOMap, suv2).r;
-      float aoRaw = clamp(a0 * w.x + a1 * w.y + a2 * w.z, 0.0, 1.0);
-
+    // PBR lighting (normal/roughness/AO) — enabled only when uUsePBR==1.
+    if(uUsePBR == 1){
       // Global exposure multiplier from palette JSON (applied in linear space)
       tileLin *= max(uPbrParams0.x, 0.0);
-            float microSpecBlend = clamp(mS0 * w.x + mS1 * w.y + mS2 * w.z, 0.0, 2.0);
-      tileLin = applyPBRLightingFromMaps(tileLin, nTS, roughRaw, aoRaw, rot, viewDirW, microSpecBlend);
-
-      // Keep a representative UV for any downstream debug/aux ops.
-      suv = suv0;
-    }else{
-      // Legacy (no stochastic / Level A single sample)
-      if(uStochMode == 1){
-        tuv = stochApply(tuv);
-      }
-      suv = fract(tuv + uPhase);
-      suv.y = 1.0 - suv.y;
-
-      if(uUsePBR == 1 && uBumpScale > 0.00001){
-        suv = parallaxUv(suv, rot, viewDirW);
-        suv = fract(suv);
-      }
-
-      vec3 tile = texture(uTile, suv).rgb;
-      tileLin = toLinear(tile);
-
-      if(uUsePBR == 1){
-        tileLin *= max(uPbrParams0.x, 0.0);
-        vec2 tileId = floor(tuv + uPhase);
-        tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW, tileId);
-      }
+      tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW);
     }
 
     // Photo-aware fit:
@@ -2735,8 +2528,6 @@ function _blendModeId(blend){
     const useGGX = (usePbr && ggxOn) ? 1 : 0;
     gl.uniform1i(gl.getUniformLocation(progZone,'uUseGGX'), useGGX);
     // Stochastic tiling (Ultra-only, opt-in via URL): ?stoch=1
-    //  - Mode 1: Level A (single-sample random super-tile)
-    //  - Mode 2: Level B (3-tap blend, desktop/high tier only)
     let stochMode = 0;
     let stochSuper = 16.0;
     let stochShift = 2.25;
@@ -2756,45 +2547,11 @@ function _blendModeId(blend){
       if(tier === 'high'){ stochSuper = 12.0; stochShift = 2.0; }
       else if(tier === 'low'){ stochSuper = 22.0; stochShift = 2.5; }
       else { stochSuper = 16.0; stochShift = 2.25; }
-
-      // Level B (3-tap blend) — only for desktop/high tier.
-      // Default: AUTO on desktop+high. Can be forced off via ?stoch3=0.
-      let want3 = null;
-      try{
-        if(typeof window !== 'undefined' && (window.__PP_STOCH_3TAP === 0 || window.__PP_STOCH_3TAP === 1)){
-          want3 = window.__PP_STOCH_3TAP;
-        }
-      }catch(_){ }
-      const ua = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent : '';
-      const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(ua);
-      if(tier === 'high' && !isMobile){
-        if(want3 !== 0){ stochMode = 2; }
-      }
     }
     gl.uniform1i(gl.getUniformLocation(progZone,'uStochMode'), stochMode);
     gl.uniform1f(gl.getUniformLocation(progZone,'uStochSuperTile'), stochSuper);
     gl.uniform1f(gl.getUniformLocation(progZone,'uStochShiftAmp'), stochShift);
     gl.uniform1i(gl.getUniformLocation(progZone,'uStochRot'), stochRot);
-    // Micro-variation (Ultra-only): enabled when stochastic tiling is active (can be overridden via ?micro=0/1).
-    let microOn = (stochMode > 0) ? 1 : 0;
-    let microA = 0.035, microR = 0.06, microS = 0.04;
-    try{
-      if(typeof window !== 'undefined' && (window.__PP_MICRO === 0 || window.__PP_MICRO === 1)) microOn = window.__PP_MICRO;
-      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_A)) microA = window.__PP_MICRO_A;
-      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_R)) microR = window.__PP_MICRO_R;
-      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_S)) microS = window.__PP_MICRO_S;
-    }catch(_){ }
-    // Per-material overrides (optional)
-    if(pp && isFinite(pp.microAlbedo)) microA = pp.microAlbedo;
-    if(pp && isFinite(pp.microRough)) microR = pp.microRough;
-    if(pp && isFinite(pp.microSpec)) microS = pp.microSpec;
-    microA = clamp(+microA||0.0, 0.0, 0.12);
-    microR = clamp(+microR||0.0, 0.0, 0.25);
-    microS = clamp(+microS||0.0, 0.0, 0.25);
-    if(!(usePbr && ai && ai.enabled)) microOn = 0;
-    gl.uniform1i(gl.getUniformLocation(progZone,'uMicroVar'), microOn ? 1 : 0);
-    gl.uniform3f(gl.getUniformLocation(progZone,'uMicroParams'), microA, microR, microS);
-
     // Light controls:
     // - per-material overrides come from palette JSON: params.lightAzimuth/lightElevation/lightStrength/ambientStrength
     // - otherwise we use a photo-derived preset (state.assets.photoLight)

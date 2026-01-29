@@ -160,35 +160,12 @@ function _computeVanishingFromBitmap(cv, bitmap, longSide){
 }
 
 async function _loadOpenCV(candidates){
-  // IMPORTANT: OpenCV.js (Emscripten) must never be imported twice in the same Worker.
-  // If we importScripts() multiple builds/URLs, Emscripten bindings may attempt to register
-  // the same public names twice (e.g. IntVector) and crash the runtime.
-
-  // Already loaded
-  if(self.cv && self.cv.Mat){
-    return self.cv;
-  }
-
-  // De-duplicate candidate URLs to avoid accidental double-import.
-  const uniq = [];
-  const seen = new Set();
-  for(const u of (candidates || [])){
-    const s = String(u || "").trim();
-    if(!s) continue;
-    if(seen.has(s)) continue;
-    seen.add(s);
-    uniq.push(s);
-  }
-
   let lastErr = null;
-  let importedUrl = null;
-
-  // Ensure Module exists for emscripten builds; preserve if already set.
-  if(!self.Module) self.Module = {};
-
-  // Try to import exactly ONE working script.
-  for(const url of uniq){
+  for(const url of candidates){
     try{
+      // Ensure Module exists for emscripten builds; preserve if already set.
+      if(!self.Module) self.Module = {};
+      // Many builds set cv.onRuntimeInitialized; but in worker we can hook Module.onRuntimeInitialized too.
       await new Promise((resolve, reject)=>{
         let done=false;
         const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("importScripts timeout")); }, 12000);
@@ -203,29 +180,30 @@ async function _loadOpenCV(candidates){
           reject(e);
         }
       });
-      importedUrl = url;
-      break;
+      // OpenCV attaches cv global
+      if(self.cv && self.cv.Mat){
+        return self.cv;
+      }
+      // Some builds call cv.onRuntimeInitialized
+      if(self.cv){
+        await new Promise((resolve,reject)=>{
+          let done=false;
+          const t=setTimeout(()=>{ if(done) return; done=true; reject(new Error("OpenCV init timeout")); }, 12000);
+          const prev = self.cv.onRuntimeInitialized;
+          self.cv.onRuntimeInitialized = ()=>{
+            if(done) return;
+            try{ if(typeof prev === "function") prev(); }catch(_){}
+            done=true; clearTimeout(t); resolve(true);
+          };
+        });
+        if(self.cv && self.cv.Mat) return self.cv;
+      }
+      throw new Error("cv missing after load: " + url);
     }catch(e){
       lastErr = e;
     }
   }
-
-  if(!importedUrl){
-    throw lastErr || new Error("OpenCV load failed");
-  }
-
-  // Robust readiness wait: different OpenCV builds use different init hooks.
-  // We poll for cv.Mat instead of relying on onRuntimeInitialized which may have
-  // fired before our handler was attached.
-  const t0 = Date.now();
-  while(Date.now() - t0 < 12000){
-    if(self.cv && self.cv.Mat){
-      return self.cv;
-    }
-    await new Promise(r=>setTimeout(r, 30));
-  }
-
-  throw new Error("OpenCV init timeout: " + importedUrl);
+  throw lastErr || new Error("OpenCV load failed");
 }
 
 self.onmessage = async (ev)=>{
