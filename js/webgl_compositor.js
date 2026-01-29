@@ -928,6 +928,16 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     specMul = 1.0 + (r.z - 0.5) * 2.0 * ss;
   }
 
+  // --- Grayscale sampling helper ---
+  // Some grayscale maps (AO/roughness/height) may be encoded in alpha (RGB zeros),
+  // depending on the encoder/pipeline. For robustness we fall back to alpha.
+  float texGray(sampler2D s, vec2 uv){
+    vec4 t = texture(s, uv);
+    float g = t.r;
+    if(g < 0.001 && (t.g + t.b) < 0.002 && t.a > 0.001) g = t.a;
+    return g;
+  }
+
   // Simple normal-mapped lambert + subtle spec. World-space is the plane space (x,y) with z=0.
   vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW, vec2 tileId){
     // Tangent basis aligned to the texture axes.
@@ -947,7 +957,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     vec3 Nw = normalize(T * nTS.x + B * nTS.y + N0 * nTS.z);
 
     // Material maps (linear)
-    float rough = clamp(texture(uRoughnessMap, suv).r, 0.0, 1.0);
+    float rough = clamp(texGray(uRoughnessMap, suv), 0.0, 1.0);
     rough = clamp(rough * max(uPbrParams0.w, 0.0), 0.0, 1.0);
 
     // Micro-variation (Ultra-only): subtle per-tile variation (kept tiny).
@@ -955,11 +965,12 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     microFactors(tileId, microAlb, microR, microS);
     rough = clamp(rough * microR, 0.0, 1.0);
 
-    float aoTex = clamp(texture(uAOMap, suv).r, 0.0, 1.0);
+    float aoTex = clamp(texGray(uAOMap, suv), 0.0, 1.0);
 
     // AO strength (0..1) – reuse existing UI/logic knob (kept at 1.0 by default).
     float aoStr = clamp(uAO, 0.0, 1.0);
-    float aoF = mix(1.0, aoTex, aoStr);
+    // Prevent full blackout if AO map is missing/invalid (e.g., encoded in alpha or near-zero everywhere).
+    float aoF = mix(1.0, max(aoTex, 0.25), aoStr);
 
     vec3 L = normalize(uLightDirW);
     float ndl = max(dot(Nw, L), 0.0);
@@ -1031,15 +1042,6 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   //  - nTS_raw: tangent-space normal (decoded to [-1..1])
   //  - rough_raw: roughness [0..1] prior to palette multiplier
   //  - ao_raw: AO [0..1]
-  float texGray(sampler2D s, vec2 uv){
-    vec4 t = texture(s, uv);
-    float g = t.r;
-    // Some grayscale maps may be stored in alpha (RGB zeros).
-    if(g < 0.001 && (t.g + t.b) < 0.002 && t.a > 0.001) g = t.a;
-    return g;
-  }
-
-
   vec3 applyPBRLightingFromMaps(vec3 baseLin, vec3 nTS_raw, float rough_raw, float ao_raw, float rotRad, vec3 viewDirW, float microSpecMul){
     float c = cos(rotRad);
     float s = sin(rotRad);
@@ -1057,7 +1059,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     float aoTex = clamp(ao_raw, 0.0, 1.0);
 
     float aoStr = clamp(uAO, 0.0, 1.0);
-    float aoF = mix(1.0, aoTex, aoStr);
+    float aoF = mix(1.0, max(aoTex, 0.25), aoStr);
 
     vec3 L = normalize(uLightDirW);
     float ndl = max(dot(Nw, L), 0.0);
@@ -1128,7 +1130,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
     vec2 cuv = uv;
     float curDepth = 0.0;
-    float height = texture(uHeightMap, cuv).r;
+    float height = texGray(uHeightMap, cuv);
 
     // Basic parallax mapping (safe). Height is expected in [0..1].
     for(int i=0;i<12;i++){
@@ -1136,7 +1138,7 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       if(curDepth >= height) break;
       cuv -= delta;
       curDepth += layerDepth;
-      height = texture(uHeightMap, cuv).r;
+      height = texGray(uHeightMap, cuv);
     }
     return cuv;
   }
