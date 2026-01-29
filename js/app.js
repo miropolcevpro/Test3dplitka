@@ -945,13 +945,6 @@ if(calib3dToggleLinesBtn){
       if(pf==='legacy'){ window.__PP_PHOTOFIT_MODE = 'legacy'; }
       else if(pf==='global'){ window.__PP_PHOTOFIT_MODE = 'global'; }
       else { window.__PP_PHOTOFIT_MODE = 'global'; }
-
-      // GGX specular (Ultra/PBR): enabled by default.
-      // Use ?ggx=0 to force-disable (fallback to legacy spec), or ?ggx=1 to force-enable.
-      const ggx = qs.get('ggx');
-      if(ggx === '0'){ window.__PP_GGX = 0; }
-      else if(ggx === '1'){ window.__PP_GGX = 1; }
-      else { window.__PP_GGX = 1; }
     }catch(_){}
 
     // Dev-only near-metric overlay loop (B2).

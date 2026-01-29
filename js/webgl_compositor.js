@@ -788,7 +788,6 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform float uContactShadowWidth;    // in mask-blur units above 0.5 (0..0.5)
   uniform float uContactShadowPower;    // curve shaping
   uniform int uUsePBR;      // 0/1
-  uniform int uUseGGX;      // 0=legacy spec, 1=GGX (Ultra)
   // PhotoFit mode: 0=legacy per-pixel, 1=global exposure
   uniform int uPhotoFitMode;
   uniform float uPhotoExposure;
@@ -865,55 +864,20 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     // Apply AO to diffuse/ambient (not to the albedo itself, so color remains stable)
     float lit = (amb + diff) * aoF;
 
-    // Specular: legacy Blinn-Phong (stable) or GGX+Fresnel (Ultra)
+    // Roughness-driven subtle specular
+    float gloss = 1.0 - rough;
+    float shin = mix(14.0, 220.0, gloss * gloss);
+    float specStr = mix(0.012, 0.060, gloss);
+
     vec3 V = normalize(viewDirW);
     vec3 H = normalize(L + V);
-    float ndv = max(dot(Nw, V), 0.0);
-    float ndh = max(dot(Nw, H), 0.0);
-    float vdh = max(dot(V, H), 0.0);
+    float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
+    spec *= max(uPbrParams0.z, 0.0);
 
-    vec3 specCol = vec3(0.0);
-
-    if(uUseGGX == 1){
-      // GGX microfacet BRDF (dielectric). Designed to be a drop-in replacement
-      // for the legacy spec without changing the diffuse/ambient balance.
-      // Roughness remap: alpha = rough^2, clamped to avoid fireflies.
-      float a = max(0.045, rough * rough);
-      float a2 = a * a;
-
-      // NDF: Trowbridge-Reitz GGX
-      float denom = (ndh * ndh * (a2 - 1.0) + 1.0);
-      float D = a2 / max(3.14159265 * denom * denom, 1e-6);
-
-      // Smith geometry (Schlick-GGX)
-      float k = (a + 1.0);
-      k = (k * k) / 8.0;
-      float Gv = ndv / max(ndv * (1.0 - k) + k, 1e-6);
-      float Gl = ndl / max(ndl * (1.0 - k) + k, 1e-6);
-      float G = Gv * Gl;
-
-      // Fresnel (Schlick)
-      vec3 F0 = vec3(0.04) * clamp(uPbrParams0.z, 0.0, 3.0);
-      vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
-
-      vec3 specBRDF = (D * G) * F / max(4.0 * ndl * ndv, 1e-4);
-
-      // Calibrate to match the previous spec energy range (keeps look stable).
-      specCol = specBRDF * (ndl * (0.35 * clamp(uLightStrength, 0.0, 2.5)));
-
-    }else{
-      // Legacy: roughness-driven subtle specular
-      float gloss = 1.0 - rough;
-      float shin = mix(14.0, 220.0, gloss * gloss);
-      float specStr = mix(0.012, 0.060, gloss);
-      float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
-      spec *= max(uPbrParams0.z, 0.0);
-      specCol = vec3(spec);
-    }
     // Slightly occlude specular in crevices
-    specCol *= mix(1.0, aoTex, aoStr * 0.5);
+    spec *= mix(1.0, aoTex, aoStr * 0.5);
 
-    return baseLin * lit + specCol;
+    return baseLin * lit + vec3(spec);
   }
 
   vec2 parallaxUv(vec2 uv, float rotRad, vec3 viewDirW){
@@ -2478,15 +2442,6 @@ function _blendModeId(blend){
     gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowPower'), (pp && isFinite(pp.contactShadowPower)) ? pp.contactShadowPower : 1.6);
 
     gl.uniform1i(gl.getUniformLocation(progZone,'uUsePBR'), usePbr ? 1 : 0);
-    // GGX specular (Ultra): enabled by default. Can be disabled via ?ggx=0 or per-material params.
-    let ggxOn = 1;
-    try{
-      if(typeof window !== 'undefined' && window.__PP_GGX === 0) ggxOn = 0;
-    }catch(_){}
-    if(pp && (pp.ggx === 0 || pp.useGGX === 0)) ggxOn = 0;
-    if(pp && (pp.ggx === 1 || pp.useGGX === 1)) ggxOn = 1;
-    const useGGX = (usePbr && ggxOn) ? 1 : 0;
-    gl.uniform1i(gl.getUniformLocation(progZone,'uUseGGX'), useGGX);
     // Light controls:
     // - per-material overrides come from palette JSON: params.lightAzimuth/lightElevation/lightStrength/ambientStrength
     // - otherwise we use a photo-derived preset (state.assets.photoLight)
