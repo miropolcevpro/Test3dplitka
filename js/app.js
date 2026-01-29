@@ -952,18 +952,6 @@ if(calib3dToggleLinesBtn){
       if(ggx === '0'){ window.__PP_GGX = 0; }
       else if(ggx === '1'){ window.__PP_GGX = 1; }
       else { window.__PP_GGX = 1; }
-
-      // Stochastic tiling (Ultra-only): breaks visible repetition by applying a large-scale random phase/rotation per super-tile.
-      // Default is OFF (safe). Enable with ?stoch=1. Optional: ?stochTier=low|mid|high, ?stochRot=1.
-      const st = qs.get('stoch');
-      if(st === '1'){ window.__PP_STOCH = 1; }
-      else { window.__PP_STOCH = 0; }
-      const stTier = qs.get('stochTier');
-      if(stTier === 'low' || stTier === 'mid' || stTier === 'high'){ window.__PP_STOCH_TIER = stTier; }
-      const stRot = qs.get('stochRot');
-      if(stRot === '1'){ window.__PP_STOCH_ROT = 1; }
-      else if(stRot === '0'){ window.__PP_STOCH_ROT = 0; }
-
     }catch(_){}
 
     // Dev-only near-metric overlay loop (B2).

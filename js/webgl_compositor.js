@@ -789,13 +789,6 @@ function _smoothGuard(zoneId, distTarget, kTarget){
   uniform float uContactShadowPower;    // curve shaping
   uniform int uUsePBR;      // 0/1
   uniform int uUseGGX;      // 0=legacy spec, 1=GGX (Ultra)
-
-  // Stochastic tiling (Ultra-only): breaks visible repetition by applying a random transform per large super-tile.
-  // Mode 0=off, 1=Level A (single-sample random super-tile).
-  uniform int uStochMode;
-  uniform float uStochSuperTile;
-  uniform float uStochShiftAmp;
-  uniform int uStochRot;
   // PhotoFit mode: 0=legacy per-pixel, 1=global exposure
   uniform int uPhotoFitMode;
   uniform float uPhotoExposure;
@@ -834,35 +827,6 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
   vec3 toLinear(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
   vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
-
-  // --- Stochastic tiling helpers (Ultra-only, safe default OFF) ---
-  float hash12(vec2 p){
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-  }
-  vec2 hash22(vec2 p){
-    float n = hash12(p);
-    return vec2(n, hash12(p + n + 19.19));
-  }
-  vec2 stochApply(vec2 tuv){
-    float st = max(1.0, uStochSuperTile);
-    vec2 cell = floor(tuv / st);
-    vec2 rnd = hash22(cell);
-    vec2 shift = (rnd - 0.5) * clamp(uStochShiftAmp, 0.0, st * 0.45);
-
-    // Optional 90deg rotation around the super-tile center (default off).
-    if(uStochRot == 1){
-      vec2 f = fract(tuv / st) - 0.5;
-      float r = floor(rnd.x * 4.0 + 1e-4);
-      vec2 fr = f;
-      if(r < 1.0){ fr = vec2( f.x,  f.y); }
-      else if(r < 2.0){ fr = vec2(-f.y,  f.x); }
-      else if(r < 3.0){ fr = vec2(-f.x, -f.y); }
-      else { fr = vec2( f.y, -f.x); }
-      tuv = (cell + (fr + 0.5)) * st;
-    }
-
-    return tuv + shift;
-  }
 
   // Simple normal-mapped lambert + subtle spec. World-space is the plane space (x,y) with z=0.
   vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW){
@@ -1120,10 +1084,6 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     float rot = radians(uRotation);
     mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
     vec2 tuv = R * (uv * max(uScale, 0.0001));
-    // Stochastic tiling (Ultra-only, opt-in). Applied in tile-space so it affects all maps consistently.
-    if(uStochMode == 1){
-      tuv = stochApply(tuv);
-    }
     // Phase lock: keep texture anchored so it does not "swim" when
     // horizon/perspective are adjusted.
     vec2 suv = fract(tuv + uPhase);
@@ -2527,31 +2487,6 @@ function _blendModeId(blend){
     if(pp && (pp.ggx === 1 || pp.useGGX === 1)) ggxOn = 1;
     const useGGX = (usePbr && ggxOn) ? 1 : 0;
     gl.uniform1i(gl.getUniformLocation(progZone,'uUseGGX'), useGGX);
-    // Stochastic tiling (Ultra-only, opt-in via URL): ?stoch=1
-    let stochMode = 0;
-    let stochSuper = 16.0;
-    let stochShift = 2.25;
-    let stochRot = 0;
-    try{
-      if(typeof window !== 'undefined' && window.__PP_STOCH === 1){ stochMode = 1; }
-      if(typeof window !== 'undefined' && window.__PP_STOCH_ROT === 1){ stochRot = 1; }
-      if(typeof window !== 'undefined' && window.__PP_STOCH_ROT === 0){ stochRot = 0; }
-    }catch(_){}
-    // Gate to Ultra/PBR only to avoid any regression risk in the classic mode.
-    if(!(usePbr && ai && ai.enabled)){ stochMode = 0; }
-    if(stochMode){
-      let tier = null;
-      try{ if(typeof window !== 'undefined' && window.__PP_STOCH_TIER) tier = window.__PP_STOCH_TIER; }catch(_){}
-      if(!tier && ai && ai.device && ai.device.tier) tier = ai.device.tier;
-      // Tier tuning: bigger super-tiles on weaker devices to reduce potential boundary visibility.
-      if(tier === 'high'){ stochSuper = 12.0; stochShift = 2.0; }
-      else if(tier === 'low'){ stochSuper = 22.0; stochShift = 2.5; }
-      else { stochSuper = 16.0; stochShift = 2.25; }
-    }
-    gl.uniform1i(gl.getUniformLocation(progZone,'uStochMode'), stochMode);
-    gl.uniform1f(gl.getUniformLocation(progZone,'uStochSuperTile'), stochSuper);
-    gl.uniform1f(gl.getUniformLocation(progZone,'uStochShiftAmp'), stochShift);
-    gl.uniform1i(gl.getUniformLocation(progZone,'uStochRot'), stochRot);
     // Light controls:
     // - per-material overrides come from palette JSON: params.lightAzimuth/lightElevation/lightStrength/ambientStrength
     // - otherwise we use a photo-derived preset (state.assets.photoLight)
