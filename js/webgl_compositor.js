@@ -1106,6 +1106,23 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     float hStr = uBumpScale;
     if(hStr <= 0.00001) return uv;
 
+    // IMPORTANT (stability contract):
+    // Parallax UV displacement is great for close-up macro detail, but on repeating paving patterns
+    // it can introduce a subtle "wavy / refractive glass" distortion at mid/far distances.
+    // We therefore gate parallax by the screen-space UV footprint:
+    //  - if the UV changes too fast per pixel (many tiles on screen), disable parallax completely
+    //  - otherwise clamp the maximum UV shift to a fraction of the pixel footprint
+    // This keeps the pattern rigid while retaining close-up depth.
+    vec2 ddxUv = dFdx(uv);
+    vec2 ddyUv = dFdy(uv);
+    float du = max(length(ddxUv), length(ddyUv));
+    // Threshold tuned empirically for tiling textures: above this, parallax looks like distortion.
+    if(du > 0.012) return uv;
+    // Fade-in region for smoothness.
+    float parallaxFade = clamp((0.012 - du) / 0.008, 0.0, 1.0);
+    hStr *= parallaxFade;
+    if(hStr <= 0.00001) return uv;
+
     // Tangent basis aligned to the texture axes (same as in applyPBRLighting)
     float c = cos(rotRad);
     float s = sin(rotRad);
@@ -1127,6 +1144,9 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     float layerDepth = 1.0 / float(steps);
     // Parallax direction (divide by z; clamp to avoid huge offsets)
     vec2 delta = (Vts.xy / max(Vts.z, 0.12)) * (hStr / float(steps));
+    // Clamp delta to a fraction of pixel footprint to avoid "refractive" warping.
+    float maxShift = max(du * 0.65, 0.0005);
+    delta = clamp(delta, vec2(-maxShift), vec2(maxShift));
 
     vec2 cuv = uv;
     float curDepth = 0.0;
