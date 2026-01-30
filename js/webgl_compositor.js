@@ -1320,18 +1320,18 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       vec3 n2 = texture(uNormalMap, suv2).rgb * 2.0 - 1.0;
       vec3 nTS = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
 
-      float r0 = texture(uRoughnessMap, suv0).r;
-      float r1 = texture(uRoughnessMap, suv1).r;
-      float r2 = texture(uRoughnessMap, suv2).r;
+      float r0 = texGray(uRoughnessMap, suv0);
+      float r1 = texGray(uRoughnessMap, suv1);
+      float r2 = texGray(uRoughnessMap, suv2);
       r0 = clamp(r0 * mR0, 0.0, 1.0);
       r1 = clamp(r1 * mR1, 0.0, 1.0);
       r2 = clamp(r2 * mR2, 0.0, 1.0);
 
       float roughRaw = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
 
-      float a0 = texture(uAOMap, suv0).r;
-      float a1 = texture(uAOMap, suv1).r;
-      float a2 = texture(uAOMap, suv2).r;
+      float a0 = texGray(uAOMap, suv0);
+      float a1 = texGray(uAOMap, suv1);
+      float a2 = texGray(uAOMap, suv2);
       float aoRaw = clamp(a0 * w.x + a1 * w.y + a2 * w.z, 0.0, 1.0);
 
       // Global exposure multiplier from palette JSON (applied in linear space)
@@ -1361,6 +1361,16 @@ function _smoothGuard(zoneId, distTarget, kTarget){
         tileLin *= max(uPbrParams0.x, 0.0);
         vec2 tileId = floor(tuv + uPhase);
         tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW, tileId);
+      }
+    }
+
+    // PBR safety fallback: prevent NaN/Inf/black output on some map encodings or GPU drivers.
+    // If PBR produced invalid values, fall back to unlit tile (still with exposureMult).
+    if(uUsePBR==1){
+      bool bad = any(isnan(tileLin)) || any(isinf(tileLin)) || (dot(tileLin, tileLin) < 1e-10);
+      if(bad){
+        vec3 t0 = texture(uTile, suv).rgb;
+        tileLin = toLinear(t0) * max(uPbrParams0.x, 0.0);
       }
     }
 

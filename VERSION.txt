@@ -1,1 +1,4 @@
-mvp-iter2.2.119-ultra-ao-grayfix
+mvp-iter2.2.120-ultra-blackfix-v2
+- Fix: Ultra black texture on some palettes/GPUs (Level B 3-tap now samples roughness/AO via robust grayscale helper + PBR safety fallback)
+- Fix: cache-bust query params in index.html updated (iter2_2_120_0) so browser doesn't stick to old build
+- Build stamp shown in footer via state.build.version
