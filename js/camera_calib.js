@@ -64,6 +64,52 @@ function _softClamp01(v){
     return { autoHorizon:autoH, autoPerspective:autoP, vy };
   }
 
+  // Fallback calibration when only one vanishing point (A) is reliable.
+  // This keeps horizon/perspective UX responsive without requiring full intrinsics recovery.
+  function computeFromLinesAOnly(A1, A2, imgW, imgH, warnReason){
+    const W = Math.max(1, imgW||1);
+    const H = Math.max(1, imgH||1);
+    const c = {x: W*0.5, y: H*0.5};
+
+    if(!(A1 && A2)) return {ok:false, reason:"vanishA:missing"};
+    if(A1.dir && A2.dir){
+      const sA = _sinAngleFromDirs(A1.dir, A2.dir);
+      if(sA < 0.035) return {ok:false, reason:"vanishA:near_parallel"};
+    }
+    const iA = intersectLines(A1, A2);
+    if(!iA.ok) return {ok:false, reason:"vanishA:"+iA.reason};
+
+    const VA = {x:iA.x, y:iA.y};
+    const distApx = Math.hypot(VA.x - c.x, VA.y - c.y);
+    const distMax = 60 * Math.max(W, H);
+    if(distApx > distMax){
+      return {ok:false, reason:"vanish:outlier"};
+    }
+
+    const vanishANorm = {x: VA.x/W, y: VA.y/H};
+    const ctrl = deriveControlsFromVanish(vanishANorm);
+
+    // Provide a conservative K so 3D renderer stays stable.
+    // We cannot solve f precisely without a second orthogonal vanishing point.
+    const f = 1.25 * Math.max(W, H);
+    const K = {f, cx:c.x, cy:c.y};
+
+    return {
+      ok:true,
+      partial:true,
+      reason:"A_only",
+      warn: warnReason || "vanishB:weak",
+      K,
+      vanishANorm,
+      vanishBNorm:null,
+      horizonY: _clamp(VA.y / H, -2, 2),
+      autoHorizon: ctrl.autoHorizon,
+      autoPerspective: ctrl.autoPerspective,
+      // Keep R undefined in partial mode; compositor should treat K+controls only.
+      R:null
+    };
+  }
+
   function computeFromLines(lines, imgW, imgH){
     const W = Math.max(1, imgW||1);
     const H = Math.max(1, imgH||1);
@@ -81,12 +127,20 @@ function _softClamp01(v){
     }
     const iA = intersectLines(A1, A2);
     if(!iA.ok) return {ok:false, reason:"vanishA:"+iA.reason};
-    if(B1 && B2 && B1.dir && B2.dir){
+    // If B is missing/unstable, fall back to A-only calibration (still returns ok:true).
+    if(!(B1 && B2)){
+      return computeFromLinesAOnly(A1, A2, W, H, "vanishB:missing");
+    }
+    if(B1.dir && B2.dir){
       const sB = _sinAngleFromDirs(B1.dir, B2.dir);
-      if(sB < 0.035) return {ok:false, reason:"vanishB:near_parallel"};
+      if(sB < 0.035){
+        return computeFromLinesAOnly(A1, A2, W, H, "vanishB:near_parallel");
+      }
     }
     const iB = intersectLines(B1, B2);
-    if(!iB.ok) return {ok:false, reason:"vanishB:"+iB.reason};
+    if(!iB.ok){
+      return computeFromLinesAOnly(A1, A2, W, H, "vanishB:"+iB.reason);
+    }
 
     const VA = {x:iA.x, y:iA.y};
     const VB = {x:iB.x, y:iB.y};
@@ -96,7 +150,7 @@ function _softClamp01(v){
     const distBpx = Math.hypot(VB.x - c.x, VB.y - c.y);
     const distMax = 60 * Math.max(W, H);
     if(distApx > distMax || distBpx > distMax){
-      return {ok:false, reason:"vanish:outlier"};
+      return computeFromLinesAOnly(A1, A2, W, H, "vanish:outlier");
     }
 
     // Estimate focal length from orthogonality constraint of vanishing points.
@@ -106,14 +160,14 @@ function _softClamp01(v){
     const f2 = -_dot(da, db);
     if(!(f2 > 50)){
       // Too small/negative => inconsistent lines (not orthogonal or too noisy)
-      return {ok:false, reason:"invalid_focal"};
+      return computeFromLinesAOnly(A1, A2, W, H, "invalid_focal");
     }
     let f = Math.sqrt(f2);
     // Guard f to reasonable range (in pixels) to avoid unstable projections.
     const fMin = 0.25 * Math.max(W, H);
     const fMax = 6.0 * Math.max(W, H);
     if(!(f>=fMin && f<=fMax)){
-      return {ok:false, reason:"invalid_focal_range"};
+      return computeFromLinesAOnly(A1, A2, W, H, "invalid_focal_range");
     }
 
     // Horizon line through VA and VB: (y - VA.y) = m (x - VA.x)
@@ -422,18 +476,19 @@ function _softClamp01(v){
     const B2 = fitLineTLS(top);
     if(!A1 || !A2 || !B1 || !B2) return {ok:false, reason:"fit_failed"};
 
-    // Sanity: avoid near-parallel pairs (will explode vanishing). If too parallel, reject.
-    const sA = _sinAngleFromDirs(A1.dir, A2.dir);
-    const sB = _sinAngleFromDirs(B1.dir, B2.dir);
-    if(sA < 0.02) return {ok:false, reason:"A_pair_near_parallel", meta:{sA}};
-    if(sB < 0.02) return {ok:false, reason:"B_pair_near_parallel", meta:{sB}};
-
     const lines = {
       A1:{p1:A1.p1, p2:A1.p2},
       A2:{p1:A2.p1, p2:A2.p2},
       B1:{p1:B1.p1, p2:B1.p2},
       B2:{p1:B2.p1, p2:B2.p2}
     };
+
+    // Sanity: avoid near-parallel pairs (will explode vanishing).
+    // If B is near-parallel, accept and let computeFromLines fall back to A-only.
+    const sA = _sinAngleFromDirs(A1.dir, A2.dir);
+    const sB = _sinAngleFromDirs(B1.dir, B2.dir);
+    if(sA < 0.02) return {ok:false, reason:"A_pair_near_parallel", meta:{sA}};
+    if(sB < 0.02) return {ok:true, lines, warn:"B_pair_near_parallel", meta:{sB, minLenPx, samples:pts.length, elongation:elong, qSide, qDepth}};
 
     return {ok:true, lines, meta:{minLenPx, samples:pts.length, elongation:elong, qSide, qDepth}};
   }

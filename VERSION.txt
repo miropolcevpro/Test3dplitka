@@ -1,5 +1,7 @@
-mvp-iter2.2.121-ultra-parallax-stability
-- Fix: Ultra "wavy / glass" distortion from height-parallax at mid/far distances.
-  Parallax UV displacement is now gated by screen-space UV footprint (disables when many tiles on screen)
-  and clamped to a fraction of the pixel footprint, preserving rigid tile geometry.
-- Build stamp updated + cache-bust query params updated (iter2_2_121_0)
+mvp-iter2.2.122-calib-bpair-fallback
+- Fix: 3D-калибровка по контуру/линиям больше не падает с ошибкой (B_pair_near_parallel).
+  Если линии B (поперёк укладки) почти параллельны в кадре (vanishing at infinity),
+  применяется безопасный fallback «A-only» — используется только ось A для авто Horizon/Perspective.
+  Это убирает ложные ошибки, сохраняет текущую логику и позволяет продолжать работу без ручных костылей.
+- UI: при fallback показывается предупреждение (warn), но статус остаётся READY.
+- Build stamp updated + cache-bust query params updated (iter2_2_122_0)

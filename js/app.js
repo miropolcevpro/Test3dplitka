@@ -794,12 +794,17 @@ async function handlePhotoFile(file){
           }
         }
         c3.error = null;
-        c3.warn = null;
+        // Surface non-fatal issues as a warning (e.g. B lines near-parallel => A-only fallback).
+        const warns = [];
+        if(r && r.warn) warns.push(String(r.warn));
+        if(res && res.warn) warns.push(String(res.warn));
+        if(res && res.partial && warns.length === 0) warns.push("partial");
+        c3.warn = warns.length ? (warns.join("; ") + (res && res.partial ? " (A-only)" : "")) : null;
       }else{
         c3.result = prevOk || {ok:false, reason:(res && res.reason) ? String(res.reason) : "calibration_weak", fallback:true};
         c3.status = "ready";
         c3.error = null;
-        c3.warn = (res && res.reason) ? String(res.reason) : "calibration_weak";
+        c3.warn = (res && res.reason) ? String(res.reason) : (r && r.warn ? String(r.warn) : "calibration_weak");
       }
       try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
       ED.render();
