@@ -1200,6 +1200,9 @@ if(calib3dToggleLinesBtn){
       document.body.classList.add("isFullscreenViewer");
       canvasWrap.classList.add("isFullscreen");
 
+      // Recompute canvas layout for the fullscreen viewport (otherwise the photo can stay at the old panel size).
+      try{ ED.resize(); }catch(_){ }
+
       // Reset viewer transform state.
       _viewerZoom = 1.0;
       _viewerPanX = 0.0;
@@ -1211,6 +1214,7 @@ if(calib3dToggleLinesBtn){
       // Measure base size after layout settles.
       requestAnimationFrame(()=>{
         if(!_viewerIsOn()) return;
+        try{ ED.resize(); }catch(_){ }
         _viewerMeasureBase();
         _viewerClampPan();
         _viewerSetVars();
@@ -1232,6 +1236,9 @@ if(calib3dToggleLinesBtn){
       }catch(_){ }
       canvasWrap.classList.remove("isFullscreen");
       document.body.classList.remove("isFullscreenViewer");
+
+      // Restore canvas layout to the normal UI viewport.
+      try{ ED.resize(); }catch(_){ }
 
       // Clear viewer transform.
       canvasWrap.classList.remove("viewerUiHidden");
@@ -1421,7 +1428,8 @@ if(calib3dToggleLinesBtn){
     if(btnFsDl){
       btnFsDl.addEventListener("click", (e)=>{
         e.preventDefault();
-        try{ ED.exportPNG(); }catch(_){ }
+        // Do not swallow errors: exportPNG already reports status to the user.
+        ED.exportPNG();
       });
     }
 
