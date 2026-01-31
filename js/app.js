@@ -1197,6 +1197,19 @@ if(calib3dToggleLinesBtn){
       // Ensure we are in clean preview mode (same semantics as pressing "Просмотр").
       try{ el("modeView").click(); }catch(_){ /* ignore */ }
 
+      // Robust scroll-lock (esp. iOS Safari). Prevents the page from scrolling while the viewer is open.
+      // This also avoids cases where 100vh exceeds the visual viewport and the user needs to scroll to see the whole photo.
+      if(!_enterFullscreenViewer._scrollLocked){
+        _enterFullscreenViewer._scrollLocked = true;
+        _enterFullscreenViewer._scrollY = (window.scrollY || window.pageYOffset || 0);
+        document.documentElement.classList.add("isFullscreenViewer");
+        document.body.style.position = "fixed";
+        document.body.style.top = (-_enterFullscreenViewer._scrollY) + "px";
+        document.body.style.left = "0";
+        document.body.style.right = "0";
+        document.body.style.width = "100%";
+      }
+
       document.body.classList.add("isFullscreenViewer");
       canvasWrap.classList.add("isFullscreen");
 
@@ -1220,15 +1233,9 @@ if(calib3dToggleLinesBtn){
         _viewerSetVars();
       });
 
-      // Optional: try real Fullscreen API (true browser fullscreen).
-      // IMPORTANT: in many embeds (iframes) fullscreen is blocked by Permissions Policy and
-      // calling requestFullscreen() logs noisy "fullscreen is not allowed" violations.
-      // So we only attempt it when the browser reports fullscreenEnabled.
-      try{
-        if(document.fullscreenEnabled && canvasWrap.requestFullscreen && !document.fullscreenElement){
-          canvasWrap.requestFullscreen({navigationUI:"hide"}).catch(()=>{});
-        }
-      }catch(_){ }
+      // NOTE: We intentionally do NOT call requestFullscreen() here.
+      // In many deployments (iframes / strict permissions policy) it is blocked and logs noisy violations.
+      // Our CSS pseudo-fullscreen is sufficient and works consistently across browsers.
     }
     function _exitFullscreenViewer(){
       if(!canvasWrap) return;
@@ -1239,6 +1246,20 @@ if(calib3dToggleLinesBtn){
       }catch(_){ }
       canvasWrap.classList.remove("isFullscreen");
       document.body.classList.remove("isFullscreenViewer");
+
+      // Restore scroll position and unlock scrolling.
+      if(_enterFullscreenViewer._scrollLocked){
+        const y = _enterFullscreenViewer._scrollY || 0;
+        _enterFullscreenViewer._scrollLocked = false;
+        _enterFullscreenViewer._scrollY = 0;
+        document.body.style.position = "";
+        document.body.style.top = "";
+        document.body.style.left = "";
+        document.body.style.right = "";
+        document.body.style.width = "";
+        document.documentElement.classList.remove("isFullscreenViewer");
+        try{ window.scrollTo(0, y); }catch(_){ }
+      }
 
       // Restore canvas layout to the normal UI viewport.
       try{ ED.resize(); }catch(_){ }
@@ -1299,6 +1320,8 @@ if(calib3dToggleLinesBtn){
     if(canvasWrap){
       canvasWrap.addEventListener("wheel", (e)=>{
         if(!_viewerIsOn()) return;
+        // Let UI controls receive native events.
+        if(e.target && e.target.closest && e.target.closest('.fullscreenTopbar')) return;
         _viewerShowUi();
         // Trackpad/mouse wheel zoom. Use exponential scaling for smoothness.
         const dy = (e.deltaY || 0);
@@ -1310,6 +1333,7 @@ if(calib3dToggleLinesBtn){
 
       canvasWrap.addEventListener("dblclick", (e)=>{
         if(!_viewerIsOn()) return;
+        if(e.target && e.target.closest && e.target.closest('.fullscreenTopbar')) return;
         _viewerShowUi();
         _toggleZoomAt(e.clientX, e.clientY);
         e.preventDefault();
@@ -1317,6 +1341,7 @@ if(calib3dToggleLinesBtn){
 
       canvasWrap.addEventListener("pointerdown", (e)=>{
         if(!_viewerIsOn()) return;
+        if(e.target && e.target.closest && e.target.closest('.fullscreenTopbar')) return;
         _viewerShowUi();
         try{ canvasWrap.setPointerCapture(e.pointerId); }catch(_){ }
         _vp.set(e.pointerId, { x:e.clientX, y:e.clientY, t0: (e.timeStamp||Date.now()), moved:false });
@@ -1337,6 +1362,7 @@ if(calib3dToggleLinesBtn){
 
       canvasWrap.addEventListener("pointermove", (e)=>{
         if(!_viewerIsOn()) return;
+        if(e.target && e.target.closest && e.target.closest('.fullscreenTopbar')) return;
         const p = _vp.get(e.pointerId);
         if(!p) return;
         const dxm = e.clientX - p.x;
@@ -1380,6 +1406,7 @@ if(calib3dToggleLinesBtn){
 
       function _onPointerUpLike(e){
         if(!_viewerIsOn()) return;
+        if(e.target && e.target.closest && e.target.closest('.fullscreenTopbar')) return;
         const p = _vp.get(e.pointerId);
         _vp.delete(e.pointerId);
         if(_vp.size < 2) _pinch = null;

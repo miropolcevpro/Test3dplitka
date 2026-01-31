@@ -223,8 +223,8 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 /* Fullscreen viewer (CSS fullscreen + optional Fullscreen API)
    Uses the existing canvases to avoid CORS/export issues.
 */
-.fullscreenOverlay{position:absolute;inset:0;display:none;pointer-events:auto;touch-action:none;z-index:20}
-.fullscreenTopbar{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:12px 12px;pointer-events:auto;background:linear-gradient(180deg, rgba(0,0,0,0.62), rgba(0,0,0,0.0));}
+.fullscreenOverlay{position:absolute;inset:0;display:none;pointer-events:none;touch-action:none;z-index:10}
+.fullscreenTopbar{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:12px 12px;pointer-events:auto;z-index:20;background:linear-gradient(180deg, rgba(0,0,0,0.62), rgba(0,0,0,0.0));}
 .fullscreenSpacer{flex:1}
 .canvasWrap.isFullscreen.viewerUiHidden .fullscreenTopbar{opacity:0;pointer-events:none;transition:opacity .18s ease;}
 .canvasWrap.isFullscreen .fullscreenTopbar{opacity:1;transition:opacity .18s ease;}
@@ -232,7 +232,8 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .canvasWrap.isFullscreen .fullscreenOverlay{display:block}
 .canvasWrap.isFullscreen #editorCanvas{pointer-events:none}
 .canvasWrap.isFullscreen #glCanvas{pointer-events:none}
-body.isFullscreenViewer{overflow:hidden}
+html.isFullscreenViewer,
+body.isFullscreenViewer{overflow:hidden;height:100%}
 
 /* Pseudo fullscreen: hide surrounding UI so the viewer truly fills the viewport
    even when Fullscreen API is blocked by Permissions Policy (common for iframe embeds). */
@@ -259,5 +260,8 @@ body.isFullscreenViewer .canvasWrap.isFullscreen{
   position:fixed;
   inset:0;
   width:100vw;
+  /* Prefer dynamic viewport units on mobile to avoid "needs scroll to see full image" issues */
   height:100vh;
+  height:100dvh;
+  max-height:100dvh;
 }

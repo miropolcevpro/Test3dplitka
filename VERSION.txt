@@ -1,6 +1,9 @@
-mvp-iter2.2.128-fullscreen-viewfix
-- Fullscreen viewer: исправлено масштабирование холста/рендера при входе/выходе из режима «На весь экран».
-  - При открытии fullscreen выполняется ED.resize() (и повторно после settle), чтобы фото/рендер занимали доступный экран (с сохранением aspect).
-  - При выходе из fullscreen выполняется ED.resize() для возврата к размеру панели редактора.
-- Fullscreen viewer: кнопка «PNG» больше не проглатывает ошибки и ведёт себя как стандартный экспорт (exportPNG сам пишет статус).
-- Cache-bust query params обновлены (iter2_2_128_0), версия в футере: mvp-iter2.2.128_fullscreen_viewfix.
+mvp-iter2.2.130-fullscreen-fit-ui
+- Fullscreen viewer: исправлено поведение в iframe/страницах с запретом Fullscreen API (Permissions Policy).
+  - Больше не вызываем requestFullscreen(), используем стабильный pseudo-fullscreen (fixed overlay) без ошибок в консоли.
+- Fullscreen viewer: исправлены кликабельность кнопок «Закрыть» и «PNG».
+  - Overlay больше не перекрывает topbar (правильные z-index + pointer-events).
+  - Жесты (pan/zoom) не перехватывают события над topbar.
+- Fullscreen viewer: адаптивное заполнение экрана без прокрутки.
+  - Жёсткий scroll-lock (position:fixed + restore scroll) + поддержка 100dvh для мобильных.
+- Cache-bust query params обновлены (iter2_2_130_0), версия в футере: mvp-iter2.2.130_fullscreen_fit_ui.
