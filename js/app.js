@@ -1098,7 +1098,44 @@ if(calib3dToggleLinesBtn){
     });
 
     const btnResetPlane=el("resetPlaneBtn");
-    el("resetZoneBtn").addEventListener("click",()=>{const z=S.getActiveZone();if(!z)return;pushHistory();z.contour=[];z.closed=false;z.cutouts=[];state.ui.activeCutoutId=null;renderZonesUI();ED.render();});
+    // Reset active zone contour/cutouts and also drop any 3D-calibration influence.
+    // Important UX: after reset user must be able to re-draw the contour on the same photo.
+    el("resetZoneBtn").addEventListener("click",()=>{
+      const z=S.getActiveZone();
+      if(!z) return;
+      pushHistory();
+
+      // 1) Clear geometry
+      z.contour=[];
+      z.closed=false;
+      z.cutouts=[];
+      state.ui.activeCutoutId=null;
+
+      // 2) Reset per-zone perspective params that could have been auto-applied by 3D calibration.
+      // Keep the rest of the material settings intact (texture/scale/rotation/etc.).
+      if(z.material){
+        if(z.material.params_base){
+          if(typeof z.material.params_base.horizon === "number") z.material.params_base.horizon = 0.0;
+          if(typeof z.material.params_base.perspective === "number") z.material.params_base.perspective = 0.75;
+        }
+        if(z.material.params_ultra){
+          if(typeof z.material.params_ultra.horizon === "number") z.material.params_ultra.horizon = 0.0;
+          if(typeof z.material.params_ultra.perspective === "number") z.material.params_ultra.perspective = 0.75;
+        }
+        // Also clear "manual tuned" flags so future auto-calibration isn't suppressed.
+        z.material._ultraTuned = {horizon:false, perspective:false};
+      }
+
+      // 3) Reset global 3D-calibration state (lines/result/errors) — it is tied to the photo+zone.
+      try{ if(typeof _resetCalib3D === "function") _resetCalib3D(); }catch(_){ }
+
+      // 4) Ensure editor is in contour mode so user can immediately re-draw.
+      setActiveStep("zones");
+      ED.setMode("contour");
+      syncCloseButtonUI();
+      renderZonesUI();
+      ED.render();
+    });
 
     const closeBtn=el("closePolyBtn");
     if(closeBtn){
