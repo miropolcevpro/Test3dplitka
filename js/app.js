@@ -1104,6 +1104,46 @@ if(calib3dToggleLinesBtn){
     const btnFs = document.getElementById("openFullscreenBtn");
     const btnFsClose = document.getElementById("fullscreenCloseBtn");
     const btnFsDl = document.getElementById("fullscreenDownloadBtn");
+    const btnFsFit = document.getElementById("fullscreenFitBtn");
+    const btnFs11 = document.getElementById("fullscreenOneToOneBtn");
+    const btnFsRemember = document.getElementById("fullscreenRememberBtn");
+
+    const VIEWER_PREF_KEY = "photoPave_fullscreen_viewer_v1";
+    let _viewerRemember = false;
+    let _viewerLast = null; // {zoom, panX, panY}
+    (function _viewerLoadPrefs(){
+      try{
+        const raw = localStorage.getItem(VIEWER_PREF_KEY);
+        if(!raw) return;
+        const j = JSON.parse(raw);
+        if(j && typeof j.remember === "boolean") _viewerRemember = j.remember;
+        if(j && j.last && typeof j.last.zoom === "number") _viewerLast = {
+          zoom: j.last.zoom,
+          panX: Number(j.last.panX||0),
+          panY: Number(j.last.panY||0)
+        };
+      }catch(_e){}
+    })();
+
+    const VIEWER_MIN_ZOOM = 0.25;
+    const VIEWER_MAX_ZOOM = 4.0;
+
+    function _viewerSavePrefs(){
+      try{
+        localStorage.setItem(VIEWER_PREF_KEY, JSON.stringify({
+          remember: !!_viewerRemember,
+          last: _viewerLast ? { zoom:_viewerLast.zoom, panX:_viewerLast.panX, panY:_viewerLast.panY } : null
+        }));
+      }catch(_e){}
+    }
+
+    function _viewerSyncRememberBtn(){
+      if(!btnFsRemember) return;
+      btnFsRemember.setAttribute("aria-pressed", _viewerRemember ? "true" : "false");
+      btnFsRemember.classList.toggle("isToggled", !!_viewerRemember);
+    }
+
+    _viewerSyncRememberBtn();
 
     // Fullscreen viewer gestures: pan/zoom (touch + mouse) without touching render pipeline.
     // Implemented by CSS variables on canvasWrap (used in css transform for canvases).
@@ -1136,6 +1176,34 @@ if(calib3dToggleLinesBtn){
       }
     }
 
+    function _viewerComputeFitZoom(){
+      if(!canvasWrap) return 1.0;
+      // Requires _viewerBaseW/H measured at zoom=1.
+      const vw = Math.max(1, canvasWrap.clientWidth || 1);
+      const vh = Math.max(1, canvasWrap.clientHeight || 1);
+      const fit = Math.min(vw / Math.max(1, _viewerBaseW), vh / Math.max(1, _viewerBaseH)) * 0.98;
+      return Math.max(VIEWER_MIN_ZOOM, Math.min(1.0, fit));
+    }
+
+    function _viewerApplyFit(){
+      _viewerMeasureBase();
+      _viewerZoom = _viewerComputeFitZoom();
+      _viewerPanX = 0.0;
+      _viewerPanY = 0.0;
+      _viewerClampPan();
+      _viewerSetVars();
+    }
+
+    function _viewerApplyLastIfAny(){
+      if(!_viewerLast) return false;
+      _viewerZoom = Math.max(VIEWER_MIN_ZOOM, Math.min(VIEWER_MAX_ZOOM, Number(_viewerLast.zoom || 1)));
+      _viewerPanX = Number(_viewerLast.panX || 0);
+      _viewerPanY = Number(_viewerLast.panY || 0);
+      _viewerClampPan();
+      _viewerSetVars();
+      return true;
+    }
+
     function _viewerMeasureBaseDynamic(){
       if(!canvasWrap) return;
       const gl = document.getElementById("glCanvas");
@@ -1145,6 +1213,46 @@ if(calib3dToggleLinesBtn){
         _viewerBaseW = Math.max(1, r.width / z);
         _viewerBaseH = Math.max(1, r.height / z);
       }
+    }
+
+    function _viewerComputeFitZoom(){
+      if(!canvasWrap) return 1.0;
+      // Base size is measured at zoom=1.
+      _viewerMeasureBase();
+      const vw = Math.max(1, canvasWrap.clientWidth);
+      const vh = Math.max(1, canvasWrap.clientHeight);
+      const zFit = Math.min(vw / Math.max(1, _viewerBaseW), vh / Math.max(1, _viewerBaseH)) * 0.98;
+      // Do not upscale by default; only downscale to fit.
+      return Math.max(VIEWER_MIN_ZOOM, Math.min(1.0, zFit));
+    }
+
+    function _viewerApplyFit(){
+      _viewerZoom = _viewerComputeFitZoom();
+      _viewerPanX = 0.0;
+      _viewerPanY = 0.0;
+      _viewerClampPan();
+      _viewerSetVars();
+    }
+
+    function _viewerApplyOneToOne(){
+      _viewerZoom = 1.0;
+      _viewerPanX = 0.0;
+      _viewerPanY = 0.0;
+      _viewerClampPan();
+      _viewerSetVars();
+    }
+
+    function _viewerApplyLastIfAny(){
+      if(!_viewerLast) return false;
+      const z = Math.max(VIEWER_MIN_ZOOM, Math.min(VIEWER_MAX_ZOOM, Number(_viewerLast.zoom || 1)));
+      _viewerZoom = z;
+      _viewerPanX = Number(_viewerLast.panX || 0);
+      _viewerPanY = Number(_viewerLast.panY || 0);
+      // Base size must be coherent for clamping.
+      _viewerMeasureBaseDynamic();
+      _viewerClampPan();
+      _viewerSetVars();
+      return true;
     }
 
     function _viewerClampPan(){
@@ -1163,7 +1271,7 @@ if(calib3dToggleLinesBtn){
 
     function _viewerZoomAt(newZoom, clientX, clientY){
       if(!canvasWrap) return;
-      newZoom = Math.max(1.0, Math.min(4.0, newZoom));
+      newZoom = Math.max(VIEWER_MIN_ZOOM, Math.min(VIEWER_MAX_ZOOM, newZoom));
       const oldZoom = _viewerZoom || 1.0;
       if(Math.abs(newZoom - oldZoom) < 1e-6) return;
 
@@ -1216,7 +1324,7 @@ if(calib3dToggleLinesBtn){
       // Recompute canvas layout for the fullscreen viewport (otherwise the photo can stay at the old panel size).
       try{ ED.resize(); }catch(_){ }
 
-      // Reset viewer transform state.
+      // Reset viewer transform state before measuring fit.
       _viewerZoom = 1.0;
       _viewerPanX = 0.0;
       _viewerPanY = 0.0;
@@ -1224,13 +1332,19 @@ if(calib3dToggleLinesBtn){
       _viewerSetVars();
       _viewerShowUi();
 
-      // Measure base size after layout settles.
+      _viewerSyncRememberBtn();
+
+      // Measure base size after layout settles, then apply smart-fit (or remembered transform).
       requestAnimationFrame(()=>{
         if(!_viewerIsOn()) return;
         try{ ED.resize(); }catch(_){ }
         _viewerMeasureBase();
-        _viewerClampPan();
-        _viewerSetVars();
+        if(_viewerRemember){
+          const ok = _viewerApplyLastIfAny();
+          if(!ok) _viewerApplyFit();
+        }else{
+          _viewerApplyFit();
+        }
       });
 
       // NOTE: We intentionally do NOT call requestFullscreen() here.
@@ -1263,6 +1377,12 @@ if(calib3dToggleLinesBtn){
 
       // Restore canvas layout to the normal UI viewport.
       try{ ED.resize(); }catch(_){ }
+
+      // Persist last transform (optional).
+      if(_viewerRemember){
+        _viewerLast = { zoom:_viewerZoom, panX:_viewerPanX, panY:_viewerPanY };
+        _viewerSavePrefs();
+      }
 
       // Clear viewer transform.
       canvasWrap.classList.remove("viewerUiHidden");
@@ -1376,7 +1496,7 @@ if(calib3dToggleLinesBtn){
           if(tp){
             const d = _dist(tp[0], tp[1]);
             const center = _mid(tp[0], tp[1]);
-            const newZoom = Math.max(1.0, Math.min(4.0, _pinch.zoom * (d / _pinch.dist)));
+            const newZoom = Math.max(VIEWER_MIN_ZOOM, Math.min(VIEWER_MAX_ZOOM, _pinch.zoom * (d / _pinch.dist)));
 
             const rect = canvasWrap.getBoundingClientRect();
             const qx = (center.x - rect.left);
@@ -1460,7 +1580,36 @@ if(calib3dToggleLinesBtn){
         e.preventDefault();
         // Do not swallow errors: exportPNG already reports status to the user.
         ED.exportPNG();
+        _viewerShowUi();
       });
+    }
+
+    if(btnFsFit){
+      btnFsFit.addEventListener("click", (e)=>{
+        e.preventDefault();
+        _viewerApplyFit();
+        _viewerShowUi();
+      });
+    }
+    if(btnFs11){
+      btnFs11.addEventListener("click", (e)=>{
+        e.preventDefault();
+        _viewerApplyOneToOne();
+        _viewerShowUi();
+      });
+    }
+    if(btnFsRemember){
+      btnFsRemember.addEventListener("click", (e)=>{
+        e.preventDefault();
+        _viewerRemember = !_viewerRemember;
+        if(_viewerRemember){
+          _viewerLast = { zoom:_viewerZoom, panX:_viewerPanX, panY:_viewerPanY };
+        }
+        _viewerSavePrefs();
+        _viewerSyncRememberBtn();
+        _viewerShowUi();
+      });
+      _viewerSyncRememberBtn();
     }
 
     // Keep CSS state in sync with Fullscreen API exit (Esc/F11 etc.)

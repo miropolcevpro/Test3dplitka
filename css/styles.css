@@ -35,6 +35,8 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .btn{appearance:none;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:var(--text);padding:8px 10px;border-radius:12px;cursor:pointer;font-size:12px}
 .btn:hover{background:rgba(255,255,255,0.10)}
 .btn--ghost{background:transparent}
+.btn--ghost.isToggled{background:rgba(255,255,255,0.12);border-color:rgba(255,255,255,0.28)}
+.btn--ghost.isToggled:hover{background:rgba(255,255,255,0.16)}
 .btn--danger{border-color:rgba(255,77,79,0.45);background:rgba(255,77,79,0.10)}
 .btn--active{box-shadow:0 0 0 2px rgba(0,0,0,0.18) inset}
 .btn--iconText{display:inline-flex;align-items:center;gap:8px}

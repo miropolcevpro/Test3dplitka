@@ -1,4 +1,4 @@
-mvp-iter2.2.130-fullscreen-fit-ui
+mvp-iter2.2.131-fullscreen-smart-fit
 - Fullscreen viewer: исправлено поведение в iframe/страницах с запретом Fullscreen API (Permissions Policy).
   - Больше не вызываем requestFullscreen(), используем стабильный pseudo-fullscreen (fixed overlay) без ошибок в консоли.
 - Fullscreen viewer: исправлены кликабельность кнопок «Закрыть» и «PNG».
