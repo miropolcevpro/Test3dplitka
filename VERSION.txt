@@ -1,9 +1,10 @@
-mvp-iter2.2.132-fullscreen-minui
-- Fullscreen viewer: исправлено поведение в iframe/страницах с запретом Fullscreen API (Permissions Policy).
-  - Больше не вызываем requestFullscreen(), используем стабильный pseudo-fullscreen (fixed overlay) без ошибок в консоли.
-- Fullscreen viewer: исправлены кликабельность кнопок «Закрыть» и «PNG».
-  - Overlay больше не перекрывает topbar (правильные z-index + pointer-events).
-  - Жесты (pan/zoom) не перехватывают события над topbar.
-- Fullscreen viewer: адаптивное заполнение экрана без прокрутки.
-  - Жёсткий scroll-lock (position:fixed + restore scroll) + поддержка 100dvh для мобильных.
-- Cache-bust query params обновлены (iter2_2_130_0), версия в футере: mvp-iter2.2.130_fullscreen_fit_ui.
+mvp-iter2.2.133-reset-zone-rearm-v2
+
+Fix: Reset зоны полностью "перевооружает" режим построения контура.
+
+- После «Сброс зоны» теперь всегда можно сразу заново ставить точки контура на той же фотографии.
+- Принудительно показывается контур (если ранее был скрыт тумблером), иначе создавалось ощущение, что точки не ставятся.
+- Сбрасываются состояния интеракции редактора (selectedPoint/draggingPoint/isPointerDown), чтобы не зависать в старом режиме.
+- 3D‑калибровка и базовая логика сброса зоны остаются как в предыдущем патче (без регрессий).
+
+Cache-bust: iter2_2_133_0

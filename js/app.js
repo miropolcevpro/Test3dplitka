@@ -1551,6 +1551,17 @@ if(calib3dToggleLinesBtn){
       // 4) Ensure editor is in contour mode so user can immediately re-draw.
       setActiveStep("zones");
       ED.setMode("contour");
+
+      // 4b) After reset, re-arm UI interaction state for building a NEW contour.
+      // If the user previously hid the contour overlay while tuning materials,
+      // they would otherwise see "nothing happens" when placing points.
+      state.ui = state.ui || {};
+      state.ui.showContour = true;
+      state.ui.selectedPoint = null;
+      state.ui.draggingPoint = null;
+      state.ui.isPointerDown = false;
+      updateContourToggleBtn();
+
       syncCloseButtonUI();
       renderZonesUI();
       ED.render();
