@@ -740,7 +740,9 @@ function polyPath(points){
   function drawZonesOverlay(){
     ctx.save();
     const show = !(state.ui && state.ui.showContour === false);
-    if(!show && state.ui.mode==="view"){ ctx.restore(); return; }
+    // Apply contour visibility toggle immediately in all modes.
+    // Previously we only hid overlays in "view" mode, forcing an extra "Просмотр" click.
+    if(!show){ ctx.restore(); return; }
     for(const zone of state.zones){
       if(!zone.contour||zone.contour.length<2)continue;
       const isActive=zone.id===state.ui.activeZoneId;
@@ -752,7 +754,22 @@ function polyPath(points){
       ctx.beginPath();
       const p0=imgToCanvasPt(zone.contour[0]);ctx.moveTo(p0.x,p0.y);
       for(let i=1;i<zone.contour.length;i++){const p=imgToCanvasPt(zone.contour[i]);ctx.lineTo(p.x,p.y);} 
-      if(zone.closed && zone.contour.length>=3){ctx.closePath();ctx.fillStyle=isActive?"rgba(0,229,255,0.08)":"rgba(255,255,255,0.05)";ctx.fill();}
+      // Closed contour fill is a UX hint before material selection.
+      // Once a material/texture is applied, keep the contour lines/points but remove the tint.
+      const hasTexture = !!(
+        zone.material && (
+          zone.material.textureId ||
+          zone.material.textureUrl ||
+          (zone.material.maps && zone.material.maps.albedo)
+        )
+      );
+      if(zone.closed && zone.contour.length>=3){
+        ctx.closePath();
+        if(!hasTexture){
+          ctx.fillStyle=isActive?"rgba(0,229,255,0.08)":"rgba(255,255,255,0.05)";
+          ctx.fill();
+        }
+      }
       ctx.stroke();
       if(isActive&&state.ui.mode==="contour"){for(let i=0;i<zone.contour.length;i++) drawPoint(zone.contour[i],i,true);}
       for(const c of (zone.cutouts||[])){
@@ -796,7 +813,7 @@ function polyPath(points){
     if(state.ui.isPointerDown) return;
     if(!hoverCanvas) return;
     const show = !(state.ui && state.ui.showContour === false);
-    if(!show && state.ui.mode==="view") return;
+    if(!show) return;
     const poly=getOpenPolyForMode();
     if(!poly || poly.closed) return;
     const pts=poly.points;
@@ -957,10 +974,9 @@ function polyPath(points){
   }
 
   function onPointerDown(ev){
-  try{
-    const st = window.PhotoPaveState && window.PhotoPaveState.state;
-    if(st){ st.ui = st.ui || {}; st.ui.showContour = true; }
-  }catch(e){}
+  // Do not forcibly re-enable contour overlay on any click.
+  // Users can now hide the contour and keep it hidden while tuning materials
+  // without needing to enter "Просмотр".
 
   state.ui.isPointerDown=true;
   try{ canvas.setPointerCapture(ev.pointerId); }catch(_){}

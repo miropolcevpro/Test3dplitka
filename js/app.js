@@ -1088,7 +1088,16 @@ if(calib3dToggleLinesBtn){
     if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});}
     el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});
     el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");syncCloseButtonUI();});
-    el("modeView").addEventListener("click",()=>{setActiveStep("export");ED.setMode("view");syncCloseButtonUI();});
+    // "Просмотр" is a quick clean preview: it also hides the contour overlay automatically.
+    el("modeView").addEventListener("click",()=>{
+      setActiveStep("export");
+      // Auto-hide contour on entering view so user sees the pure material render.
+      state.ui.showContour = false;
+      updateContourToggleBtn();
+      ED.setMode("view");
+      ED.render();
+      syncCloseButtonUI();
+    });
 
     el("undoBtn").addEventListener("click",()=>{if(undo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
     el("redoBtn").addEventListener("click",()=>{if(redo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
