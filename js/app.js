@@ -1099,6 +1099,352 @@ if(calib3dToggleLinesBtn){
       syncCloseButtonUI();
     });
 
+    // Fullscreen viewer: opens a clean preview using the existing canvases (no snapshot/CORS risk).
+    const canvasWrap = document.getElementById("canvasWrap");
+    const btnFs = document.getElementById("openFullscreenBtn");
+    const btnFsClose = document.getElementById("fullscreenCloseBtn");
+    const btnFsDl = document.getElementById("fullscreenDownloadBtn");
+
+    // Fullscreen viewer gestures: pan/zoom (touch + mouse) without touching render pipeline.
+    // Implemented by CSS variables on canvasWrap (used in css transform for canvases).
+    let _viewerZoom = 1.0;
+    let _viewerPanX = 0.0;
+    let _viewerPanY = 0.0;
+    let _viewerBaseW = 0.0; // canvas visual size at zoom=1 in px
+    let _viewerBaseH = 0.0;
+    let _viewerUiHideT = 0;
+
+    function _viewerIsOn(){
+      return !!(canvasWrap && canvasWrap.classList.contains("isFullscreen"));
+    }
+
+    function _viewerSetVars(){
+      if(!canvasWrap) return;
+      canvasWrap.style.setProperty("--viewer-zoom", String(_viewerZoom));
+      canvasWrap.style.setProperty("--viewer-pan-x", `${_viewerPanX}px`);
+      canvasWrap.style.setProperty("--viewer-pan-y", `${_viewerPanY}px`);
+    }
+
+    function _viewerMeasureBase(){
+      if(!canvasWrap) return;
+      // Measure current canvas visual size at zoom=1 (we only call this when zoom=1 in fullscreen entry).
+      const gl = document.getElementById("glCanvas");
+      if(gl){
+        const r = gl.getBoundingClientRect();
+        _viewerBaseW = Math.max(1, r.width);
+        _viewerBaseH = Math.max(1, r.height);
+      }
+    }
+
+    function _viewerMeasureBaseDynamic(){
+      if(!canvasWrap) return;
+      const gl = document.getElementById("glCanvas");
+      if(gl){
+        const r = gl.getBoundingClientRect();
+        const z = Math.max(1e-6, _viewerZoom || 1);
+        _viewerBaseW = Math.max(1, r.width / z);
+        _viewerBaseH = Math.max(1, r.height / z);
+      }
+    }
+
+    function _viewerClampPan(){
+      if(!canvasWrap) return;
+      const vw = canvasWrap.clientWidth || 1;
+      const vh = canvasWrap.clientHeight || 1;
+      const cw = (_viewerBaseW || vw) * _viewerZoom;
+      const ch = (_viewerBaseH || vh) * _viewerZoom;
+      const maxX = Math.max(0, (cw - vw) * 0.5);
+      const maxY = Math.max(0, (ch - vh) * 0.5);
+      if(_viewerPanX > maxX) _viewerPanX = maxX;
+      if(_viewerPanX < -maxX) _viewerPanX = -maxX;
+      if(_viewerPanY > maxY) _viewerPanY = maxY;
+      if(_viewerPanY < -maxY) _viewerPanY = -maxY;
+    }
+
+    function _viewerZoomAt(newZoom, clientX, clientY){
+      if(!canvasWrap) return;
+      newZoom = Math.max(1.0, Math.min(4.0, newZoom));
+      const oldZoom = _viewerZoom || 1.0;
+      if(Math.abs(newZoom - oldZoom) < 1e-6) return;
+
+      const rect = canvasWrap.getBoundingClientRect();
+      const qx = (clientX - rect.left);
+      const qy = (clientY - rect.top);
+      const vcx = rect.width * 0.5;
+      const vcy = rect.height * 0.5;
+
+      // Keep screen point (qx,qy) stable while changing zoom (pan in screen px).
+      const k = newZoom / oldZoom;
+      _viewerPanX = (1 - k) * (qx - vcx - _viewerPanX) + _viewerPanX;
+      _viewerPanY = (1 - k) * (qy - vcy - _viewerPanY) + _viewerPanY;
+
+      _viewerZoom = newZoom;
+      _viewerClampPan();
+      _viewerSetVars();
+    }
+
+    function _viewerShowUi(){
+      if(!canvasWrap) return;
+      canvasWrap.classList.remove("viewerUiHidden");
+      if(_viewerUiHideT) clearTimeout(_viewerUiHideT);
+      _viewerUiHideT = window.setTimeout(()=>{
+        if(_viewerIsOn()) canvasWrap.classList.add("viewerUiHidden");
+      }, 2000);
+    }
+
+    function _enterFullscreenViewer(){
+      if(!canvasWrap) return;
+      // Ensure we are in clean preview mode (same semantics as pressing "Просмотр").
+      try{ el("modeView").click(); }catch(_){ /* ignore */ }
+
+      document.body.classList.add("isFullscreenViewer");
+      canvasWrap.classList.add("isFullscreen");
+
+      // Reset viewer transform state.
+      _viewerZoom = 1.0;
+      _viewerPanX = 0.0;
+      _viewerPanY = 0.0;
+      canvasWrap.classList.remove("viewerUiHidden");
+      _viewerSetVars();
+      _viewerShowUi();
+
+      // Measure base size after layout settles.
+      requestAnimationFrame(()=>{
+        if(!_viewerIsOn()) return;
+        _viewerMeasureBase();
+        _viewerClampPan();
+        _viewerSetVars();
+      });
+
+      // Optional: try real Fullscreen API on desktop; fallback remains CSS fullscreen.
+      try{
+        if(canvasWrap.requestFullscreen && !document.fullscreenElement){
+          canvasWrap.requestFullscreen().catch(()=>{});
+        }
+      }catch(_){ }
+    }
+    function _exitFullscreenViewer(){
+      if(!canvasWrap) return;
+      try{
+        if(document.fullscreenElement){
+          document.exitFullscreen().catch(()=>{});
+        }
+      }catch(_){ }
+      canvasWrap.classList.remove("isFullscreen");
+      document.body.classList.remove("isFullscreenViewer");
+
+      // Clear viewer transform.
+      canvasWrap.classList.remove("viewerUiHidden");
+      if(_viewerUiHideT) clearTimeout(_viewerUiHideT);
+      _viewerUiHideT = 0;
+      _viewerZoom = 1.0;
+      _viewerPanX = 0.0;
+      _viewerPanY = 0.0;
+      _viewerSetVars();
+    }
+
+    // Gesture handlers (registered once; they are no-ops unless fullscreen viewer is active).
+    const _vp = new Map(); // pointerId -> {x,y,t0, moved}
+    let _drag = null; // {sx,sy,panX,panY}
+    let _pinch = null; // {dist, zoom, panX, panY}
+    let _lastTap = { t:0, x:0, y:0 };
+
+    function _getTwoPointers(){
+      const arr = Array.from(_vp.values());
+      if(arr.length < 2) return null;
+      return [arr[0], arr[1]];
+    }
+    function _dist(a,b){
+      const dx = (a.x - b.x);
+      const dy = (a.y - b.y);
+      return Math.sqrt(dx*dx + dy*dy);
+    }
+    function _mid(a,b){
+      return { x:(a.x+b.x)*0.5, y:(a.y+b.y)*0.5 };
+    }
+
+    function _toggleUi(){
+      if(!canvasWrap) return;
+      if(canvasWrap.classList.contains("viewerUiHidden")){
+        _viewerShowUi();
+      }else{
+        canvasWrap.classList.add("viewerUiHidden");
+        if(_viewerUiHideT) clearTimeout(_viewerUiHideT);
+        _viewerUiHideT = 0;
+      }
+    }
+
+    function _toggleZoomAt(clientX, clientY){
+      const target = (_viewerZoom > 1.05) ? 1.0 : 2.0;
+      if(target === 1.0){
+        _viewerZoom = 1.0;
+        _viewerPanX = 0.0;
+        _viewerPanY = 0.0;
+        _viewerSetVars();
+        return;
+      }
+      _viewerZoomAt(target, clientX, clientY);
+    }
+
+    if(canvasWrap){
+      canvasWrap.addEventListener("wheel", (e)=>{
+        if(!_viewerIsOn()) return;
+        _viewerShowUi();
+        // Trackpad/mouse wheel zoom. Use exponential scaling for smoothness.
+        const dy = (e.deltaY || 0);
+        const factor = Math.exp(-dy * 0.0015);
+        const nz = _viewerZoom * factor;
+        _viewerZoomAt(nz, e.clientX, e.clientY);
+        e.preventDefault();
+      }, { passive:false });
+
+      canvasWrap.addEventListener("dblclick", (e)=>{
+        if(!_viewerIsOn()) return;
+        _viewerShowUi();
+        _toggleZoomAt(e.clientX, e.clientY);
+        e.preventDefault();
+      });
+
+      canvasWrap.addEventListener("pointerdown", (e)=>{
+        if(!_viewerIsOn()) return;
+        _viewerShowUi();
+        try{ canvasWrap.setPointerCapture(e.pointerId); }catch(_){ }
+        _vp.set(e.pointerId, { x:e.clientX, y:e.clientY, t0: (e.timeStamp||Date.now()), moved:false });
+
+        if(_vp.size === 1){
+          _drag = { sx:e.clientX, sy:e.clientY, panX:_viewerPanX, panY:_viewerPanY };
+          _pinch = null;
+        }else if(_vp.size === 2){
+          const tp = _getTwoPointers();
+          if(tp){
+            const d = _dist(tp[0], tp[1]);
+            _pinch = { dist: Math.max(1e-6, d), zoom: _viewerZoom, panX: _viewerPanX, panY: _viewerPanY };
+            _drag = null;
+          }
+        }
+        e.preventDefault();
+      }, { passive:false });
+
+      canvasWrap.addEventListener("pointermove", (e)=>{
+        if(!_viewerIsOn()) return;
+        const p = _vp.get(e.pointerId);
+        if(!p) return;
+        const dxm = e.clientX - p.x;
+        const dym = e.clientY - p.y;
+        if((dxm*dxm + dym*dym) > 100) p.moved = true; // >10px
+        p.x = e.clientX; p.y = e.clientY;
+        _vp.set(e.pointerId, p);
+
+        if(_pinch && _vp.size >= 2){
+          const tp = _getTwoPointers();
+          if(tp){
+            const d = _dist(tp[0], tp[1]);
+            const center = _mid(tp[0], tp[1]);
+            const newZoom = Math.max(1.0, Math.min(4.0, _pinch.zoom * (d / _pinch.dist)));
+
+            const rect = canvasWrap.getBoundingClientRect();
+            const qx = (center.x - rect.left);
+            const qy = (center.y - rect.top);
+            const vcx = rect.width * 0.5;
+            const vcy = rect.height * 0.5;
+            const k = newZoom / (_pinch.zoom || 1.0);
+
+            _viewerZoom = newZoom;
+            _viewerPanX = k * (_pinch.panX || 0.0) + (1 - k) * (qx - vcx);
+            _viewerPanY = k * (_pinch.panY || 0.0) + (1 - k) * (qy - vcy);
+            _viewerClampPan();
+            _viewerSetVars();
+          }
+          e.preventDefault();
+          return;
+        }
+
+        if(_drag && _vp.size === 1 && _viewerZoom > 1.01){
+          _viewerPanX = _drag.panX + (e.clientX - _drag.sx);
+          _viewerPanY = _drag.panY + (e.clientY - _drag.sy);
+          _viewerClampPan();
+          _viewerSetVars();
+          e.preventDefault();
+        }
+      }, { passive:false });
+
+      function _onPointerUpLike(e){
+        if(!_viewerIsOn()) return;
+        const p = _vp.get(e.pointerId);
+        _vp.delete(e.pointerId);
+        if(_vp.size < 2) _pinch = null;
+        if(_vp.size === 0) _drag = null;
+
+        // Tap / double-tap (touch): tap toggles UI, double tap toggles 2x zoom.
+        if(p && (e.pointerType === "touch" || e.pointerType === "pen")){
+          const dt = (e.timeStamp||Date.now()) - (p.t0||0);
+          if(!p.moved && dt < 260){
+            const now = (e.timeStamp||Date.now());
+            const ddx = (e.clientX - _lastTap.x);
+            const ddy = (e.clientY - _lastTap.y);
+            const near = (ddx*ddx + ddy*ddy) < (30*30);
+            if(now - _lastTap.t < 320 && near){
+              _lastTap.t = 0;
+              _toggleZoomAt(e.clientX, e.clientY);
+            }else{
+              _lastTap = { t: now, x: e.clientX, y: e.clientY };
+              _toggleUi();
+            }
+          }
+        }
+      }
+
+      canvasWrap.addEventListener("pointerup", _onPointerUpLike);
+      canvasWrap.addEventListener("pointercancel", _onPointerUpLike);
+
+      // Keep pan limits sane on resize/orientation changes.
+      window.addEventListener("resize", ()=>{
+        if(!_viewerIsOn()) return;
+        _viewerMeasureBaseDynamic();
+        _viewerClampPan();
+        _viewerSetVars();
+      });
+    }
+
+    if(btnFs){
+      btnFs.addEventListener("click", (e)=>{
+        e.preventDefault();
+        _enterFullscreenViewer();
+      });
+    }
+    if(btnFsClose){
+      btnFsClose.addEventListener("click", (e)=>{
+        e.preventDefault();
+        _exitFullscreenViewer();
+      });
+    }
+    if(btnFsDl){
+      btnFsDl.addEventListener("click", (e)=>{
+        e.preventDefault();
+        try{ ED.exportPNG(); }catch(_){ }
+      });
+    }
+
+    // Keep CSS state in sync with Fullscreen API exit (Esc/F11 etc.)
+    document.addEventListener("fullscreenchange", ()=>{
+      if(!document.fullscreenElement){
+        // If user exited real fullscreen, keep the viewer open in CSS fullscreen?
+        // UX: exit the viewer entirely (simple + predictable).
+        if(canvasWrap && canvasWrap.classList.contains("isFullscreen")){
+          _exitFullscreenViewer();
+        }
+      }
+    });
+
+    // Escape closes CSS viewer even when Fullscreen API isn't active.
+    window.addEventListener("keydown", (e)=>{
+      if(e.key === "Escape"){
+        if(canvasWrap && canvasWrap.classList.contains("isFullscreen")){
+          _exitFullscreenViewer();
+        }
+      }
+    });
+
     el("undoBtn").addEventListener("click",()=>{if(undo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
     el("redoBtn").addEventListener("click",()=>{if(redo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
     window.addEventListener("keydown",(e)=>{

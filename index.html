@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_125_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_127_0" />
 </head>
 <body>
   <div class="app">
@@ -53,6 +53,10 @@
             <button class="btn btn--ghost" id="modeContour">Контур</button>
             <button class="btn btn--ghost" id="modeCutout">Вырез</button>
             <button class="btn btn--ghost" id="modeView">Просмотр</button>
+            <button class="btn btn--ghost btn--iconText" id="openFullscreenBtn" title="На весь экран">
+              <span class="btnIcon" aria-hidden="true">⛶</span>
+              <span>На весь экран</span>
+            </button>
           </div>
 
           <div class="toolGroup">
@@ -67,6 +71,21 @@
         <div class="canvasWrap" id="canvasWrap">
           <canvas id="glCanvas"></canvas>
           <canvas id="editorCanvas"></canvas>
+
+          <!-- Fullscreen viewer overlay (CSS fullscreen + optional Fullscreen API) -->
+          <div class="fullscreenOverlay" id="fullscreenOverlay" aria-hidden="true">
+            <div class="fullscreenTopbar">
+              <button class="btn btn--ghost btn--iconText" id="fullscreenCloseBtn" title="Закрыть">
+                <span class="btnIcon" aria-hidden="true">✕</span>
+                <span>Закрыть</span>
+              </button>
+              <div class="fullscreenSpacer"></div>
+              <button class="btn btn--iconText" id="fullscreenDownloadBtn" title="Скачать PNG">
+                <span class="btnIcon" aria-hidden="true">⬇</span>
+                <span>PNG</span>
+              </button>
+            </div>
+          </div>
 
           <div class="aiDebugOverlay" id="aiDebugOverlay" aria-hidden="true">
             <canvas id="aiDebugCanvas" width="240" height="76"></canvas>
@@ -254,14 +273,14 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/state.js?v=iter2_2_125_0"></script>
-  <script src="js/updater.js?v=iter2_2_125_0"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_125_0"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_125_0"></script>
-  <script src="js/api.js?v=iter2_2_125_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_125_0"></script>
-  <script src="js/camera_calib.js?v=iter2_2_125_0"></script>
-  <script src="js/editor.js?v=iter2_2_125_0"></script>
-  <script src="js/app.js?v=iter2_2_125_0"></script>
+  <script src="js/state.js?v=iter2_2_127_0"></script>
+  <script src="js/updater.js?v=iter2_2_127_0"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_127_0"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_127_0"></script>
+  <script src="js/api.js?v=iter2_2_127_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_127_0"></script>
+  <script src="js/camera_calib.js?v=iter2_2_127_0"></script>
+  <script src="js/editor.js?v=iter2_2_127_0"></script>
+  <script src="js/app.js?v=iter2_2_127_0"></script>
 </body>
 </html>

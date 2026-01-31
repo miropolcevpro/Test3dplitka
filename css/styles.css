@@ -17,7 +17,10 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .hint{color:var(--muted);font-size:12px;padding:6px 10px;border:1px dashed rgba(255,255,255,0.14);border-radius:10px;flex:1;min-width:260px}
 .canvasWrap{position:relative;flex:1;min-height:0;background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
 /* Canvases: WebGL base + 2D overlay. Display size is controlled in JS to preserve photo aspect ratio. */
-#glCanvas,#editorCanvas{display:block;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);touch-action:none;max-width:100%;max-height:100%;}
+#glCanvas,#editorCanvas{display:block;position:absolute;left:50%;top:50%;
+  /* Base centering + optional fullscreen viewer pan/zoom (defaults keep old behavior). */
+  transform:translate(-50%,-50%) translate(var(--viewer-pan-x, 0px), var(--viewer-pan-y, 0px)) scale(var(--viewer-zoom, 1));
+  touch-action:none;max-width:100%;max-height:100%;}
 #glCanvas{z-index:0;}
 #editorCanvas{z-index:1;}
 .kbdHelp{display:none}
@@ -34,6 +37,8 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .btn--ghost{background:transparent}
 .btn--danger{border-color:rgba(255,77,79,0.45);background:rgba(255,77,79,0.10)}
 .btn--active{box-shadow:0 0 0 2px rgba(0,0,0,0.18) inset}
+.btn--iconText{display:inline-flex;align-items:center;gap:8px}
+.btnIcon{display:inline-block;line-height:1;font-size:14px;opacity:.95}
 .note{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.35}
 .hr{height:1px;background:var(--border);margin:12px 0}
 .list{display:flex;flex-direction:column;gap:6px;margin-top:10px}
@@ -214,3 +219,17 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .aiDebugOverlay{position:absolute;left:10px;top:10px;display:none;gap:10px;align-items:flex-start;z-index:5;padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.45);backdrop-filter:blur(6px)}
 .aiDebugOverlay canvas{display:block;border-radius:10px;border:1px solid rgba(255,255,255,0.10);background:rgba(0,0,0,0.20)}
 .aiDebugOverlay--on{display:flex}
+
+/* Fullscreen viewer (CSS fullscreen + optional Fullscreen API)
+   Uses the existing canvases to avoid CORS/export issues.
+*/
+.fullscreenOverlay{position:absolute;inset:0;display:none;pointer-events:none;z-index:20}
+.fullscreenTopbar{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:12px 12px;pointer-events:auto;background:linear-gradient(180deg, rgba(0,0,0,0.62), rgba(0,0,0,0.0));}
+.fullscreenSpacer{flex:1}
+.canvasWrap.isFullscreen.viewerUiHidden .fullscreenTopbar{opacity:0;pointer-events:none;transition:opacity .18s ease;}
+.canvasWrap.isFullscreen .fullscreenTopbar{opacity:1;transition:opacity .18s ease;}
+.canvasWrap.isFullscreen{position:fixed;inset:0;z-index:9999;border-radius:0;border:none;box-shadow:none;background:#000}
+.canvasWrap.isFullscreen .fullscreenOverlay{display:block}
+.canvasWrap.isFullscreen #editorCanvas{pointer-events:none}
+.canvasWrap.isFullscreen #glCanvas{pointer-events:none}
+body.isFullscreenViewer{overflow:hidden}
