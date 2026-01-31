@@ -840,11 +840,45 @@ if(calib3dToggleLinesBtn){
         ED.render();
       });
     }
-    window.addEventListener("ai:status", renderAiStatus);
-    window.addEventListener("ai:ready", renderAiStatus);
-    window.addEventListener("ai:error", renderAiStatus);
-    window.addEventListener("ai:depthReady", renderAiStatus);
-    window.addEventListener("ai:occlusionReady", renderAiStatus);
+    function _onUltraProgress(e){
+      // Only show the indicator when Ultra AI is enabled.
+      const enabled = !!(state.ai && state.ai.enabled!==false);
+      if(!enabled){ UltraLoadUI.hide(); return; }
+
+      if(e && e.type==="ai:status"){
+        const st = e.detail && e.detail.status ? String(e.detail.status) : "";
+        if(st==="loading" || st==="running") UltraLoadUI.start();
+        if(st==="ready") UltraLoadUI.stop(true);
+        return;
+      }
+      if(e && e.type==="ai:depthReady"){
+        UltraLoadUI.start();
+        UltraLoadUI.setProgress(Math.max(0.86, 0.0));
+        UltraLoadUI.setText("Загрузка глубины текстуры");
+        return;
+      }
+      if(e && e.type==="ai:occlusionReady"){
+        // Not always present, but if it happens, it means CV stage is done.
+        UltraLoadUI.start();
+        UltraLoadUI.setProgress(Math.max(0.92, 0.0));
+        UltraLoadUI.setText("Оптимизация компьютерного зрения");
+        return;
+      }
+      if(e && e.type==="ai:ready"){
+        UltraLoadUI.stop(true);
+        return;
+      }
+      if(e && e.type==="ai:error"){
+        UltraLoadUI.stop(false);
+        return;
+      }
+    }
+
+    window.addEventListener("ai:status", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
+    window.addEventListener("ai:ready", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
+    window.addEventListener("ai:error", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
+    window.addEventListener("ai:depthReady", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
+    window.addEventListener("ai:occlusionReady", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
     renderAiStatus();
 
     // AI debug overlay (Patch 3.1)
@@ -1696,6 +1730,107 @@ el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
     el("tgBtn").addEventListener("click",()=>openMessenger("tg"));
     el("shareBtn").addEventListener("click",()=>share());
   }
+
+  // Ultra (ONNX/CV) loading indicator under the photo (next to "Формы").
+  // This is intentionally UX-only: it never changes any rendering logic.
+  const UltraLoadUI = (function(){
+    const box = document.getElementById("ultraLoadBox");
+    const txt = document.getElementById("ultraLoadText");
+    const fill = document.getElementById("ultraLoadFill");
+    if(!box || !txt || !fill) return { start:()=>{}, stop:()=>{}, setProgress:()=>{}, setText:()=>{}, hide:()=>{} };
+
+    const messages = [
+      "Загрузка режима ультра‑реализма",
+      "Оптимизация компьютерного зрения",
+      "Загрузка глубины текстуры",
+      "Калибровка автоконтура",
+      "Загрузка 3D‑технологий",
+      "Сканирование фотографии"
+    ];
+    let running = false;
+    let msgTimer = null;
+    let progTimer = null;
+    let msgIdx = 0;
+    let p = 0;
+    let startedAt = 0;
+
+    function _show(){
+      box.classList.add("ultraLoad--on");
+      box.setAttribute("aria-hidden", "false");
+    }
+    function hide(){
+      running = false;
+      if(msgTimer) { clearInterval(msgTimer); msgTimer=null; }
+      if(progTimer){ clearInterval(progTimer); progTimer=null; }
+      box.classList.remove("ultraLoad--on");
+      box.setAttribute("aria-hidden", "true");
+    }
+    function setProgress(v){
+      p = Math.max(0, Math.min(1, +v));
+      fill.style.width = Math.round(p*100) + "%";
+    }
+    function setText(s){
+      if(!s) return;
+      txt.textContent = s;
+    }
+
+    function start(){
+      // Avoid flicker on fast connections: once shown, keep at least ~900ms.
+      startedAt = performance.now();
+      if(running) return;
+      running = true;
+      msgIdx = 0;
+      setText(messages[0]);
+      setProgress(Math.max(p, 0.06));
+      _show();
+
+      if(msgTimer) clearInterval(msgTimer);
+      msgTimer = setInterval(()=>{
+        if(!running) return;
+        msgIdx = (msgIdx + 1) % messages.length;
+        // soft fade between messages
+        txt.classList.add("isFading");
+        setTimeout(()=>{
+          if(!running) return;
+          setText(messages[msgIdx]);
+          txt.classList.remove("isFading");
+        }, 160);
+      }, 1350);
+
+      // Pseudo-progress towards 90% while ONNX is downloading/initializing.
+      // Real milestones (ai:depthReady/ai:ready) will snap it forward.
+      if(progTimer) clearInterval(progTimer);
+      progTimer = setInterval(()=>{
+        if(!running) return;
+        const target = 0.90;
+        p = p + (target - p) * 0.018;
+        setProgress(p);
+      }, 140);
+    }
+
+    function stop(ok){
+      if(!running) { hide(); return; }
+      running = false;
+      if(msgTimer) { clearInterval(msgTimer); msgTimer=null; }
+      if(progTimer){ clearInterval(progTimer); progTimer=null; }
+      setProgress(1);
+      const minShownMs = 900;
+      const dt = performance.now() - startedAt;
+      const delay = Math.max(0, minShownMs - dt);
+      setTimeout(()=>{
+        if(ok===false){
+          setText("Ошибка загрузки режима ультра‑реализма");
+          setTimeout(hide, 2200);
+          return;
+        }
+        setText("Готово");
+        setTimeout(()=>{ setText("Режим ультра‑реализма загружен"); }, 500);
+        setTimeout(hide, 1600);
+      }, delay);
+    }
+
+    return { start, stop, setProgress, setText, hide };
+  })();
 
   async function bootstrap(){
     setBuildInfo();

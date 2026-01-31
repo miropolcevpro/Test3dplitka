@@ -79,6 +79,21 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .bottomSection{display:flex;flex-direction:column;gap:6px}
 .bottomTitle{font-size:12px;color:var(--muted);letter-spacing:.02em;padding:0 4px}
 
+/* Ultra mode loader (ONNX / CV init indicator) */
+.bottomHeader{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:0 4px}
+.ultraLoad{display:none;min-width:220px;max-width:360px;flex:0 1 360px}
+.ultraLoad--on{display:block}
+.ultraLoad__text{font-size:11px;color:rgba(46,240,107,0.95);line-height:1.1;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.95;transition:opacity .25s ease}
+.ultraLoad__bar{height:4px;border-radius:999px;background:rgba(255,255,255,0.10);overflow:hidden;border:1px solid rgba(255,255,255,0.10)}
+.ultraLoad__fill{height:100%;width:0%;background:rgba(46,240,107,0.95);border-radius:999px;transition:width .22s ease}
+.ultraLoad__text.isFading{opacity:.35}
+
+@media (max-width: 720px){
+  .bottomHeader{align-items:flex-start;flex-direction:column;gap:6px}
+  .ultraLoad{min-width:unset;max-width:none;width:100%}
+  .ultraLoad__text{white-space:normal}
+}
+
 .hscroll{display:flex;gap:10px;overflow-x:auto;overflow-y:hidden;padding:6px 4px 10px 4px;scrollbar-width:thin;scrollbar-gutter:stable both-edges}
 /* Keep the horizontal scrollbar ("ползунок") visible and easy to grab in iframe contexts */
 .hscroll::-webkit-scrollbar{height:10px}

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_133_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_134_0" />
 </head>
 <body>
   <div class="app">
@@ -103,7 +103,13 @@
 
         <div class="bottomMenu">
           <div class="bottomSection">
-            <div class="bottomTitle">Формы</div>
+            <div class="bottomHeader">
+              <div class="bottomTitle">Формы</div>
+              <div id="ultraLoadBox" class="ultraLoad" aria-hidden="true">
+                <div id="ultraLoadText" class="ultraLoad__text">Загрузка режима ультра‑реализма</div>
+                <div class="ultraLoad__bar"><div id="ultraLoadFill" class="ultraLoad__fill" style="width:0%"></div></div>
+              </div>
+            </div>
             <div id="shapesList" class="hscroll hscroll--shapes"></div>
           </div>
         </div>
@@ -273,14 +279,14 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/state.js?v=iter2_2_133_0"></script>
-  <script src="js/updater.js?v=iter2_2_133_0"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_133_0"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_133_0"></script>
-  <script src="js/api.js?v=iter2_2_133_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_133_0"></script>
-  <script src="js/camera_calib.js?v=iter2_2_133_0"></script>
-  <script src="js/editor.js?v=iter2_2_133_0"></script>
-  <script src="js/app.js?v=iter2_2_133_0"></script>
+  <script src="js/state.js?v=iter2_2_134_0"></script>
+  <script src="js/updater.js?v=iter2_2_134_0"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_134_0"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_134_0"></script>
+  <script src="js/api.js?v=iter2_2_134_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_134_0"></script>
+  <script src="js/camera_calib.js?v=iter2_2_134_0"></script>
+  <script src="js/editor.js?v=iter2_2_134_0"></script>
+  <script src="js/app.js?v=iter2_2_134_0"></script>
 </body>
 </html>
