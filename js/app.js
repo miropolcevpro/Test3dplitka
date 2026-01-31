@@ -1220,10 +1220,13 @@ if(calib3dToggleLinesBtn){
         _viewerSetVars();
       });
 
-      // Optional: try real Fullscreen API on desktop; fallback remains CSS fullscreen.
+      // Optional: try real Fullscreen API (true browser fullscreen).
+      // IMPORTANT: in many embeds (iframes) fullscreen is blocked by Permissions Policy and
+      // calling requestFullscreen() logs noisy "fullscreen is not allowed" violations.
+      // So we only attempt it when the browser reports fullscreenEnabled.
       try{
-        if(canvasWrap.requestFullscreen && !document.fullscreenElement){
-          canvasWrap.requestFullscreen().catch(()=>{});
+        if(document.fullscreenEnabled && canvasWrap.requestFullscreen && !document.fullscreenElement){
+          canvasWrap.requestFullscreen({navigationUI:"hide"}).catch(()=>{});
         }
       }catch(_){ }
     }
