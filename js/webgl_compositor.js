@@ -3100,6 +3100,39 @@ function _blendModeId(blend){
     const sx = w / Math.max(1, photoW);
     const sy = h / Math.max(1, photoH);
 
+    // Scene-global base quad/homography:
+    // Use the master zone contour to infer the plane mapping once per frame.
+    // This prevents per-zone inversions on thin/irregular additional zones.
+    let _sceneQuad = null, _sceneMetric = null, _sceneHm = null, _sceneInvH = null;
+    try{
+      const mzid = state && state.ui ? state.ui.masterZoneId : null;
+      let mz = null;
+      if(mzid){
+        mz = (state.zones||[]).find(z=>z && z.id===mzid && z.enabled && z.closed && z.contour && z.contour.length>=3) || null;
+      }
+      if(!mz){
+        mz = (state.zones||[]).find(z=>z && z.enabled && z.closed && z.contour && z.contour.length>=3) || null;
+      }
+      if(mz){
+        const contourM = (mz.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+        const quadResM = _inferQuadFromContour(contourM, {horizon:0.0, perspective:1.0}, w, h, null);
+        const quadM = quadResM && quadResM.quad ? quadResM.quad : null;
+        const metricM = quadResM && quadResM.metric ? quadResM.metric : {W:1.0, D:1.0};
+        const qnM = quadM ? _normalizeQuad(quadM) : null;
+        if(qnM){
+          const HmM = _homographyRectToQuad(qnM, metricM.W, metricM.D);
+          const invHM = HmM ? _invert3x3(HmM) : null;
+          if(invHM){
+            _sceneQuad = quadM;
+            _sceneMetric = metricM;
+            _sceneHm = HmM;
+            _sceneInvH = invHM;
+          }
+        }
+      }
+    }catch(_){ /*no-op*/ }
+
+
     for(const zone of (state.zones||[])){
       if(!zone || !zone.enabled) continue;
       if(!zone.closed || !zone.contour || zone.contour.length < 3) continue;
@@ -3367,20 +3400,23 @@ try{
 }catch(_){ lockExtrema = null; }
 
 
-let Hm = null;
-// Global Anti-Rubber: infer ONLY a base quad from the contour (no horizon/perspective warping, no AI quad).
-// Horizon + Perspective are applied strictly as camera parameters later.
-const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, w, h, lockExtrema);
-let planeMetric = {W:1.0, D:1.0};
-const quad = quadRes && quadRes.quad ? quadRes.quad : null;
-if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
-
-if(quad){
-  const qn = _normalizeQuad(quad);
-  if(qn){
-    Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
-    if(Hm){
-      invH = _invert3x3(Hm);
+let Hm = _sceneHm;
+let planeMetric = (_sceneMetric && isFinite(_sceneMetric.W) && isFinite(_sceneMetric.D)) ? _sceneMetric : {W:1.0, D:1.0};
+const quad = _sceneQuad;
+if(_sceneInvH){
+  invH = _sceneInvH;
+}else{
+  // Fallback: per-zone inference (legacy). Used only when we cannot infer a stable scene plane.
+  const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, w, h, lockExtrema);
+  planeMetric = (quadRes && quadRes.metric) ? quadRes.metric : planeMetric;
+  const quadZ = quadRes && quadRes.quad ? quadRes.quad : null;
+  if(quadZ){
+    const qn = _normalizeQuad(quadZ);
+    if(qn){
+      Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+      if(Hm){
+        invH = _invert3x3(Hm);
+      }
     }
   }
 }
@@ -3394,6 +3430,7 @@ if(!invH){
 }else{
   lastGoodInvH.set(zone.id, invH);
 }
+
 
 // Cache render-space inference in PHOTO coordinates so export can reuse it verbatim.
 // This prevents subtle mismatches caused by re-inferring the quad/homography at a
@@ -3789,6 +3826,38 @@ const tmp = src; src = dst; dst = tmp;
     const sx = outW / Math.max(1, photoW);
     const sy = outH / Math.max(1, photoH);
 
+    // Export: scene-global base quad/homography inferred from master zone.
+    // This keeps thin/irregular zones from producing inverted plane mappings during export.
+    let _expSceneQuad = null, _expSceneMetric = null, _expSceneHm = null, _expSceneInvH = null;
+    try{
+      const mzid = state && state.ui ? state.ui.masterZoneId : null;
+      let mz = null;
+      if(mzid){
+        mz = (state.zones||[]).find(z=>z && z.id===mzid && z.enabled && z.closed && z.contour && z.contour.length>=3) || null;
+      }
+      if(!mz){
+        mz = (state.zones||[]).find(z=>z && z.enabled && z.closed && z.contour && z.contour.length>=3) || null;
+      }
+      if(mz){
+        const contourM = (mz.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+        const quadResM = _inferQuadFromContour(contourM, {horizon:0.0, perspective:1.0}, outW, outH, null);
+        const quadM = quadResM && quadResM.quad ? quadResM.quad : null;
+        const metricM = quadResM && quadResM.metric ? quadResM.metric : {W:1.0, D:1.0};
+        const qnM = quadM ? _normalizeQuad(quadM) : null;
+        if(qnM){
+          const HmM = _homographyRectToQuad(qnM, metricM.W, metricM.D);
+          const invHM = HmM ? _invert3x3(HmM) : null;
+          if(invHM){
+            _expSceneQuad = quadM;
+            _expSceneMetric = metricM;
+            _expSceneHm = HmM;
+            _expSceneInvH = invHM;
+          }
+        }
+      }
+    }catch(_){ /*no-op*/ }
+
+
     for(const zone of (state.zones||[])){
       if(!zone || !zone.enabled) continue;
       if(!zone.closed || !zone.contour || zone.contour.length < 3) continue;
@@ -3869,6 +3938,12 @@ try{
 
 // Fallback: infer quad/homography at export resolution if cache is missing.
 if(!Hm){
+  if(_expSceneHm && _expSceneInvH && _expSceneQuad){
+    planeMetric = (_expSceneMetric && isFinite(_expSceneMetric.W) && isFinite(_expSceneMetric.D)) ? _expSceneMetric : planeMetric;
+    quad = _expSceneQuad;
+    Hm = _expSceneHm;
+    invH = _expSceneInvH;
+  }else{
   const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
   quad = quadRes && quadRes.quad ? quadRes.quad : null;
   if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
@@ -3878,6 +3953,7 @@ if(!Hm){
       Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
       if(Hm) invH = _invert3x3(Hm);
     }
+  }
   }
 }
 
