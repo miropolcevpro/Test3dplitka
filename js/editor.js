@@ -979,7 +979,8 @@ function polyPath(points){
   // without needing to enter "Просмотр".
 
   state.ui.isPointerDown=true;
-  try{ canvas.setPointerCapture(ev.pointerId); }catch(_){}
+  try{ canvas.setPointerCapture(ev.pointerId); }catch(_){ }
+  state.ui.pointerCaptureId = ev.pointerId;
   const pt=eventToImgPt(ev);
   const zone=getActiveZone();const cut=getActiveCutout(zone);
 
@@ -1278,9 +1279,26 @@ if(state.ui.mode==="contour"&&zone){
       maybeAutoCloseOnDragRelease();
     }
     state.ui.draggingPoint=null;
-    try{canvas.releasePointerCapture(ev && ev.pointerId);}catch(_){}
+    try{canvas.releasePointerCapture(ev && ev.pointerId);}catch(_){ }
+    state.ui.pointerCaptureId = null;
     render();
   }
+  function resetInteraction(){
+    // Hard reset all interactive state to avoid "sticky" mode/drag when switching zones or starting a new contour.
+    state.ui.isPointerDown = false;
+    state.ui.draggingPoint = null;
+    state.ui.selectedPoint = null;
+    hoverCanvas = null;
+    hoverCloseCandidate = false;
+    pendingClose = null;
+    try{
+      if(state.ui.pointerCaptureId != null){
+        canvas.releasePointerCapture(state.ui.pointerCaptureId);
+      }
+    }catch(_){ }
+    state.ui.pointerCaptureId = null;
+  }
+
   function deleteSelectedPoint(){
     const sel=state.ui.selectedPoint;if(!sel)return false;
     pushHistory();
@@ -1356,5 +1374,5 @@ if(state.ui.mode==="contour"&&zone){
       }
     })();
   }
-  return {init,bindInput,render,resize,setMode,exportPNG};
+  return {init,bindInput,render,resize,setMode,resetInteraction,exportPNG};
 })();

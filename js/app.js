@@ -99,6 +99,61 @@
     normalizeAllZones();
   }
 
+  function addZoneAndArmContour(){
+    // Z-A: Atomic Add Zone Arm — create a new zone and immediately start contouring it.
+    // Must be the single entry point for "+ Zone" to avoid state races.
+    try{
+      if(document.body && document.body.classList.contains("isFullscreenViewer")){
+        _exitFullscreenViewer();
+      }
+    }catch(_){}
+
+    pushHistory();
+
+    // Z-B: Inherit master zone tiling/material parameters for the new zone.
+    // Product intent: additional zones usually cover remaining fragments and must
+    // keep the same world/perspective/scale to avoid "inversion" artifacts.
+    const master = (state.zones && state.zones.length) ? state.zones[0] : null;
+
+    const z = makeZone();
+
+    if(master && master.material && z.material){
+      try{
+        // Copy only paving/appearance settings; keep geometry empty.
+        z.material.shapeId   = master.material.shapeId ?? z.material.shapeId;
+        z.material.textureId = master.material.textureId ?? z.material.textureId;
+        z.material.textureUrl= master.material.textureUrl ?? z.material.textureUrl;
+        // Deep-clone params to avoid shared references.
+        if(master.material.params_base) z.material.params_base = JSON.parse(JSON.stringify(master.material.params_base));
+        if(master.material.params_ultra) z.material.params_ultra = JSON.parse(JSON.stringify(master.material.params_ultra));
+        // Preserve per-zone tuning flags if present (kept off by default).
+        if(master.material._ultraTuned) z.material._ultraTuned = JSON.parse(JSON.stringify(master.material._ultraTuned));
+        // Re-point active params according to current mode.
+        ensureZoneMaterialParams(z);
+      }catch(_){
+        // If anything goes wrong, fall back to default makeZone() params.
+      }
+    }
+
+    state.zones.push(z);
+    state.ui.activeZoneId = z.id;
+    state.ui.activeCutoutId = null;
+
+    // Force contour editing mode
+    state.ui.showContour = true;
+    if(typeof updateContourToggleBtn === "function") updateContourToggleBtn();
+
+    // Reset any sticky interaction state (drag/hover/pointer capture)
+    if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
+
+    renderZonesUI();
+    setActiveStep("zones");
+    ED.setMode("contour");
+    syncCloseButtonUI();
+    ED.render();
+  }
+
+
   function renderCutoutsUI(){
     const wrap=el("cutoutsList");wrap.innerHTML="";
     const zone=S.getActiveZone();
@@ -1660,7 +1715,7 @@ if(calib3dToggleLinesBtn){
       syncCloseButtonUI();
     });
 
-    el("addZoneBtn").addEventListener("click",()=>{pushHistory();const z=makeZone();state.zones.push(z);state.ui.activeZoneId=z.id;state.ui.activeCutoutId=null;renderZonesUI();setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});
+    el("addZoneBtn").addEventListener("click",()=>{ addZoneAndArmContour(); });
     el("dupZoneBtn").addEventListener("click",()=>{
       const z=S.getActiveZone();if(!z)return;pushHistory();
       const copy=JSON.parse(JSON.stringify(z));

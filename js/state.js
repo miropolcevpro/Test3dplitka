@@ -3,8 +3,8 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-	build: { version:"mvp-iter2.2.136_ultra_far_waviness_fix",ts:new Date().toISOString()},
-    api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
+		build: { version:"mvp-iter2.2.139-zone-inherit-master",ts:new Date().toISOString()},
+	    api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
       showContour:true,
@@ -14,7 +14,8 @@ window.PhotoPaveState=(function(){
       activeCutoutId:null,
       draggingPoint:null,
       selectedPoint:null,
-      isPointerDown:false
+      isPointerDown:false,
+      pointerCaptureId:null
     },
 
     catalog:{shapes:[],palettesByShape:{},texturesByShape:{},activeShapeId:null},
