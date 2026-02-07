@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_139_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_140_0" />
 </head>
 <body>
   <div class="app">
@@ -232,6 +232,11 @@
               <button class="btn btn--danger" id="delZoneBtn">Удалить</button>
             </div>
 
+            <div class="row">
+              <label class="badge"><input type="radio" name="editScope" id="editScopeActive" value="active" checked/> Только эту зону</label>
+              <label class="badge"><input type="radio" name="editScope" id="editScopeAll" value="all"/> Все зоны</label>
+            </div>
+
             <div class="note">
               Для стабильности фото приводится к размеру ≤ 3072px по длинной стороне (интерактивный режим).
             </div>
@@ -279,14 +284,14 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/state.js?v=iter2_2_139_0"></script>
-  <script src="js/updater.js?v=iter2_2_139_0"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_139_0"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_139_0"></script>
-  <script src="js/api.js?v=iter2_2_139_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_139_0"></script>
-  <script src="js/camera_calib.js?v=iter2_2_139_0"></script>
-  <script src="js/editor.js?v=iter2_2_139_0"></script>
-  <script src="js/app.js?v=iter2_2_139_0"></script>
+  <script src="js/state.js?v=iter2_2_140_0"></script>
+  <script src="js/updater.js?v=iter2_2_140_0"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_140_0"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_140_0"></script>
+  <script src="js/api.js?v=iter2_2_140_0"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_140_0"></script>
+  <script src="js/camera_calib.js?v=iter2_2_140_0"></script>
+  <script src="js/editor.js?v=iter2_2_140_0"></script>
+  <script src="js/app.js?v=iter2_2_140_0"></script>
 </body>
 </html>

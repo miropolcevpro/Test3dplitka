@@ -221,20 +221,18 @@
       card.addEventListener("click",async ()=>{
         pushHistory();
         state.catalog.activeShapeId=shapeId;
-        const zone=S.getActiveZone();
-        if(zone){
-          zone.material.shapeId=shapeId;
-          zone.material.textureId=null;
-          zone.material.textureUrl=null;
-          // AUTO_HIDE_CONTOUR_ON_TEXTURE
-          try{
-            if(zone.closed){
-              state.ui = state.ui || {};
-              state.ui.showContour = false;
-              updateContourToggleBtn();
-            }
-          }catch(e){}
-        }
+        // Z-C: apply shape change to active zone or all zones based on editScope
+        applyMaterialChange(shapeId, null);
+        // AUTO_HIDE_CONTOUR_ON_TEXTURE
+        try{
+          const scope = _getEditScope();
+          const zs = (scope==="all") ? (state.zones||[]) : [S.getActiveZone()].filter(Boolean);
+          if(zs.some(z=>z && z.closed)){
+            state.ui = state.ui || {};
+            state.ui.showContour = false;
+            updateContourToggleBtn();
+          }
+        }catch(e){}
         renderShapesUI();
         await loadTexturesForActiveShape();
         renderZonesUI();
@@ -367,20 +365,8 @@
       card.addEventListener("click",()=>{
         if(!zone) return;
         pushHistory();
-        zone.material.shapeId=shapeId;
-        zone.material.textureId=t.textureId;
-        zone.material.textureUrl=url; // legacy (albedo)
-        // New: keep full maps bundle for PBR (loaded from palette JSON in Object Storage)
-        if(t.maps){
-          zone.material.maps = {...t.maps};
-          if(t.tileSizeM!=null) zone.material.tileSizeM = t.tileSizeM;
-        }else{
-          zone.material.maps = {albedo:url};
-        }
-        // Palette-level/material-level parameters (from bucket JSON). Used by PBR shader.
-        // IMPORTANT: do NOT overwrite zone.material.params because it stores user tuning (scale/rotation/opacity/horizon/perspective).
-        // Store palette PBR tuning separately so switching textures within the same shape keeps user tile size & adjustments.
-        zone.material.pbrParams = (t.params ? {...t.params} : null);
+        // Z-C: apply material to active zone or all zones based on editScope
+        applyMaterialChange(shapeId, { textureId: t.textureId, url, maps: t.maps, tileSizeM: t.tileSizeM, params: t.params });
         renderTexturesUI();renderZonesUI();ED.render();
       });
       wrap.appendChild(card);
@@ -602,6 +588,73 @@ async function handlePhotoFile(file){
     el("horizonRange").value = horizonToUi(z.material.params.horizon??H_NEUTRAL);
   }
 
+  // Z-C: edit scope helpers (pro-style global edits)
+  function _getEditScope(){
+    try{ return (state.ui && state.ui.editScope) ? state.ui.editScope : "active"; }catch(_){ return "active"; }
+  }
+  function _targetsForScope(){
+    const scope=_getEditScope();
+    if(scope==="all") return state.zones || [];
+    const z=S.getActiveZone();
+    return z ? [z] : [];
+  }
+  function applyChangeToTiling(change){
+    const targets=_targetsForScope();
+    if(!targets.length) return;
+    for(const z of targets){
+      if(!z) continue;
+      ensureZoneMaterialParams(z);
+      const p = z.material && z.material.params ? z.material.params : (z.material.params={});
+      for(const k in change){
+        p[k]=change[k];
+      }
+      // Keep Ultra manual tuning flags consistent when user tweaks horizon/perspective.
+      if(state.ai && state.ai.enabled!==false && z.material){
+        if(z.material._ultraTuned && ("perspective" in change)) z.material._ultraTuned.perspective = true;
+        if(z.material._ultraTuned && ("horizon" in change)) z.material._ultraTuned.horizon = true;
+      }
+    }
+  }
+
+  // Z-C guard rail: single entry point for PBR parameter changes (reserved for future UI controls).
+  // Does NOT touch user tiling controls (scale/rotation/opacity/horizon/perspective).
+  function applyChangeToPBR(change){
+    const targets=_targetsForScope();
+    if(!targets.length) return;
+    for(const z of targets){
+      if(!z || !z.material) continue;
+      z.material.pbrParams = z.material.pbrParams || {};
+      for(const k in change){
+        z.material.pbrParams[k] = change[k];
+      }
+    }
+  }
+  function applyMaterialChange(shapeId, tex){
+    const targets=_targetsForScope();
+    if(!targets.length) return;
+    for(const z of targets){
+      if(!z) continue;
+      z.material.shapeId = shapeId || z.material.shapeId;
+      if(tex===null){
+        // Shape change: reset texture selection
+        z.material.textureId = null;
+        z.material.textureUrl = null;
+        z.material.maps = null;
+        z.material.pbrParams = null;
+      }else if(tex){
+        z.material.textureId = tex.textureId;
+        z.material.textureUrl = tex.url;
+        if(tex.maps){
+          z.material.maps = {...tex.maps};
+          if(tex.tileSizeM!=null) z.material.tileSizeM = tex.tileSizeM;
+        }else{
+          z.material.maps = {albedo: tex.url};
+        }
+        z.material.pbrParams = (tex.params ? {...tex.params} : null);
+      }
+    }
+  }
+
   function syncCloseButtonUI(){
     const btn=el("closePolyBtn");
     if(!btn) return;
@@ -625,6 +678,21 @@ async function handlePhotoFile(file){
   }
 
   function bindUI(){
+    // Z-C: edit scope toggle (active zone vs all zones)
+    try{
+      const a = document.getElementById("editScopeActive");
+      const b = document.getElementById("editScopeAll");
+      const scope = _getEditScope();
+      if(a) a.checked = (scope !== "all");
+      if(b) b.checked = (scope === "all");
+      const onChange = ()=>{
+        state.ui = state.ui || {};
+        state.ui.editScope = (b && b.checked) ? "all" : "active";
+      };
+      if(a) a.addEventListener("change", onChange);
+      if(b) b.addEventListener("change", onChange);
+    }catch(_){ }
+
     // Contour visibility toggle (overlay)
     const toggleContourBtn = document.getElementById("toggleContourBtn");
     if(toggleContourBtn){
@@ -1755,47 +1823,39 @@ if(calib3dToggleLinesBtn){
 			v = Math.min(mx, Math.max(mn, v));
 			sr.value = String(v);
 		}
-		z.material.params.scale = v;
+		applyChangeToTiling({scale:v});
 		ED.render();
 	});
-    el("rotRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.rotation=parseFloat(el("rotRange").value);ED.render();});
-    el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.opacity=parseFloat(el("opacityRange").value);ED.render();});
+    el("rotRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({rotation:parseFloat(el("rotRange").value)});ED.render();});
+    el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({opacity:parseFloat(el("opacityRange").value)});ED.render();});
     const oc=el("opaqueFillChk");
     if(oc){
       oc.addEventListener("change",()=>{
         const z=S.getActiveZone(); if(!z) return;
-        z.material.params.opaqueFill=!!oc.checked;
+		applyChangeToTiling({opaqueFill:!!oc.checked});
         const bs=el("blendSelect");
         if(bs){
           bs.disabled=oc.checked;
           if(oc.checked){
             bs.value="source-over";
-            z.material.params.blendMode="source-over";
+				applyChangeToTiling({blendMode:"source-over"});
           }
         }
         ED.render();
       });
     }
-el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;z.material.params.blendMode=el("blendSelect").value;ED.render();});
+el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({blendMode:el("blendSelect").value});ED.render();});
 
     
     el("perspectiveRange").addEventListener("input",()=>{
       const z=S.getActiveZone();if(!z)return;
-      z.material.params.perspective=parseFloat(el("perspectiveRange").value);
-      // Patch D: user manual tune in Ultra disables auto-calibration overlay for that parameter.
-      if(state.ai && state.ai.enabled!==false && z.material && z.material._ultraTuned){
-        z.material._ultraTuned.perspective = true;
-      }
+      applyChangeToTiling({perspective:parseFloat(el("perspectiveRange").value)});
       ED.render();
     });
     el("horizonRange").addEventListener("input",()=>{
       const z=S.getActiveZone();if(!z)return;
       const uiVal = parseFloat(el("horizonRange").value);
-      z.material.params.horizon = uiToHorizon(uiVal);
-      // Patch D: user manual tune in Ultra disables auto-calibration overlay for that parameter.
-      if(state.ai && state.ai.enabled!==false && z.material && z.material._ultraTuned){
-        z.material._ultraTuned.horizon = true;
-      }
+      applyChangeToTiling({horizon: uiToHorizon(uiVal)});
       ED.render();
     });
 el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());

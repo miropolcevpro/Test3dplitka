@@ -3,13 +3,16 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-		build: { version:"mvp-iter2.2.139-zone-inherit-master",ts:new Date().toISOString()},
+		build: { version:"mvp-iter2.2.140-edit-scope-all-zones",ts:new Date().toISOString()},
 	    api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
       showContour:true,
       activeStep:"photo",
       mode:"photo",
+      // Z-C: editing scope for tiling/material controls
+      // "active" = only active zone; "all" = all zones
+      editScope:"active",
       activeZoneId:null,
       activeCutoutId:null,
       draggingPoint:null,
