@@ -658,7 +658,9 @@ async function handlePhotoFile(file){
       perspectiveOffset:0, horizonOffset:0,
       blendModeOverride:null, opaqueFillOverride:null,
       materialOverride:null, shapeOverride:null
-    }
+    };
+    if(typeof z.baseParams === 'undefined') z.baseParams = null;
+  }
 
   function resetZoneOverrides(z){
     if(!z) return;
@@ -688,9 +690,7 @@ async function handlePhotoFile(file){
       syncLinkedZones();
     }
   }
-;
-    if(typeof z.baseParams === 'undefined') z.baseParams = null;
-  }
+
 
   function getMasterZone(){
     try{
@@ -760,17 +760,20 @@ async function handlePhotoFile(file){
 
     // Material override (local exception) — pro behavior
     const ov = zone.overrides || {};
+    // Guard rail: perspective/horizon are scene-global. Do not allow per-zone offsets on linked zones.
+    // This prevents rare "inversion" artifacts on very small / degenerate secondary zones.
+    const ovSafe = { ...ov, perspectiveOffset: 0, horizonOffset: 0 };
     const baseShapeId = master.material.shapeId;
     const baseMaterialSnap = null;
 
     // Apply base params from master
     try{
       if(master.material.params_base && zone.material.params_base){
-        const base = applyOverridesToParams(master.material.params_base, ov);
+        const base = applyOverridesToParams(master.material.params_base, ovSafe);
         zone.material.params_base = JSON.parse(JSON.stringify(base));
       }
       if(master.material.params_ultra && zone.material.params_ultra){
-        const ultra = applyOverridesToParams(master.material.params_ultra, ov);
+        const ultra = applyOverridesToParams(master.material.params_ultra, ovSafe);
         zone.material.params_ultra = JSON.parse(JSON.stringify(ultra));
       }
       ensureZoneMaterialParams(zone);
@@ -855,6 +858,7 @@ function applyChangeToTiling(change){
     ensureZoneMaterialParams(master);
     const mp = master.material && master.material.params ? master.material.params : {};
     const ov = z.overrides;
+    let sceneParamTouched = false;
     for(const k in change){
       const v = change[k];
       if(k==="scale"){
@@ -865,10 +869,16 @@ function applyChangeToTiling(change){
       }else if(k==="opacity"){
         const m = mp.opacity ?? 1.0;
         ov.opacityMult = (m ? (v / m) : 1);
-      }else if(k==="perspective"){
-        ov.perspectiveOffset = (v - (mp.perspective ?? 0.75));
-      }else if(k==="horizon"){
-        ov.horizonOffset = (v - (mp.horizon ?? 0.0));
+      }else if(k==="perspective" || k==="horizon"){
+        // Guard rail: perspective/horizon are scene-global. Even in "active" scope,
+        // changing them must affect the master (photo plane), not a small secondary zone.
+        const pMaster = master.material && master.material.params ? master.material.params : (master.material.params={});
+        pMaster[k] = v;
+        if(state.ai && state.ai.enabled!==false && master.material && master.material._ultraTuned){
+          if(k==="perspective") master.material._ultraTuned.perspective = true;
+          if(k==="horizon") master.material._ultraTuned.horizon = true;
+        }
+        sceneParamTouched = true;
       }else if(k==="blendMode"){
         ov.blendModeOverride = v;
       }else if(k==="opaqueFill"){
@@ -879,7 +889,12 @@ function applyChangeToTiling(change){
         p[k]=v;
       }
     }
-    // Apply effective params immediately.
+    if(sceneParamTouched){
+      // Recompute all linked zones from updated master.
+      syncLinkedZones();
+      return;
+    }
+    // Apply effective params immediately for this zone.
     recomputeLinkedZoneFromMaster(z, master);
   }
 
