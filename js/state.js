@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-		build: { version:"mvp-iter2.2.140-edit-scope-all-zones",ts:new Date().toISOString()},
+		build: { version:"mvp-iter2.2.141-zone-link-overrides",ts:new Date().toISOString()},
 	    api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -13,6 +13,7 @@ window.PhotoPaveState=(function(){
       // Z-C: editing scope for tiling/material controls
       // "active" = only active zone; "all" = all zones
       editScope:"active",
+      masterZoneId:null,
       activeZoneId:null,
       activeCutoutId:null,
       draggingPoint:null,
@@ -134,6 +135,21 @@ window.PhotoPaveState=(function(){
     closed:false,
     contour:[],
     cutouts:[],
+    // Z-D: per-zone linking to master tiling/params
+    linked:true,
+    baseParams:null,
+    overrides:{
+      // multiplicative/offset deltas relative to master when linked
+      scaleMult:1,
+      rotOffset:0,
+      opacityMult:1,
+      perspectiveOffset:0,
+      horizonOffset:0,
+      blendModeOverride:null,
+      opaqueFillOverride:null,
+      materialOverride:null,
+      shapeOverride:null
+    },
     material:{
       shapeId:state.catalog.activeShapeId||null,
       textureId:null,

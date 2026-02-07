@@ -91,10 +91,17 @@
   }
   function ensureActiveZone(){
     if(!state.zones.length){
-      const z=makeZone();state.zones.push(z);state.ui.activeZoneId=z.id;
+      const z=makeZone();
+      state.zones.push(z);
+      state.ui.activeZoneId=z.id;
+      // Z-D: first zone is master by default
+      state.ui.masterZoneId = z.id;
+      ensureZoneLinkFields(z);
     }else if(!state.ui.activeZoneId){
       state.ui.activeZoneId=state.zones[0].id;
     }
+    // Fix master id if missing
+    if(state.ui && !state.ui.masterZoneId && state.zones[0]) state.ui.masterZoneId = state.zones[0].id;
     // Ensure material params are migrated and mode-pointers are correct.
     normalizeAllZones();
   }
@@ -113,9 +120,11 @@
     // Z-B: Inherit master zone tiling/material parameters for the new zone.
     // Product intent: additional zones usually cover remaining fragments and must
     // keep the same world/perspective/scale to avoid "inversion" artifacts.
-    const master = (state.zones && state.zones.length) ? state.zones[0] : null;
+    const master = getMasterZone();
+    if(state.ui && !state.ui.masterZoneId && master) state.ui.masterZoneId = master.id;
 
     const z = makeZone();
+    ensureZoneLinkFields(z);
 
     if(master && master.material && z.material){
       try{
@@ -171,24 +180,61 @@
   }
 
   function renderZonesUI(){
-    const wrap=el("zonesList");wrap.innerHTML="";
-    for(const z of state.zones){
+    const wrap=el("zonesList");
+    wrap.innerHTML="";
+    const master = getMasterZone();
+    if(master && state.ui && !state.ui.masterZoneId) state.ui.masterZoneId = master.id;
+
+    for(const z of (state.zones||[])){
+      ensureZoneLinkFields(z);
+      const isActive = (z.id===state.ui.activeZoneId);
+      const isMaster = (master && z.id===master.id);
+      const hasMatOv = !!(z.overrides && z.overrides.materialOverride);
+      const linkText = isMaster ? "★" : (z.linked ? "🔗" : "⛓");
+      const linkTitle = isMaster ? "Мастер-зона" : (z.linked ? "Связана с мастер-зоной" : "Отвязана (свои настройки)");
+
       const div=document.createElement("div");
-      div.className="listItem"+(z.id===state.ui.activeZoneId?" listItem--active":"");
+      div.className="listItem"+(isActive?" listItem--active":"");
+      const title = escapeHtml(z.name)+(hasMatOv?" *":"");
+      const matLabel = z.material.textureId ? ("Материал: "+escapeHtml(z.material.textureId)) : "Материал: не выбран";
+
       div.innerHTML=`
         <div class="listItem__meta">
-          <div class="listItem__title">${escapeHtml(z.name)}</div>
-          <div class="listItem__sub">${z.material.textureId?("Материал: "+escapeHtml(z.material.textureId)):"Материал: не выбран"}</div>
+          <div class="listItem__title">${title}</div>
+          <div class="listItem__sub">${matLabel}</div>
         </div>
-        <div><label class="badge"><input type="checkbox" ${z.enabled?"checked":""}/> видно</label></div>`;
+        <div class="listItem__controls">
+          <button type="button" class="badge linkBadge" title="${escapeAttr(linkTitle)}" data-zone="${escapeAttr(z.id)}">${linkText}</button>
+          <label class="badge"><input type="checkbox" ${z.enabled?"checked":""}/> видно</label>
+        </div>`;
+
       div.addEventListener("click",(e)=>{
-        if(e.target && e.target.type==="checkbox") return;
+        const t=e.target;
+        if(t && (t.type==="checkbox" || (t.classList && t.classList.contains("linkBadge")))) return;
         pushHistory();
         state.ui.activeZoneId=z.id;
         state.ui.activeCutoutId=(z.cutouts&&z.cutouts[0])?z.cutouts[0].id:null;
-        renderZonesUI();syncSettingsUI();ED.render();
+        renderZonesUI();
+        syncSettingsUI();
+        ED.render();
       });
-      div.querySelector('input[type="checkbox"]').addEventListener("change",(e)=>{pushHistory();z.enabled=e.target.checked;ED.render();});
+
+      const chk = div.querySelector('input[type="checkbox"]');
+      if(chk) chk.addEventListener("change",(e)=>{pushHistory();z.enabled=e.target.checked;ED.render();});
+
+      const linkBtn = div.querySelector('.linkBadge');
+      if(linkBtn){
+        linkBtn.addEventListener("click",(e)=>{
+          e.stopPropagation();
+          if(isMaster) return;
+          pushHistory();
+          toggleZoneLink(z);
+          renderZonesUI();
+          syncSettingsUI();
+          ED.render();
+        });
+      }
+
       wrap.appendChild(div);
     }
     renderCutoutsUI();
@@ -598,22 +644,243 @@ async function handlePhotoFile(file){
     const z=S.getActiveZone();
     return z ? [z] : [];
   }
-  function applyChangeToTiling(change){
-    const targets=_targetsForScope();
-    if(!targets.length) return;
-    for(const z of targets){
-      if(!z) continue;
-      ensureZoneMaterialParams(z);
-      const p = z.material && z.material.params ? z.material.params : (z.material.params={});
-      for(const k in change){
-        p[k]=change[k];
+  
+
+  // Z-D: Linked zones (pro) — master zone parameters + per-zone overrides.
+  function _zClamp(v, lo, hi){ v=+v; if(!isFinite(v)) v=0; return Math.min(hi, Math.max(lo, v)); }
+  function _zClamp01(v){ return _zClamp(v, 0, 1); }
+
+  function ensureZoneLinkFields(z){
+    if(!z) return;
+    if(typeof z.linked !== 'boolean') z.linked = true;
+    if(!z.overrides) z.overrides = {
+      scaleMult:1, rotOffset:0, opacityMult:1,
+      perspectiveOffset:0, horizonOffset:0,
+      blendModeOverride:null, opaqueFillOverride:null,
+      materialOverride:null, shapeOverride:null
+    }
+
+  function resetZoneOverrides(z){
+    if(!z) return;
+    z.overrides = {
+      scaleMult:1, rotOffset:0, opacityMult:1,
+      perspectiveOffset:0, horizonOffset:0,
+      blendModeOverride:null, opaqueFillOverride:null,
+      materialOverride:null, shapeOverride:null
+    };
+  }
+
+  function toggleZoneLink(z){
+    if(!z) return;
+    const master = getMasterZone();
+    if(master && z.id===master.id) return; // master is always linked
+    ensureZoneLinkFields(z);
+    if(z.linked){
+      // unlink: snapshot current state so visuals stay identical
+      z.baseParams = getZoneParamsSnapshot(z);
+      z.linked = false;
+      resetZoneOverrides(z);
+    }else{
+      // relink: drop per-zone base, return to master+overrides
+      z.baseParams = null;
+      z.linked = true;
+      resetZoneOverrides(z);
+      syncLinkedZones();
+    }
+  }
+;
+    if(typeof z.baseParams === 'undefined') z.baseParams = null;
+  }
+
+  function getMasterZone(){
+    try{
+      const mid = state.ui && state.ui.masterZoneId;
+      if(mid){
+        const mz = (state.zones||[]).find(z=>z.id===mid);
+        if(mz) return mz;
       }
+    }catch(_){ }
+    return (state.zones && state.zones.length) ? state.zones[0] : null;
+  }
+
+  function getZoneParamsSnapshot(z){
+    if(!z || !z.material) return null;
+    return {
+      shapeId: z.material.shapeId ?? null,
+      textureId: z.material.textureId ?? null,
+      textureUrl: z.material.textureUrl ?? null,
+      maps: z.material.maps ? JSON.parse(JSON.stringify(z.material.maps)) : null,
+      pbrParams: z.material.pbrParams ? JSON.parse(JSON.stringify(z.material.pbrParams)) : null,
+      tileSizeM: z.material.tileSizeM ?? null,
+      params_base: z.material.params_base ? JSON.parse(JSON.stringify(z.material.params_base)) : null,
+      params_ultra: z.material.params_ultra ? JSON.parse(JSON.stringify(z.material.params_ultra)) : null,
+      _ultraTuned: z.material._ultraTuned ? JSON.parse(JSON.stringify(z.material._ultraTuned)) : null,
+    };
+  }
+
+  function applyZoneParamsSnapshot(z, snap){
+    if(!z || !z.material || !snap) return;
+    z.material.shapeId = snap.shapeId;
+    z.material.textureId = snap.textureId;
+    z.material.textureUrl = snap.textureUrl;
+    z.material.maps = snap.maps;
+    z.material.pbrParams = snap.pbrParams;
+    if(snap.tileSizeM!=null) z.material.tileSizeM = snap.tileSizeM;
+    if(snap.params_base) z.material.params_base = snap.params_base;
+    if(snap.params_ultra) z.material.params_ultra = snap.params_ultra;
+    if(snap._ultraTuned) z.material._ultraTuned = snap._ultraTuned;
+    ensureZoneMaterialParams(z);
+  }
+
+  function applyOverridesToParams(base, ov){
+    const b = base || {};
+    const o = ov || {};
+    const scale = (b.scale ?? 12.0) * (o.scaleMult ?? 1);
+    const rotation = (b.rotation ?? 0) + (o.rotOffset ?? 0);
+    const opacity = (b.opacity ?? 1.0) * (o.opacityMult ?? 1);
+    const perspective = _zClamp01((b.perspective ?? 0.75) + (o.perspectiveOffset ?? 0));
+    const horizon = _zClamp((b.horizon ?? 0.0) + (o.horizonOffset ?? 0), -1, 1);
+    return {
+      ...b,
+      scale: _zClamp(scale, 0.05, 200),
+      rotation,
+      opacity: _zClamp(opacity, 0, 1),
+      perspective,
+      horizon,
+      blendMode: (o.blendModeOverride ?? b.blendMode ?? 'source-over'),
+      opaqueFill: (o.opaqueFillOverride != null ? !!o.opaqueFillOverride : !!(b.opaqueFill))
+    };
+  }
+
+  function recomputeLinkedZoneFromMaster(zone, master){
+    if(!zone || !master) return;
+    ensureZoneLinkFields(zone);
+    ensureZoneMaterialParams(master);
+    ensureZoneMaterialParams(zone);
+
+    // Material override (local exception) — pro behavior
+    const ov = zone.overrides || {};
+    const baseShapeId = master.material.shapeId;
+    const baseMaterialSnap = null;
+
+    // Apply base params from master
+    try{
+      if(master.material.params_base && zone.material.params_base){
+        const base = applyOverridesToParams(master.material.params_base, ov);
+        zone.material.params_base = JSON.parse(JSON.stringify(base));
+      }
+      if(master.material.params_ultra && zone.material.params_ultra){
+        const ultra = applyOverridesToParams(master.material.params_ultra, ov);
+        zone.material.params_ultra = JSON.parse(JSON.stringify(ultra));
+      }
+      ensureZoneMaterialParams(zone);
+      // Mirror base material by default
+      if(!ov.shapeOverride) zone.material.shapeId = master.material.shapeId;
+      if(!ov.materialOverride){
+        zone.material.textureId = master.material.textureId;
+        zone.material.textureUrl = master.material.textureUrl;
+        zone.material.maps = master.material.maps ? JSON.parse(JSON.stringify(master.material.maps)) : null;
+        zone.material.pbrParams = master.material.pbrParams ? JSON.parse(JSON.stringify(master.material.pbrParams)) : null;
+        if(master.material.tileSizeM!=null) zone.material.tileSizeM = master.material.tileSizeM;
+      }else{
+        // materialOverride stores only material selection (not tiling params).
+        const mo = ov.materialOverride;
+        if(mo){
+          if(mo.shapeId!=null) zone.material.shapeId = mo.shapeId;
+          zone.material.textureId = mo.textureId ?? null;
+          zone.material.textureUrl = mo.textureUrl ?? null;
+          zone.material.maps = mo.maps ? JSON.parse(JSON.stringify(mo.maps)) : null;
+          zone.material.pbrParams = mo.pbrParams ? JSON.parse(JSON.stringify(mo.pbrParams)) : null;
+          if(mo.tileSizeM!=null) zone.material.tileSizeM = mo.tileSizeM;
+        }
+      }
+      if(ov.shapeOverride) zone.material.shapeId = ov.shapeOverride;
+    }catch(e){
+      console.warn('[Z-D] recompute linked zone failed', e);
+    }
+  }
+
+  function syncLinkedZones(){
+    const master = getMasterZone();
+    if(!master) return;
+    // Ensure master id is fixed
+    if(state.ui && !state.ui.masterZoneId) state.ui.masterZoneId = master.id;
+    for(const z of (state.zones||[])){
+      if(!z || z.id===master.id) continue;
+      ensureZoneLinkFields(z);
+      if(z.linked) recomputeLinkedZoneFromMaster(z, master);
+    }
+  }
+
+function applyChangeToTiling(change){
+    const scope=_getEditScope();
+    const master = getMasterZone();
+    if(scope==="all"){
+      if(!master) return;
+      ensureZoneMaterialParams(master);
+      ensureZoneLinkFields(master);
+      // Apply change to master active params
+      const p = master.material && master.material.params ? master.material.params : (master.material.params={});
+      for(const k in change){ p[k]=change[k]; }
       // Keep Ultra manual tuning flags consistent when user tweaks horizon/perspective.
+      if(state.ai && state.ai.enabled!==false && master.material){
+        if(master.material._ultraTuned && ("perspective" in change)) master.material._ultraTuned.perspective = true;
+        if(master.material._ultraTuned && ("horizon" in change)) master.material._ultraTuned.horizon = true;
+      }
+      // Recompute all linked zones from master + overrides.
+      syncLinkedZones();
+      return;
+    }
+
+    // scope: active
+    const z = S.getActiveZone();
+    if(!z) return;
+    ensureZoneMaterialParams(z);
+    ensureZoneLinkFields(z);
+
+    // If this is the master zone (or unlinked), write directly.
+    if(!master || z.id===master.id || z.linked===false){
+      const p = z.material && z.material.params ? z.material.params : (z.material.params={});
+      for(const k in change){ p[k]=change[k]; }
       if(state.ai && state.ai.enabled!==false && z.material){
         if(z.material._ultraTuned && ("perspective" in change)) z.material._ultraTuned.perspective = true;
         if(z.material._ultraTuned && ("horizon" in change)) z.material._ultraTuned.horizon = true;
       }
+      // If master changed directly, sync linked zones.
+      if(master && z.id===master.id) syncLinkedZones();
+      return;
     }
+
+    // Linked non-master zone: store local deltas (overrides) relative to master's active params.
+    ensureZoneMaterialParams(master);
+    const mp = master.material && master.material.params ? master.material.params : {};
+    const ov = z.overrides;
+    for(const k in change){
+      const v = change[k];
+      if(k==="scale"){
+        const m = mp.scale ?? 12.0;
+        ov.scaleMult = (m ? (v / m) : 1);
+      }else if(k==="rotation"){
+        ov.rotOffset = (v - (mp.rotation ?? 0));
+      }else if(k==="opacity"){
+        const m = mp.opacity ?? 1.0;
+        ov.opacityMult = (m ? (v / m) : 1);
+      }else if(k==="perspective"){
+        ov.perspectiveOffset = (v - (mp.perspective ?? 0.75));
+      }else if(k==="horizon"){
+        ov.horizonOffset = (v - (mp.horizon ?? 0.0));
+      }else if(k==="blendMode"){
+        ov.blendModeOverride = v;
+      }else if(k==="opaqueFill"){
+        ov.opaqueFillOverride = !!v;
+      }else{
+        // Unknown key: write directly to active params to preserve backward compatibility.
+        const p = z.material && z.material.params ? z.material.params : (z.material.params={});
+        p[k]=v;
+      }
+    }
+    // Apply effective params immediately.
+    recomputeLinkedZoneFromMaster(z, master);
   }
 
   // Z-C guard rail: single entry point for PBR parameter changes (reserved for future UI controls).
@@ -630,28 +897,78 @@ async function handlePhotoFile(file){
     }
   }
   function applyMaterialChange(shapeId, tex){
-    const targets=_targetsForScope();
-    if(!targets.length) return;
-    for(const z of targets){
-      if(!z) continue;
-      z.material.shapeId = shapeId || z.material.shapeId;
+    const scope=_getEditScope();
+    const master = getMasterZone();
+
+    if(scope==="all"){
+      if(!master) return;
+      ensureZoneMaterialParams(master);
+      // Apply to master as before
+      master.material.shapeId = shapeId || master.material.shapeId;
       if(tex===null){
-        // Shape change: reset texture selection
-        z.material.textureId = null;
-        z.material.textureUrl = null;
-        z.material.maps = null;
-        z.material.pbrParams = null;
+        master.material.textureId = null;
+        master.material.textureUrl = null;
+        master.material.maps = null;
+        master.material.pbrParams = null;
       }else if(tex){
-        z.material.textureId = tex.textureId;
-        z.material.textureUrl = tex.url;
+        master.material.textureId = tex.textureId;
+        master.material.textureUrl = tex.url;
         if(tex.maps){
-          z.material.maps = {...tex.maps};
-          if(tex.tileSizeM!=null) z.material.tileSizeM = tex.tileSizeM;
+          master.material.maps = {...tex.maps};
+          if(tex.tileSizeM!=null) master.material.tileSizeM = tex.tileSizeM;
         }else{
-          z.material.maps = {albedo: tex.url};
+          master.material.maps = {albedo: tex.url};
         }
-        z.material.pbrParams = (tex.params ? {...tex.params} : null);
+        master.material.pbrParams = (tex.params ? {...tex.params} : null);
       }
+      // Recompute linked zones (keeps their local materialOverride if present)
+      syncLinkedZones();
+      return;
+    }
+
+    // scope: active
+    const z = S.getActiveZone();
+    if(!z) return;
+    ensureZoneLinkFields(z);
+    ensureZoneMaterialParams(z);
+
+    if(z.linked && master && z.id!==master.id){
+      // Store local material override (light payload).
+      if(tex===null){
+        z.overrides.shapeOverride = shapeId || z.overrides.shapeOverride;
+        z.overrides.materialOverride = null;
+      }else if(tex){
+        z.overrides.shapeOverride = shapeId || z.overrides.shapeOverride;
+        z.overrides.materialOverride = {
+          shapeId: shapeId || master.material.shapeId || z.material.shapeId,
+          textureId: tex.textureId,
+          textureUrl: tex.url,
+          maps: tex.maps ? {...tex.maps} : {albedo: tex.url},
+          pbrParams: (tex.params ? {...tex.params} : null),
+          tileSizeM: (tex.tileSizeM!=null ? tex.tileSizeM : null)
+        };
+      }
+      recomputeLinkedZoneFromMaster(z, master);
+      return;
+    }
+
+    // Unlinked or master: apply directly
+    z.material.shapeId = shapeId || z.material.shapeId;
+    if(tex===null){
+      z.material.textureId = null;
+      z.material.textureUrl = null;
+      z.material.maps = null;
+      z.material.pbrParams = null;
+    }else if(tex){
+      z.material.textureId = tex.textureId;
+      z.material.textureUrl = tex.url;
+      if(tex.maps){
+        z.material.maps = {...tex.maps};
+        if(tex.tileSizeM!=null) z.material.tileSizeM = tex.tileSizeM;
+      }else{
+        z.material.maps = {albedo: tex.url};
+      }
+      z.material.pbrParams = (tex.params ? {...tex.params} : null);
     }
   }
 
