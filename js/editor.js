@@ -787,6 +787,24 @@ function polyPath(points){
         if(isCut&&state.ui.mode==="cutout"){for(let i=0;i<c.polygon.length;i++) drawPoint(c.polygon[i],i,true,"rgba(255,77,79,1)");}
       }
     }
+
+    // Z-S: Split draft overlay (subzone selection inside master zone).
+    // Drawn when state.ui.mode === "split". Uses the same visual language as active contour.
+    try{
+      if(state.ui && state.ui.mode === "split" && state.ui.splitDraft && state.ui.splitDraft.points && state.ui.splitDraft.points.length){
+        const pts = state.ui.splitDraft.points;
+        ctx.strokeStyle = "rgba(0,229,255,0.95)";
+        ctx.lineWidth = 2.0*dpr;
+        ctx.lineJoin='round';
+        ctx.lineCap='round';
+        ctx.beginPath();
+        const p0=imgToCanvasPt(pts[0]);ctx.moveTo(p0.x,p0.y);
+        for(let i=1;i<pts.length;i++){const p=imgToCanvasPt(pts[i]);ctx.lineTo(p.x,p.y);} 
+        if(state.ui.splitDraft.closed && pts.length>=3){ ctx.closePath(); ctx.fillStyle="rgba(0,229,255,0.06)"; ctx.fill(); }
+        ctx.stroke();
+        for(let i=0;i<pts.length;i++) drawPoint(pts[i],i,true);
+      }
+    }catch(_){ }
     ctx.restore();
   }
 
@@ -800,12 +818,21 @@ function polyPath(points){
     if(state.ui.mode==="contour"){
       return {kind:"contour", points:zone.contour, closed:zone.closed, zone};
     }
+    if(state.ui.mode==="split"){
+      const d = state.ui && state.ui.splitDraft;
+      if(!d || !d.points) return null;
+      return {kind:"split", points:d.points, closed:!!d.closed, draft:d};
+    }
     if(state.ui.mode==="cutout"){
       const cut=getActiveCutout(zone);
       if(!cut) return null;
       return {kind:"cutout", points:cut.polygon, closed:cut.closed, zone, cutout:cut};
     }
     return null;
+  }
+
+  function _dispatchSplitClosed(){
+    try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
   }
 
   function drawLivePreview(){
@@ -983,6 +1010,7 @@ function polyPath(points){
   state.ui.pointerCaptureId = ev.pointerId;
   const pt=eventToImgPt(ev);
   const zone=getActiveZone();const cut=getActiveCutout(zone);
+  const splitDraft = (state.ui && state.ui.splitDraft) ? state.ui.splitDraft : null;
 
   // Patch 4: Interactive occlusion pick mode (premium)
   // When enabled, a click on the photo selects an object to be excluded from tiling.
@@ -1101,6 +1129,15 @@ function polyPath(points){
       return;
     }
     if(idx!==null)target={kind:"cutout",idx};
+  }else if(state.ui.mode==="split" && splitDraft){
+    const idx=findNearest(splitDraft.points,pt);
+    if(idx===0 && !splitDraft.closed && splitDraft.points.length>=3 && isCloseToFirst(splitDraft.points, pt)){
+      pendingClose={kind:"split", start:eventToCanvasPx(ev)};
+      state.ui.selectedPoint={kind:"split", idx:0};
+      render();
+      return;
+    }
+    if(idx!==null)target={kind:"split",idx};
   }
 
   if(target){
@@ -1148,6 +1185,28 @@ if(state.ui.mode==="contour"&&zone){
     return;
   }
 
+  if(state.ui.mode==="split" && splitDraft){
+    if(splitDraft.closed) return;
+    if(isCloseToFirst(splitDraft.points,pt)){
+      pushHistory();
+      splitDraft.closed = true;
+      try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
+      render();
+      return;
+    }
+    pushHistory();
+    splitDraft.points.push(pt);
+    // Mobile-friendly auto-close
+    if(isCloseToFirst(splitDraft.points, splitDraft.points[splitDraft.points.length-1], SNAP_CLOSE_CSS*1.3)){
+      splitDraft.points.pop();
+      splitDraft.closed = true;
+      try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
+    }
+    splitDraft.closed = !!splitDraft.closed;
+    render();
+    return;
+  }
+
   if(state.ui.mode==="cutout"&&zone&&cut){
     if(cut.closed) return;
     if(isCloseToFirst(cut.polygon,pt)){
@@ -1159,6 +1218,29 @@ if(state.ui.mode==="contour"&&zone){
     pushHistory();
     cut.polygon.push(pt);
     cut.closed=false;
+    render();
+    return;
+  }
+
+  if(state.ui.mode==="split" && splitDraft){
+    if(splitDraft.closed) return;
+    if(isCloseToFirst(splitDraft.points,pt)){
+      pushHistory();
+      splitDraft.closed=true;
+      // Notify app layer: split draft is closed and ready to be applied.
+      try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
+      render();
+      return;
+    }
+    pushHistory();
+    splitDraft.points.push(pt);
+    // Mobile-friendly auto-close
+    if(isCloseToFirst(splitDraft.points, splitDraft.points[splitDraft.points.length-1], SNAP_CLOSE_CSS*1.3)){
+      splitDraft.points.pop();
+      splitDraft.closed=true;
+      try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
+    }
+    splitDraft.closed = !!splitDraft.closed;
     render();
     return;
   }
@@ -1222,6 +1304,7 @@ if(state.ui.mode==="contour"&&zone){
         const zone=getActiveZone();if(!zone)return;
         if(drag.kind==="contour"){zone.contour[drag.idx]=pt;}
         else if(drag.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return;cut.polygon[drag.idx]=pt;}
+        else if(drag.kind==="split"){if(state.ui && state.ui.splitDraft && state.ui.splitDraft.points){ state.ui.splitDraft.points[drag.idx]=pt; }}
       }
       // update hover for magnet/label while dragging last point
       hoverCanvas = eventToCanvasPx(ev2);
@@ -1272,6 +1355,7 @@ if(state.ui.mode==="contour"&&zone){
       pushHistory();
       if(pendingClose.kind==="contour"){ const z=getActiveZone(); if(z) z.closed=true; }
       else if(pendingClose.kind==="cutout"){ const z=getActiveZone(); if(z){ const c=getActiveCutout(z); if(c) c.closed=true; } }
+      else if(pendingClose.kind==="split"){ if(state.ui && state.ui.splitDraft){ state.ui.splitDraft.closed=true; try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ } } }
       pendingClose=null;
     }
     // If user dragged the last point near the first point, auto-close.
@@ -1307,6 +1391,7 @@ if(state.ui.mode==="contour"&&zone){
       const zone=getActiveZone();if(!zone)return false;
       if(sel.kind==="contour"){ zone.contour.splice(sel.idx,1); if(zone.contour.length<3) zone.closed=false; }
       else if(sel.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return false;cut.polygon.splice(sel.idx,1); if(cut.polygon.length<3) cut.closed=false;}
+      else if(sel.kind==="split"){ if(state.ui && state.ui.splitDraft && state.ui.splitDraft.points){ state.ui.splitDraft.points.splice(sel.idx,1); if(state.ui.splitDraft.points.length<3) state.ui.splitDraft.closed=false; } }
     }
     state.ui.selectedPoint=null;render();return true;
   }
@@ -1327,6 +1412,7 @@ if(state.ui.mode==="contour"&&zone){
       plane:"Контур: ставьте точки по краю зоны и замкните к первой точке (магнит). Плоскость определяется автоматически. Точки можно двигать.",
       contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точке. После замыкания текстура начнёт применяться.",
       cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",
+      split:"Разделение: обведите под‑участок внутри зоны и замкните — участок станет новой зоной, а в основной зоне будет вырез.",
       view:"Просмотр: меняйте материалы, сохраняйте результат.",
       calib:"3D‑калибровка: выберите кнопку линии (A1/A2/B1/B2), затем поставьте 2 точки на фото. A — вдоль укладки (в глубину), B — поперёк. Shift+клик очищает текущую линию."
     };

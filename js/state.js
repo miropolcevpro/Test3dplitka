@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-		build: { version:"mvp-iter2.2.143-scene_plane_from_master",ts:new Date().toISOString()},
+		build: { version:"mvp-iter2.2.145-split-subzone",ts:new Date().toISOString()},
 	    api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -167,7 +167,16 @@ window.PhotoPaveState=(function(){
 
   const history=[],future=[],HISTORY_LIMIT=60;
   const snapshot=()=>JSON.stringify({
-    ui:{activeStep:state.ui.activeStep,mode:state.ui.mode,activeZoneId:state.ui.activeZoneId,activeCutoutId:state.ui.activeCutoutId},
+    ui:{
+      activeStep:state.ui.activeStep,
+      mode:state.ui.mode,
+      activeZoneId:state.ui.activeZoneId,
+      activeCutoutId:state.ui.activeCutoutId,
+      editScope:state.ui.editScope,
+      masterZoneId:state.ui.masterZoneId,
+      // Z-S: split draft is part of user workflow; keep it undoable.
+      splitDraft:state.ui.splitDraft || null
+    },
     floorPlane:state.floorPlane,
     zones:state.zones,
     catalog:{activeShapeId:state.catalog.activeShapeId}
@@ -179,6 +188,9 @@ window.PhotoPaveState=(function(){
     state.ui.mode=s.ui.mode;
     state.ui.activeZoneId=s.ui.activeZoneId;
     state.ui.activeCutoutId=s.ui.activeCutoutId;
+    state.ui.editScope=s.ui.editScope;
+    state.ui.masterZoneId=s.ui.masterZoneId;
+    state.ui.splitDraft=s.ui.splitDraft||null;
     state.floorPlane=s.floorPlane;
     state.zones=s.zones;
     state.catalog.activeShapeId=s.catalog.activeShapeId;

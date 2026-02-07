@@ -16,7 +16,9 @@
   //
   // We keep WebGL pipeline unchanged: no UV warp, no anisotropic scaling, no skew.
   // Only a UI remap and a slightly better default.
-  const DEFAULT_MAT_PARAMS={scale:12.0,rotation:0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.18};
+  // Material params (active set: base/ultra). Keep defaults stable and backwards-compatible.
+  // offsetU/offsetV are tile-space phase shifts used to align seams between zones.
+  const DEFAULT_MAT_PARAMS={scale:12.0,rotation:0,offsetU:0.0,offsetV:0.0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.18};
 
   // Slider mapping: ui in [-1..1] -> horizon internal in [H_UP_MIN..H_DOWN_MAX], centered at H_NEUTRAL.
   // - Negative UI range is compressed (less "lift up")
@@ -157,6 +159,116 @@
 
     renderZonesUI();
     setActiveStep("zones");
+    ED.setMode("contour");
+    syncCloseButtonUI();
+    ED.render();
+  }
+
+  // Z-S: Split subzone inside master zone (safe impl: cutout + new zone).
+  // Principle: one scene plane per photo, zones are masks. Splitting should not re-infer perspective.
+  function updateSplitZoneBtnUI(){
+    const b = document.getElementById("splitZoneBtn");
+    if(!b) return;
+    const isSplit = (state.ui && state.ui.mode === "split");
+    b.textContent = isSplit ? "Отменить разделение" : "Разделить зону";
+  }
+
+  function startOrCancelSplit(){
+    const master = getMasterZone();
+    if(!master){ API.setStatus("Нет зоны для разделения"); return; }
+    // Toggle off if already in split mode
+    if(state.ui && state.ui.mode === "split"){
+      pushHistory();
+      state.ui.splitDraft = null;
+      state.ui.mode = "contour";
+      if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
+      setActiveStep("zones");
+      ED.setMode("contour");
+      updateSplitZoneBtnUI();
+      syncCloseButtonUI();
+      ED.render();
+      return;
+    }
+    // Guard: master must be closed to support reliable split workflow.
+    if(!master.closed || (master.contour||[]).length<3){
+      API.setStatus("Сначала замкните контур основной (мастер) зоны");
+      return;
+    }
+
+    pushHistory();
+    state.ui.splitDraft = {points:[], closed:false, parentZoneId: master.id};
+    state.ui.activeCutoutId = null;
+    state.ui.showContour = true;
+    updateContourToggleBtn();
+    if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
+    setActiveStep("zones");
+    state.ui.mode = "split";
+    ED.setMode("split");
+    updateSplitZoneBtnUI();
+    syncCloseButtonUI();
+    ED.render();
+  }
+
+  function _cloneZoneMaterialFromMaster(z, master){
+    if(!master || !master.material || !z || !z.material) return;
+    try{
+      z.material.shapeId   = master.material.shapeId ?? z.material.shapeId;
+      z.material.textureId = master.material.textureId ?? z.material.textureId;
+      z.material.textureUrl= master.material.textureUrl ?? z.material.textureUrl;
+      if(master.material.maps) z.material.maps = JSON.parse(JSON.stringify(master.material.maps));
+      if(master.material.pbrParams) z.material.pbrParams = JSON.parse(JSON.stringify(master.material.pbrParams));
+      if(master.material.tileSizeM!=null) z.material.tileSizeM = master.material.tileSizeM;
+      if(master.material.params_base) z.material.params_base = JSON.parse(JSON.stringify(master.material.params_base));
+      if(master.material.params_ultra) z.material.params_ultra = JSON.parse(JSON.stringify(master.material.params_ultra));
+      if(master.material._ultraTuned) z.material._ultraTuned = JSON.parse(JSON.stringify(master.material._ultraTuned));
+      ensureZoneMaterialParams(z);
+    }catch(_){ }
+  }
+
+  function applySplitDraft(){
+    const d = state.ui && state.ui.splitDraft;
+    if(!d || !d.points || d.points.length<3){
+      API.setStatus("Контур подзоны слишком короткий");
+      return;
+    }
+    const parent = (state.zones||[]).find(z=>z.id===d.parentZoneId) || getMasterZone();
+    if(!parent){ API.setStatus("Не найдена мастер-зона для разделения"); return; }
+
+    pushHistory();
+
+    // 1) Add cutout to parent zone (subtract subzone area)
+    const cut = makeCutout((parent.cutouts||[]).length+1);
+    cut.polygon = JSON.parse(JSON.stringify(d.points));
+    cut.closed = true;
+    parent.cutouts = parent.cutouts || [];
+    parent.cutouts.push(cut);
+
+    // 2) Create new zone with the same contour (new material can be chosen)
+    const master = getMasterZone();
+    const z = makeZone();
+    ensureZoneLinkFields(z);
+    z.contour = JSON.parse(JSON.stringify(d.points));
+    z.closed = true;
+    z.cutouts = [];
+    // New zones are linked by default to keep continuity
+    z.linked = true;
+    z.baseParams = null;
+    resetZoneOverrides(z);
+    _cloneZoneMaterialFromMaster(z, master);
+
+    state.zones.push(z);
+    state.ui.activeZoneId = z.id;
+    state.ui.activeCutoutId = null;
+
+    // 3) Exit split mode
+    state.ui.splitDraft = null;
+    state.ui.mode = "contour";
+    updateSplitZoneBtnUI();
+
+    renderZonesUI();
+    syncSettingsUI();
+    setActiveStep("zones");
+    if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
     ED.setMode("contour");
     syncCloseButtonUI();
     ED.render();
@@ -624,6 +736,25 @@ async function handlePhotoFile(file){
 			z.material.params.scale = parseFloat(sr.value);
 		}
     el("rotRange").value=z.material.params.rotation??0;
+    // Z-E: seam alignment offsets (tile-space phase shifts)
+    {
+      const u = el("offsetURange");
+      if(u){
+        const v = (z.material.params.offsetU ?? 0.0);
+        const mn = parseFloat(u.min||"-9999");
+        const mx = parseFloat(u.max||"9999");
+        u.value = Math.min(mx, Math.max(mn, +v));
+        z.material.params.offsetU = parseFloat(u.value);
+      }
+      const vEl = el("offsetVRange");
+      if(vEl){
+        const v = (z.material.params.offsetV ?? 0.0);
+        const mn = parseFloat(vEl.min||"-9999");
+        const mx = parseFloat(vEl.max||"9999");
+        vEl.value = Math.min(mx, Math.max(mn, +v));
+        z.material.params.offsetV = parseFloat(vEl.value);
+      }
+    }
     // Defaults tuned for visibility; users can lower opacity or switch to Multiply.
     el("opacityRange").value=z.material.params.opacity??1.0;
     const oc=el("opaqueFillChk"); if(oc) oc.checked=!!(z.material.params.opaqueFill);
@@ -654,7 +785,7 @@ async function handlePhotoFile(file){
     if(!z) return;
     if(typeof z.linked !== 'boolean') z.linked = true;
     if(!z.overrides) z.overrides = {
-      scaleMult:1, rotOffset:0, opacityMult:1,
+      scaleMult:1, rotOffset:0, offsetU:0, offsetV:0, opacityMult:1,
       perspectiveOffset:0, horizonOffset:0,
       blendModeOverride:null, opaqueFillOverride:null,
       materialOverride:null, shapeOverride:null
@@ -665,7 +796,7 @@ async function handlePhotoFile(file){
   function resetZoneOverrides(z){
     if(!z) return;
     z.overrides = {
-      scaleMult:1, rotOffset:0, opacityMult:1,
+      scaleMult:1, rotOffset:0, offsetU:0, offsetV:0, opacityMult:1,
       perspectiveOffset:0, horizonOffset:0,
       blendModeOverride:null, opaqueFillOverride:null,
       materialOverride:null, shapeOverride:null
@@ -737,6 +868,8 @@ async function handlePhotoFile(file){
     const o = ov || {};
     const scale = (b.scale ?? 12.0) * (o.scaleMult ?? 1);
     const rotation = (b.rotation ?? 0) + (o.rotOffset ?? 0);
+    const offsetU = (b.offsetU ?? 0.0) + (o.offsetU ?? 0.0);
+    const offsetV = (b.offsetV ?? 0.0) + (o.offsetV ?? 0.0);
     const opacity = (b.opacity ?? 1.0) * (o.opacityMult ?? 1);
     const perspective = _zClamp01((b.perspective ?? 0.75) + (o.perspectiveOffset ?? 0));
     const horizon = _zClamp((b.horizon ?? 0.0) + (o.horizonOffset ?? 0), -1, 1);
@@ -744,6 +877,8 @@ async function handlePhotoFile(file){
       ...b,
       scale: _zClamp(scale, 0.05, 200),
       rotation,
+      offsetU: _zClamp(offsetU, -50, 50),
+      offsetV: _zClamp(offsetV, -50, 50),
       opacity: _zClamp(opacity, 0, 1),
       perspective,
       horizon,
@@ -866,6 +1001,10 @@ function applyChangeToTiling(change){
         ov.scaleMult = (m ? (v / m) : 1);
       }else if(k==="rotation"){
         ov.rotOffset = (v - (mp.rotation ?? 0));
+      }else if(k==="offsetU"){
+        ov.offsetU = (v - (mp.offsetU ?? 0.0));
+      }else if(k==="offsetV"){
+        ov.offsetV = (v - (mp.offsetV ?? 0.0));
       }else if(k==="opacity"){
         const m = mp.opacity ?? 1.0;
         ov.opacityMult = (m ? (v / m) : 1);
@@ -991,6 +1130,7 @@ function applyChangeToTiling(change){
     const btn=el("closePolyBtn");
     if(!btn) return;
     if(state.ui.mode==="cutout") btn.textContent="Замкнуть вырез";
+    else if(state.ui.mode==="split") btn.textContent="Замкнуть подзону";
     else btn.textContent="Замкнуть контур";
   }
 
@@ -2081,6 +2221,14 @@ if(calib3dToggleLinesBtn){
         const z=S.getActiveZone();
         if(!z) return;
         // Explicit close helps on mobile, where tapping the first point may be finicky.
+        if(state.ui.mode==="split"){
+          const d = state.ui && state.ui.splitDraft;
+          if(!d || d.closed || (d.points||[]).length<3) return;
+          pushHistory();
+          d.closed = true;
+          try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
+          return;
+        }
         if(state.ui.mode==="cutout"){
           const c=S.getActiveCutout(z);
           if(!c || c.closed || (c.polygon||[]).length<3) return;
@@ -2116,6 +2264,21 @@ if(calib3dToggleLinesBtn){
     });
 
     el("addZoneBtn").addEventListener("click",()=>{ addZoneAndArmContour(); });
+
+    const splitBtn = document.getElementById("splitZoneBtn");
+    if(splitBtn){
+      splitBtn.addEventListener("click",()=>{ startOrCancelSplit(); });
+    }
+
+    // Listen for split draft completion from the editor.
+    window.addEventListener("pp:splitClosed",()=>{
+      // Apply only if we are in split mode and there is a draft.
+      try{
+        if(state.ui && state.ui.mode==="split" && state.ui.splitDraft && state.ui.splitDraft.closed){
+          applySplitDraft();
+        }
+      }catch(e){ console.warn(e); }
+    });
     el("dupZoneBtn").addEventListener("click",()=>{
       const z=S.getActiveZone();if(!z)return;pushHistory();
       const copy=JSON.parse(JSON.stringify(z));
@@ -2159,6 +2322,14 @@ if(calib3dToggleLinesBtn){
 		ED.render();
 	});
     el("rotRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({rotation:parseFloat(el("rotRange").value)});ED.render();});
+    const offU = el("offsetURange");
+    if(offU){
+      offU.addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({offsetU:parseFloat(el("offsetURange").value)});ED.render();});
+    }
+    const offV = el("offsetVRange");
+    if(offV){
+      offV.addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({offsetV:parseFloat(el("offsetVRange").value)});ED.render();});
+    }
     el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({opacity:parseFloat(el("opacityRange").value)});ED.render();});
     const oc=el("opaqueFillChk");
     if(oc){
@@ -2316,6 +2487,7 @@ el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
       renderShapesUI();
       await loadTexturesForActiveShape();
       renderZonesUI();
+      updateSplitZoneBtnUI();
       syncSettingsUI();
       await ED.render();
       API.setStatus("Готово");
@@ -2323,6 +2495,7 @@ el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
       console.error(e);
       API.setStatus("Ошибка инициализации API (см. консоль)");
       renderZonesUI();
+      updateSplitZoneBtnUI();
       await ED.render();
     }
   }
