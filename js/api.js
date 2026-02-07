@@ -222,6 +222,7 @@ function normalizePaletteTextures(pal, shapeId){
   const s3Url=state.api.storageBase.replace(/\/$/,"")+"/palettes/"+encodeURIComponent(shapeId)+".json";
   const apiUrl=state.api.apiBase+"/api/palettes/"+encodeURIComponent(shapeId);
   let pal=null;
+  let eS3=null;
   try{
     // Avoid console noise on missing palette keys: HEAD-check first.
     // NOTE: some proxies/buckets may block HEAD via CORS while allowing GET.
@@ -229,7 +230,8 @@ function normalizePaletteTextures(pal, shapeId){
     const has = await _headExists(s3Url);
     if(has === false) throw new Error("palette_missing");
     pal = await fetchJson(s3Url);
-  }catch(eS3){
+  }catch(e){
+    eS3 = e;
     // Optional gateway fallback (often returns 401 missing_token). Disabled by default.
     if(state.api && state.api.allowApiPalette){
       try{ pal=await fetchJson(apiUrl); }
