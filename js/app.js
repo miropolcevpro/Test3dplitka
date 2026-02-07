@@ -84,13 +84,154 @@
     b.textContent = isContourShown() ? "Скрыть контур" : "Показать контур";
   }
 
+  // UX-P2: show seam offset controls only when there are 2+ участков (zones).
+  function updateOffsetControlsVisibility(){
+    const many = ((state.zones||[]).length > 1);
+    const u = el("offsetUField");
+    const v = el("offsetVField");
+    const step = el("seamStepField");
+    if(u) u.style.display = many ? "" : "none";
+    if(v) v.style.display = many ? "" : "none";
+    if(step) step.style.display = many ? "" : "none";
+  }
+
+  // UX-P2: Basic/Advanced settings toggle (persisted).
+  const _ADV_KEY = "pp_adv_open";
+
+  // Premium-P3: seam nudge step (in tiles). Persisted.
+  const _SEAM_STEP_KEY = "pp_seam_step_v1";
+  function _getSeamStepStored(){
+    try{
+      const v = parseFloat(localStorage.getItem(_SEAM_STEP_KEY)||"0.25");
+      if(isFinite(v) && v>0) return v;
+    }catch(e){}
+    return 0.25;
+  }
+  function _setSeamStepStored(v){
+    try{ localStorage.setItem(_SEAM_STEP_KEY, String(v)); }catch(e){}
+  }
+  function getSeamStep(){
+    const sel = el("seamStepSel");
+    let v = sel && sel.value ? parseFloat(sel.value) : _getSeamStepStored();
+    if(!isFinite(v) || v<=0) v = 0.25;
+    return v;
+  }
+  function initSeamStepUI(){
+    const sel = el("seamStepSel");
+    if(!sel) return;
+    const v = _getSeamStepStored();
+    sel.value = String(v);
+    sel.addEventListener("change",()=>{
+      const nv = parseFloat(sel.value);
+      if(isFinite(nv) && nv>0) _setSeamStepStored(nv);
+    });
+  }
+  function setAdvancedOpen(open){
+    const adv = el("settingsAdvanced");
+    const btn = el("toggleAdvancedBtn");
+    if(!adv) return;
+    if(open){
+      adv.hidden = false;
+      if(btn) btn.textContent = "Скрыть дополнительные";
+      try{ localStorage.setItem(_ADV_KEY, "1"); }catch(e){}
+    }else{
+      adv.hidden = true;
+      if(btn) btn.textContent = "Дополнительно";
+      try{ localStorage.setItem(_ADV_KEY, "0"); }catch(e){}
+    }
+  }
+  function initAdvancedToggle(){
+    const btn = el("toggleAdvancedBtn");
+    const adv = el("settingsAdvanced");
+    if(!btn || !adv) return;
+    let open = false;
+    try{ open = (localStorage.getItem(_ADV_KEY) === "1"); }catch(e){}
+    setAdvancedOpen(open);
+    btn.addEventListener("click", ()=>{
+      setAdvancedOpen(!!adv.hidden);
+    });
+  }
+
+
 
 
   function setBuildInfo(){el("buildInfo").textContent=`${state.build.version} • ${state.build.ts}`;}
-  function setActiveStep(step){
+  
+  // UX-P1: show user what is being edited (active segment + scope + mode)
+  function _zoneIndexById(id){
+    const arr = state.zones || [];
+    const i = arr.findIndex(z=>z.id===id);
+    return i>=0 ? (i+1) : null;
+  }
+  function _modeLabel(m){
+    if(m==="contour") return "Контур";
+    if(m==="cutout") return "Вырез";
+    if(m==="split")  return "Выделение участка";
+    if(m==="view")   return "Просмотр";
+    return "Редактирование";
+  }
+  function updateUxStatus(){
+    const elx = document.getElementById("uxStatus");
+    if(!elx) return;
+    const ui = state.ui || {};
+    const z = getActiveZone ? getActiveZone() : null;
+    const idx = z ? _zoneIndexById(z.id) : null;
+    const isMaster = !!(z && ui.masterZoneId && z.id===ui.masterZoneId);
+    const name = idx ? `Участок ${idx}` : "—";
+    const scope = (ui.editScope==="all") ? "Все участки" : "Этот участок";
+    const mode = _modeLabel(ui.mode);
+    // Show concise line; do not expose internal ids.
+    elx.textContent = `Редактируете: ${isMaster ? "★ " : ""}${name}  •  Режим: ${mode}  •  Изменять: ${scope}`;
+  }
+
+
+  // UX-P3: Guided flow helpers (non-blocking, no impact on render/export)
+  function setUxHint(msg, timeoutMs){
+    try{
+      const h = document.getElementById("uxHint");
+      if(!h) return;
+      h.textContent = msg || "";
+      if(timeoutMs){
+        clearTimeout(setUxHint._t);
+        setUxHint._t = setTimeout(()=>{ try{ h.textContent=""; }catch(_){ } }, timeoutMs);
+      }
+    }catch(_){}
+  }
+  function pulseEl(elm, ms){
+    try{
+      if(!elm) return;
+      elm.classList.add("ppPulse");
+      clearTimeout(pulseEl._t);
+      pulseEl._t = setTimeout(()=>{ try{ elm.classList.remove("ppPulse"); }catch(_){ } }, ms || 2200);
+    }catch(_){}
+  }
+  function guideToTextures(){
+    try{
+      setActiveStep("zones");
+      const panel = document.getElementById("texturesPanel");
+      if(panel){
+        pulseEl(panel, 2600);
+        panel.scrollIntoView({behavior:"smooth", block:"nearest"});
+      }
+      setUxHint("Выберите плитку слева, затем при необходимости подстройте размер и поворот.", 4500);
+    }catch(_){}
+  }
+  function guideToExport(){
+    try{
+      setActiveStep("export");
+      const b = document.getElementById("exportPngBtn");
+      if(b) pulseEl(b, 2600);
+      setUxHint("Готово. Нажмите “Скачать PNG”.", 4500);
+    }catch(_){}
+  }
+
+function setActiveStep(step){
     state.ui.activeStep=step;
     document.querySelectorAll(".stepper .step").forEach(s=>s.classList.toggle("step--active",s.dataset.step===step));
   }
+  // UX-P1
+  try{updateUxStatus();}catch(_){ }
+
   function ensureActiveZone(){
     if(!state.zones.length){
       const z=makeZone();
@@ -106,6 +247,7 @@
     if(state.ui && !state.ui.masterZoneId && state.zones[0]) state.ui.masterZoneId = state.zones[0].id;
     // Ensure material params are migrated and mode-pointers are correct.
     normalizeAllZones();
+    try{updateUxStatus();}catch(_){ }
   }
 
   function addZoneAndArmContour(){
@@ -162,6 +304,7 @@
     ED.setMode("contour");
     syncCloseButtonUI();
     ED.render();
+    try{ guideToTextures(); }catch(_){ }
   }
 
   // Z-S: Split subzone inside master zone (safe impl: cutout + new zone).
@@ -170,12 +313,12 @@
     const b = document.getElementById("splitZoneBtn");
     if(!b) return;
     const isSplit = (state.ui && state.ui.mode === "split");
-    b.textContent = isSplit ? "Отменить разделение" : "Разделить зону";
+    b.textContent = isSplit ? "Отменить выделение участка" : "Другой материал на участке";
   }
 
   function startOrCancelSplit(){
     const master = getMasterZone();
-    if(!master){ API.setStatus("Нет зоны для разделения"); return; }
+    if(!master){ API.setStatus("Нет участка для выделения"); return; }
     // Toggle off if already in split mode
     if(state.ui && state.ui.mode === "split"){
       pushHistory();
@@ -191,7 +334,7 @@
     }
     // Guard: master must be closed to support reliable split workflow.
     if(!master.closed || (master.contour||[]).length<3){
-      API.setStatus("Сначала замкните контур основной (мастер) зоны");
+      API.setStatus("Сначала замкните контур основного участка");
       return;
     }
 
@@ -207,6 +350,7 @@
     updateSplitZoneBtnUI();
     syncCloseButtonUI();
     ED.render();
+    try{ guideToTextures(); }catch(_){ }
   }
 
   function _cloneZoneMaterialFromMaster(z, master){
@@ -228,11 +372,11 @@
   function applySplitDraft(){
     const d = state.ui && state.ui.splitDraft;
     if(!d || !d.points || d.points.length<3){
-      API.setStatus("Контур подзоны слишком короткий");
+      API.setStatus("Контур участка слишком короткий");
       return;
     }
     const parent = (state.zones||[]).find(z=>z.id===d.parentZoneId) || getMasterZone();
-    if(!parent){ API.setStatus("Не найдена мастер-зона для разделения"); return; }
+    if(!parent){ API.setStatus("Не найден основной участок для выделения"); return; }
 
     pushHistory();
 
@@ -272,13 +416,14 @@
     ED.setMode("contour");
     syncCloseButtonUI();
     ED.render();
+    try{ guideToTextures(); }catch(_){ }
   }
 
 
   function renderCutoutsUI(){
     const wrap=el("cutoutsList");wrap.innerHTML="";
     const zone=S.getActiveZone();
-    if(!zone){wrap.innerHTML=`<div class="note">Сначала создайте зону.</div>`;return;}
+    if(!zone){wrap.innerHTML=`<div class="note">Сначала создайте участок.</div>`;return;}
     for(const c of (zone.cutouts||[])){
       const div=document.createElement("div");
       div.className="listItem"+(c.id===state.ui.activeCutoutId?" listItem--active":"");
@@ -303,7 +448,7 @@
       const isMaster = (master && z.id===master.id);
       const hasMatOv = !!(z.overrides && z.overrides.materialOverride);
       const linkText = isMaster ? "★" : (z.linked ? "🔗" : "⛓");
-      const linkTitle = isMaster ? "Мастер-зона" : (z.linked ? "Связана с мастер-зоной" : "Отвязана (свои настройки)");
+      const linkTitle = isMaster ? "Основной участок" : (z.linked ? "Наследует настройки основного" : "Свои настройки");
 
       const div=document.createElement("div");
       div.className="listItem"+(isActive?" listItem--active":"");
@@ -350,6 +495,7 @@
       wrap.appendChild(div);
     }
     renderCutoutsUI();
+    updateOffsetControlsVisibility();
   }
 
   function renderShapesUI(){
@@ -508,29 +654,257 @@
 
   function resolveTextureUrl(t){ return t.albedoUrl || t.previewUrl || null; }
 
-  function renderTexturesUI(){
+  
+  // Premium P1: textures search + favorites + recent (localStorage-backed)
+  function _pp_lsGet(k, def){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(_){ return def; } }
+  function _pp_lsSet(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(_){ } }
+  const _PP_FAV_KEY="pp_favs_v1";
+  const _PP_RECENT_KEY="pp_recent_v1";
+  function _pp_getFavMap(){ return _pp_lsGet(_PP_FAV_KEY, {}); }
+  function _pp_isFav(shapeId, textureId){
+    const m=_pp_getFavMap(); return !!(m && m[shapeId] && m[shapeId][textureId]);
+  }
+  function _pp_toggleFav(shapeId, textureId){
+    const m=_pp_getFavMap();
+    if(!m[shapeId]) m[shapeId]={};
+    if(m[shapeId][textureId]) delete m[shapeId][textureId]; else m[shapeId][textureId]=1;
+    _pp_lsSet(_PP_FAV_KEY, m);
+  }
+  function _pp_getRecentList(){ return _pp_lsGet(_PP_RECENT_KEY, []); }
+  function _pp_pushRecent(shapeId, textureId){
+    let arr=_pp_getRecentList();
+    const key=shapeId+"::"+textureId;
+    arr=arr.filter(x=> (x && (x.shapeId+"::"+x.textureId)!==key));
+    arr.unshift({shapeId, textureId, ts:Date.now()});
+    if(arr.length>30) arr.length=30;
+    _pp_lsSet(_PP_RECENT_KEY, arr);
+  }
+  function _pp_getTexFilterState(){
+    state.ui.texturesFilter = state.ui.texturesFilter || "all"; // all|fav|recent
+    state.ui.texturesQuery = state.ui.texturesQuery || "";
+    return {filter: state.ui.texturesFilter, query: state.ui.texturesQuery};
+  }
+  function _pp_setTexFilter(filter){ state.ui.texturesFilter=filter; }
+  function _pp_setTexQuery(q){ state.ui.texturesQuery=q; }
+
+  function _pp_updateTexControlsUI(){
+    const st=_pp_getTexFilterState();
+    const inp=el("texturesSearch");
+    if(inp && inp.value!==st.query) inp.value=st.query||"";
+    const btnAll=el("texturesFilterAll");
+    const btnFav=el("texturesFilterFav");
+    const btnRec=el("texturesFilterRecent");
+    const setAct=(btn,on)=>{ if(!btn) return; btn.classList.toggle("ppChip--active", !!on); };
+    setAct(btnAll, st.filter==="all");
+    setAct(btnFav, st.filter==="fav");
+    setAct(btnRec, st.filter==="recent");
+  }
+  function initTexturesControls(){
+    const inp=el("texturesSearch");
+    if(inp){
+      inp.addEventListener("input", ()=>{
+        _pp_setTexQuery(inp.value||"");
+        renderTexturesUI();
+      });
+    }
+    const btnAll=el("texturesFilterAll");
+    const btnFav=el("texturesFilterFav");
+    const btnRec=el("texturesFilterRecent");
+    const setFilter=(f)=>{
+      _pp_setTexFilter(f);
+      _pp_updateTexControlsUI();
+      renderTexturesUI();
+    };
+    if(btnAll) btnAll.addEventListener("click", ()=>setFilter("all"));
+    if(btnFav) btnFav.addEventListener("click", ()=>setFilter("fav"));
+    if(btnRec) btnRec.addEventListener("click", ()=>setFilter("recent"));
+    _pp_updateTexControlsUI();
+  }
+
+
+  // Premium P2: texture preview (hover on desktop, tap-preview on touch)
+  function _pp_deepClone(obj){
+    try{ return obj ? JSON.parse(JSON.stringify(obj)) : obj; }catch(_){ return obj; }
+  }
+  function _pp_canHover(){
+    try{ return !!(window.matchMedia && window.matchMedia("(hover:hover) and (pointer:fine)").matches); }catch(_){ return false; }
+  }
+  function _pp_getPreviewState(){ state.ui = state.ui || {}; return (state.ui._ppPreview || null); }
+  function _pp_clearPreview(){
+    const ps=_pp_getPreviewState();
+    if(!ps) return;
+    const z = state.zones && ps.zoneId ? state.zones.find(x=>x && x.id===ps.zoneId) : null;
+    if(z){
+      if(ps.snap){
+        z.linked = ps.snap.linked;
+        z.baseParams = ps.snap.baseParams;
+        z.overrides = ps.snap.overrides;
+        z.material = ps.snap.material;
+      }
+    }
+    state.ui._ppPreview = null;
+    try{ renderZonesUI(); }catch(_){ }
+    try{ renderTexturesUI(); }catch(_){ }
+    try{ ED.render(); }catch(_){ }
+  }
+  function _pp_applyMaterialToActivePreview(shapeId, tex){
+    // Apply ONLY to active zone (preview), regardless of edit scope.
+    const z = S.getActiveZone();
+    if(!z) return;
+    const master = getMasterZone();
+    ensureZoneLinkFields(z);
+    ensureZoneMaterialParams(z);
+
+    if(z.linked && master && z.id!==master.id){
+      // Preview as local override (will be rolled back on preview end)
+      if(tex===null){
+        z.overrides.shapeOverride = shapeId || z.overrides.shapeOverride;
+        z.overrides.materialOverride = null;
+      }else if(tex){
+        z.overrides.shapeOverride = shapeId || z.overrides.shapeOverride;
+        z.overrides.materialOverride = {
+          shapeId: shapeId || master.material.shapeId || z.material.shapeId,
+          textureId: tex.textureId,
+          textureUrl: tex.url,
+          maps: tex.maps ? {...tex.maps} : {albedo: tex.url},
+          pbrParams: (tex.params ? {...tex.params} : null),
+          tileSizeM: (tex.tileSizeM!=null ? tex.tileSizeM : null)
+        };
+      }
+      recomputeLinkedZoneFromMaster(z, master);
+      return;
+    }
+
+    // Unlinked or master: apply directly to zone material
+    z.material.shapeId = shapeId || z.material.shapeId;
+    if(tex===null){
+      z.material.textureId = null;
+      z.material.textureUrl = null;
+      z.material.maps = null;
+      z.material.pbrParams = null;
+    }else if(tex){
+      z.material.textureId = tex.textureId;
+      z.material.textureUrl = tex.url;
+      if(tex.maps){
+        z.material.maps = {...tex.maps};
+        if(tex.tileSizeM!=null) z.material.tileSizeM = tex.tileSizeM;
+      }else{
+        z.material.maps = {albedo: tex.url};
+      }
+      z.material.pbrParams = (tex.params ? {...tex.params} : null);
+    }
+  }
+  function _pp_startPreview(shapeId, tex){
+    const zone = S.getActiveZone();
+    if(!zone) return;
+    // Clear existing preview first (restores previous state)
+    const ps=_pp_getPreviewState();
+    if(ps && ps.zoneId===zone.id && ps.textureId===tex.textureId) return;
+    if(ps) _pp_clearPreview();
+    // Snapshot only what's needed to revert safely
+    const snap = {
+      linked: zone.linked,
+      baseParams: _pp_deepClone(zone.baseParams),
+      overrides: _pp_deepClone(zone.overrides),
+      material: _pp_deepClone(zone.material)
+    };
+    state.ui._ppPreview = {zoneId: zone.id, textureId: tex.textureId, ts: Date.now(), snap};
+    _pp_applyMaterialToActivePreview(shapeId, tex);
+    try{ ED.render(); }catch(_){ }
+  }
+
+function renderTexturesUI(){
     const wrap=el("texturesList");wrap.innerHTML="";
     const shapeId=state.catalog.activeShapeId;
-    const list=state.catalog.texturesByShape[shapeId]||[];
+    const allList=state.catalog.texturesByShape[shapeId]||[];
     const zone=S.getActiveZone();
+
+    const st=_pp_getTexFilterState();
+    const q=(st.query||"").trim().toLowerCase();
+    let list=allList;
+
+    if(st.filter==="fav"){
+      list=allList.filter(t=>_pp_isFav(shapeId, t.textureId));
+    }else if(st.filter==="recent"){
+      const rec=_pp_getRecentList().filter(x=>x && x.shapeId===shapeId);
+      const map=new Map(allList.map(t=>[t.textureId,t]));
+      list=[];
+      for(const r of rec){ const t=map.get(r.textureId); if(t) list.push(t); }
+    }
+
+    if(q){
+      list=list.filter(t=>{
+        const a=(t.title||"").toLowerCase();
+        const b=(t.textureId||"").toLowerCase();
+        return a.includes(q) || b.includes(q);
+      });
+    }
+
     for(const t of list){
       const url=resolveTextureUrl(t);
       const active=zone && zone.material.textureId===t.textureId;
       const thumb=(t.previewUrl||url);
       const card=document.createElement("div");
       card.className="card"+(active?" card--active":"");
-      card.innerHTML=`<div class="thumb">${thumb?`<img src="${escapeAttr(thumb)}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(t.title||t.textureId||"")}</span><span class="badge">${escapeHtml(t.textureId||"")}</span></div>`;
-      card.addEventListener("click",()=>{
+      const favOn=_pp_isFav(shapeId, t.textureId);
+      card.innerHTML=`<button class="ppFavBtn ${favOn?"ppFavBtn--on":""}" title="${favOn?"Убрать из избранного":"В избранное"}" aria-label="favorite" type="button">★</button><div class="thumb">${thumb?`<img src="${escapeAttr(thumb)}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(t.title||t.textureId||"")}</span><span class="badge">${escapeHtml(t.textureId||"")}</span></div>`;
+            const favBtn=card.querySelector(".ppFavBtn");
+      if(favBtn){
+        favBtn.addEventListener("click",(ev)=>{
+          ev.preventDefault(); ev.stopPropagation();
+          _pp_toggleFav(shapeId, t.textureId);
+          renderTexturesUI();
+        });
+      }
+card.addEventListener("click",()=>{
         if(!zone) return;
+        const url=resolveTextureUrl(t);
+        const texObj={ textureId: t.textureId, url, maps: t.maps, tileSizeM: t.tileSizeM, params: t.params };
+
+        // Premium P2:
+        // - Desktop (hover capable): click applies immediately (commit), hover does preview.
+        // - Touch/no-hover: first tap previews, second tap applies.
+        const canHover=_pp_canHover();
+        const ps=_pp_getPreviewState();
+
+        if(!canHover){
+          if(ps && ps.zoneId===zone.id && ps.textureId===t.textureId){
+            // second tap -> commit
+          }else{
+            _pp_startPreview(shapeId, texObj);
+            API.setStatus("Предпросмотр: нажмите ещё раз, чтобы применить");
+            return;
+          }
+        }
+
+        // Commit apply
+        if(ps) _pp_clearPreview();
         pushHistory();
-        // Z-C: apply material to active zone or all zones based on editScope
-        applyMaterialChange(shapeId, { textureId: t.textureId, url, maps: t.maps, tileSizeM: t.tileSizeM, params: t.params });
+        applyMaterialChange(shapeId, texObj);
+        _pp_pushRecent(shapeId, t.textureId);
         renderTexturesUI();renderZonesUI();ED.render();
+        try{ guideToExport(); }catch(_){ }
       });
+
+      // Hover preview on desktop
+      if(_pp_canHover()){
+        card.addEventListener("mouseenter", ()=>{
+          if(!zone) return;
+          const url=resolveTextureUrl(t);
+          const texObj={ textureId: t.textureId, url, maps: t.maps, tileSizeM: t.tileSizeM, params: t.params };
+          _pp_startPreview(shapeId, texObj);
+        });
+        card.addEventListener("mouseleave", ()=>{
+          const ps=_pp_getPreviewState();
+          if(ps && ps.textureId===t.textureId) _pp_clearPreview();
+        });
+      }
       wrap.appendChild(card);
     }
-    if(!list.length) wrap.innerHTML=`<div class="note">Нет текстур для этой формы или палитра пуста.</div>`;
+    if(!allList.length) wrap.innerHTML=`<div class="note">Нет текстур для этой формы или палитра пуста.</div>`;
+    else if(!list.length) wrap.innerHTML=`<div class="note">Ничего не найдено.</div>`;
 
+    _pp_updateTexControlsUI();
     // After DOM is updated, adjust the left textures panel height to show 3 cards fully.
     requestAnimationFrame(fitLeftTexturesPanelForThree);
   }
@@ -781,8 +1155,15 @@ async function handlePhotoFile(file){
   function _zClamp(v, lo, hi){ v=+v; if(!isFinite(v)) v=0; return Math.min(hi, Math.max(lo, v)); }
   function _zClamp01(v){ return _zClamp(v, 0, 1); }
 
+  function ensureZoneMetaFields(z){
+    if(!z) return;
+    if(!z.meta) z.meta = {};
+    if(typeof z.meta.userTouchedScale !== "boolean") z.meta.userTouchedScale = false;
+  }
+
   function ensureZoneLinkFields(z){
     if(!z) return;
+    ensureZoneMetaFields(z);
     if(typeof z.linked !== 'boolean') z.linked = true;
     if(!z.overrides) z.overrides = {
       scaleMult:1, rotOffset:0, offsetU:0, offsetV:0, opacityMult:1,
@@ -957,6 +1338,7 @@ function applyChangeToTiling(change){
       if(!master) return;
       ensureZoneMaterialParams(master);
       ensureZoneLinkFields(master);
+      if(Object.prototype.hasOwnProperty.call(change,"scale")) { ensureZoneMetaFields(master); master.meta.userTouchedScale = true; }
       // Apply change to master active params
       const p = master.material && master.material.params ? master.material.params : (master.material.params={});
       for(const k in change){ p[k]=change[k]; }
@@ -975,6 +1357,7 @@ function applyChangeToTiling(change){
     if(!z) return;
     ensureZoneMaterialParams(z);
     ensureZoneLinkFields(z);
+    if(Object.prototype.hasOwnProperty.call(change,"scale")) { ensureZoneMetaFields(z); z.meta.userTouchedScale = true; }
 
     // If this is the master zone (or unlinked), write directly.
     if(!master || z.id===master.id || z.linked===false){
@@ -997,6 +1380,7 @@ function applyChangeToTiling(change){
     for(const k in change){
       const v = change[k];
       if(k==="scale"){
+        ensureZoneMetaFields(z); z.meta.userTouchedScale = true;
         const m = mp.scale ?? 12.0;
         ov.scaleMult = (m ? (v / m) : 1);
       }else if(k==="rotation"){
@@ -1050,13 +1434,55 @@ function applyChangeToTiling(change){
       }
     }
   }
+  // Premium-P4: auto scale by physical tile size (tileSizeM) on COMMIT apply (not preview).
+  function _pp_getScaleClamp(){
+    try{
+      const sr = document.getElementById("scaleRange");
+      if(sr){
+        const mn=parseFloat(sr.min||"0.01");
+        const mx=parseFloat(sr.max||"9999");
+        return {mn:(isFinite(mn)?mn:0.01), mx:(isFinite(mx)?mx:9999)};
+      }
+    }catch(_){}
+    return {mn:0.01,mx:9999};
+  }
+  function autoScaleFromTileSize(zone, newTileSizeM, oldTileSizeM){
+    try{
+      if(!zone || !zone.material || !zone.material.params) return;
+      if(!(state.ux && state.ux.autoScaleEnabled)) return;
+      ensureZoneMetaFields(zone);
+      if(zone.meta.userTouchedScale) return;
+      const tNew = parseFloat(newTileSizeM);
+      if(!isFinite(tNew) || tNew<=0) return;
+      const p = zone.material.params;
+      const sOld = parseFloat(p.scale ?? 12.0);
+      const tOld = parseFloat(oldTileSizeM);
+      let sNew;
+      if(isFinite(tOld) && tOld>0 && isFinite(sOld) && sOld>0){
+        sNew = sOld * (tOld / tNew);
+      }else{
+        const K = (state.ux && isFinite(state.ux.autoScaleK)) ? state.ux.autoScaleK : 3.6;
+        sNew = K / tNew;
+      }
+      const clamp=_pp_getScaleClamp();
+      if(isFinite(clamp.mn)) sNew = Math.max(clamp.mn, sNew);
+      if(isFinite(clamp.mx)) sNew = Math.min(clamp.mx, sNew);
+      if(isFinite(sNew) && sNew>0){
+        p.scale = sNew;
+        // UX: show short hint once.
+        try{ API.setStatus("Масштаб выставлен по размеру плитки"); }catch(_){}
+      }
+    }catch(_){}
+  }
   function applyMaterialChange(shapeId, tex){
+
     const scope=_getEditScope();
     const master = getMasterZone();
 
     if(scope==="all"){
       if(!master) return;
       ensureZoneMaterialParams(master);
+      const _oldTileSizeM = master.material ? master.material.tileSizeM : null;
       // Apply to master as before
       master.material.shapeId = shapeId || master.material.shapeId;
       if(tex===null){
@@ -1075,7 +1501,10 @@ function applyChangeToTiling(change){
         }
         master.material.pbrParams = (tex.params ? {...tex.params} : null);
       }
-      // Recompute linked zones (keeps their local materialOverride if present)
+      // Premium-P4: auto-scale only when committing on master (scene-global)
+      if(tex && tex.tileSizeM!=null){ autoScaleFromTileSize(master, tex.tileSizeM, _oldTileSizeM); }
+
+            // Recompute linked zones (keeps their local materialOverride if present)
       syncLinkedZones();
       return;
     }
@@ -1108,6 +1537,7 @@ function applyChangeToTiling(change){
 
     // Unlinked or master: apply directly
     z.material.shapeId = shapeId || z.material.shapeId;
+    const _oldTileSizeM2 = z.material ? z.material.tileSizeM : null;
     if(tex===null){
       z.material.textureId = null;
       z.material.textureUrl = null;
@@ -1123,6 +1553,8 @@ function applyChangeToTiling(change){
         z.material.maps = {albedo: tex.url};
       }
       z.material.pbrParams = (tex.params ? {...tex.params} : null);
+      // Premium-P4: auto-scale for unlinked/master zones on commit
+      if(tex && tex.tileSizeM!=null){ autoScaleFromTileSize(z, tex.tileSizeM, _oldTileSizeM2); }
     }
   }
 
@@ -1147,9 +1579,16 @@ function applyChangeToTiling(change){
     const txt=makeSummaryText();
     if(navigator.share){try{await navigator.share({title:"Визуализация плитки",text:txt});}catch(e){}}
     else{await navigator.clipboard.writeText(txt).catch(()=>{});API.setStatus("Web Share недоступен — описание скопировано");}
+    updateOffsetControlsVisibility();
   }
 
   function bindUI(){
+    // UX-P2: basic/advanced settings panels
+    initAdvancedToggle();
+    // Premium-P3: seam nudge step selector
+    initSeamStepUI();
+    // Premium P1: textures search + favorites + recent
+    try{ initTexturesControls(); }catch(_){ }
     // Z-C: edit scope toggle (active zone vs all zones)
     try{
       const a = document.getElementById("editScopeActive");
@@ -1160,6 +1599,7 @@ function applyChangeToTiling(change){
       const onChange = ()=>{
         state.ui = state.ui || {};
         state.ui.editScope = (b && b.checked) ? "all" : "active";
+        try{updateUxStatus();}catch(_){ }
       };
       if(a) a.addEventListener("change", onChange);
       if(b) b.addEventListener("change", onChange);
@@ -2237,7 +2677,9 @@ if(calib3dToggleLinesBtn){
         }else{
           if(z.closed || (z.contour||[]).length<3) return;
           pushHistory();
+          const _was=!!z.closed;
           z.closed=true;
+          if(!_was){ try{ window.dispatchEvent(new Event("pp:zoneClosed")); }catch(_){ } }
         }
         renderZonesUI();
         ED.render();
@@ -2246,6 +2688,17 @@ if(calib3dToggleLinesBtn){
 
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
     el("replacePhotoBtn").addEventListener("click",()=>el("photoInput").click());
+
+    // UX-P3: Guided flow triggers
+    try{
+      window.addEventListener("pp:zoneClosed",(ev)=>{
+        try{
+          // When a contour is closed, guide user to choose texture (especially for the first/main area).
+          guideToTextures();
+        }catch(_){}
+      });
+    }catch(_){}
+
     const ovBtn=document.getElementById("uploadOverlayBtn");
     if(ovBtn){ovBtn.addEventListener("click",()=>el("photoInput").click());}
     const cw=document.getElementById("canvasWrap");
@@ -2330,6 +2783,44 @@ if(calib3dToggleLinesBtn){
     if(offV){
       offV.addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({offsetV:parseFloat(el("offsetVRange").value)});ED.render();});
     }
+
+    // Premium-P3: seam nudge buttons (± step) and reset for offsetU/offsetV.
+    document.querySelectorAll(".seamBtn").forEach((btn)=>{
+      btn.addEventListener("click",()=>{
+        const z=S.getActiveZone(); if(!z) return;
+        const targetId = btn.getAttribute("data-target");
+        const prop = btn.getAttribute("data-prop");
+        const delta = parseFloat(btn.getAttribute("data-delta")||"0");
+        const r = targetId ? el(targetId) : null;
+        if(!r || !prop || !isFinite(delta)) return;
+        const step = getSeamStep();
+        let cur = parseFloat(r.value||"0");
+        if(!isFinite(cur)) cur = 0;
+        let nv = cur + delta*step;
+        const mn = parseFloat(r.min||"-2");
+        const mx = parseFloat(r.max||"2");
+        if(isFinite(mn)) nv = Math.max(mn, nv);
+        if(isFinite(mx)) nv = Math.min(mx, nv);
+        // Keep slider in sync.
+        r.value = String(nv);
+        const ch = {}; ch[prop] = nv;
+        applyChangeToTiling(ch);
+        ED.render();
+      });
+    });
+    document.querySelectorAll(".seamReset").forEach((btn)=>{
+      btn.addEventListener("click",()=>{
+        const z=S.getActiveZone(); if(!z) return;
+        const targetId = btn.getAttribute("data-target");
+        const prop = btn.getAttribute("data-prop");
+        const r = targetId ? el(targetId) : null;
+        if(!r || !prop) return;
+        r.value = "0";
+        const ch = {}; ch[prop] = 0;
+        applyChangeToTiling(ch);
+        ED.render();
+      });
+    });
     el("opacityRange").addEventListener("input",()=>{const z=S.getActiveZone();if(!z)return;applyChangeToTiling({opacity:parseFloat(el("opacityRange").value)});ED.render();});
     const oc=el("opaqueFillChk");
     if(oc){

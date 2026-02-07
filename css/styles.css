@@ -282,3 +282,57 @@ body.isFullscreenViewer .canvasWrap.isFullscreen{
   height:100dvh;
   max-height:100dvh;
 }
+
+
+/* UX-P1: active context line */
+.uxStatus{font-size:12px;line-height:1.25;opacity:.85;margin:8px 0 0 0;padding:0 16px;}
+
+
+/* UX-P2: Basic / Advanced settings sections */
+.settingsBasic{display:block;}
+.settingsAdvanced{display:block;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12);}
+.settingsAdvanced[hidden]{display:none;}
+
+
+/* UX-P3: guided flow hints + soft pulse highlight */
+.uxHint{
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255,255,255,0.78);
+}
+.uxHint:empty{ display:none; }
+
+.ppPulse{
+  outline: 2px solid rgba(80, 220, 140, 0.85);
+  outline-offset: 2px;
+  border-radius: 10px;
+  animation: ppPulseAnim 1.2s ease-in-out infinite;
+}
+@keyframes ppPulseAnim{
+  0%{ outline-color: rgba(80,220,140,0.15); }
+  50%{ outline-color: rgba(80,220,140,0.85); }
+  100%{ outline-color: rgba(80,220,140,0.15); }
+}
+
+
+/* Premium P1: textures search + favorites + recent */
+.ppTexControls{display:flex;flex-direction:column;gap:8px;margin:8px 0 10px 0}
+.ppInput{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.22);color:#fff;outline:none}
+.ppInput::placeholder{color:rgba(255,255,255,.55)}
+.ppTexFilters{display:flex;gap:8px;flex-wrap:wrap}
+.ppChip{padding:8px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:#fff;font-size:12px;line-height:1;cursor:pointer}
+.ppChip--active{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22)}
+/* Favorite button inside texture cards */
+.card{position:relative}
+.ppFavBtn{position:absolute;top:8px;right:8px;z-index:2;width:28px;height:28px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:rgba(255,255,255,.85);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px}
+.ppFavBtn--on{background:rgba(255,215,0,.18);border-color:rgba(255,215,0,.35);color:#ffd24a}
+
+/* Premium P3: seam nudge controls */
+.seamStepRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.seamStepLabel{opacity:.85}
+.seamStepSel{padding:6px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:#fff}
+.seamStepHint{opacity:.65;font-size:12px}
+.seamBtns{display:flex;gap:8px;margin-top:8px}
+.seamBtns .btn{padding:6px 10px;border-radius:12px}
+

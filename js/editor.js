@@ -1334,7 +1334,7 @@ if(state.ui.mode==="contour"&&zone){
     if(sel.kind==="contour"){
       const pts=zone.contour;
       if(!zone.closed && pts.length>=3 && sel.idx===pts.length-1){
-        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)) zone.closed=true;
+        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)){ const was=!!zone.closed; zone.closed=true; if(!was){ try{ window.dispatchEvent(new Event("pp:zoneClosed")); }catch(_){ } } }
       }
       return;
     }
@@ -1353,7 +1353,7 @@ if(state.ui.mode==="contour"&&zone){
     // If user tapped the first point (without dragging), close the current polygon.
     if(pendingClose && !state.ui.draggingPoint){
       pushHistory();
-      if(pendingClose.kind==="contour"){ const z=getActiveZone(); if(z) z.closed=true; }
+      if(pendingClose.kind==="contour"){ const z=getActiveZone(); if(z){ const was=!!z.closed; z.closed=true; if(!was){ try{ window.dispatchEvent(new Event("pp:zoneClosed")); }catch(_){ } } } }
       else if(pendingClose.kind==="cutout"){ const z=getActiveZone(); if(z){ const c=getActiveCutout(z); if(c) c.closed=true; } }
       else if(pendingClose.kind==="split"){ if(state.ui && state.ui.splitDraft){ state.ui.splitDraft.closed=true; try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ } } }
       pendingClose=null;

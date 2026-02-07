@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-		build: { version:"mvp-iter2.2.145-split-subzone",ts:new Date().toISOString()},
+		build:{version:"mvp-iter2.2.154-api-es3-scope-fix",ts:new Date().toISOString()},
 	    api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{
@@ -24,6 +24,9 @@ window.PhotoPaveState=(function(){
 
     catalog:{shapes:[],palettesByShape:{},texturesByShape:{},activeShapeId:null},
     assets:{photoBitmap:null,photoW:0,photoH:0,textureCache:new Map()},
+
+    // UX premium helpers
+    ux:{autoScaleEnabled:true,autoScaleK:3.6},
 
     // Ultra AI state (Patch 1/2)
     ai:{
@@ -135,6 +138,7 @@ window.PhotoPaveState=(function(){
     closed:false,
     contour:[],
     cutouts:[],
+    meta:{userTouchedScale:false},
     // Z-D: per-zone linking to master tiling/params
     linked:true,
     baseParams:null,
