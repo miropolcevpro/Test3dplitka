@@ -457,19 +457,36 @@ async function handlePhotoFile(file){
     }catch(_){ state.assets.photoLight = { azimuth:120, elevation:35, lightStrength:1.0, ambientStrength:0.32 }; }
     try{ if(prevBitmap && prevBitmap.close) prevBitmap.close(); }catch(_){ }
 
-    state.zones.forEach(z=>{
-      z.contour=[];z.closed=false;z.cutouts=[];
-      // Patch D: new photo -> reset Ultra manual-tune flags so auto-calibration can help by default.
-      if(z && z.material){
-        if(z.material._ultraTuned){
-          z.material._ultraTuned.horizon = false;
-          z.material._ultraTuned.perspective = false;
-        }else{
-          z.material._ultraTuned = { horizon:false, perspective:false };
-        }
-      }
-    });
-    state.ui.activeCutoutId=null;
+    // New photo must start a clean contour scenario.
+    // We fully reset zones, cutouts, and interaction state to avoid carrying stale settings
+    // (materials, tuned horizon/perspective, hidden contour toggle, dragging/selection, etc.).
+    // This keeps UX stable: user can immediately start placing contour points on the same photo.
+    try{
+      // Reset editor interaction flags (safety)
+      state.ui.draggingPoint=null;
+      state.ui.selectedPoint=null;
+      state.ui.isPointerDown=false;
+      // Always show contour after a new photo is loaded (otherwise it looks "broken")
+      state.ui.showContour=true;
+      state.ui.activeCutoutId=null;
+
+      // Reset all zones (materials + params + tuned flags) to defaults by recreating.
+      state.zones.length=0;
+      state.ui.activeZoneId=null;
+      // Reset floor plane too (if enabled in future)
+      if(state.floorPlane){ state.floorPlane.points=[]; state.floorPlane.closed=false; }
+      const z=makeZone();
+      state.zones.push(z);
+      state.ui.activeZoneId=z.id;
+    }catch(_){
+      // Fallback: at least clear contour/cutouts if something unexpected happens.
+      (state.zones||[]).forEach(z=>{ z.contour=[]; z.closed=false; z.cutouts=[]; });
+      state.ui.activeCutoutId=null;
+      state.ui.showContour=true;
+      state.ui.draggingPoint=null;
+      state.ui.selectedPoint=null;
+      state.ui.isPointerDown=false;
+    }
 
     // Reset 3D calibration (manual/auto) when a new photo is loaded to avoid carrying stale lines/results.
     try{
@@ -489,19 +506,10 @@ async function handlePhotoFile(file){
     }catch(_){}
 
     API.setStatus(`Фото загружено (${nw}×${nh})`);
-
-    // Re-arm contouring flow for the new photo: ensure an active zone exists and contour UI is ready.
-    try{
-      ensureActiveZone();
-      state.ui = state.ui || {};
-      state.ui.showContour = true;
-      updateContourToggleBtn();
-      renderZonesUI();
-      renderCutoutsUI();
-    }catch(_){ }
-
     setActiveStep("zones");
     ED.setMode("contour");
+    try{ updateContourToggleBtn(); }catch(_){ }
+    try{ renderZonesUI(); syncSettingsUI(); }catch(_){ }
     // Resize canvas to the new photo size to avoid any aspect distortion
     if(ED.resize) ED.resize(); else ED.render();
 
