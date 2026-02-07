@@ -1102,26 +1102,26 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     return baseLin * lit + specCol;
   }
 
-  vec2 parallaxUv(vec2 uv, float rotRad, vec3 viewDirW){
+  // Parallax mapping (safe) for repeating textures.
+  // NOTE: We must compute derivatives from UNWRAPPED UV (tile-space) to avoid
+  // underestimating the true footprint near fract() wrap boundaries.
+  // If we take dFdx/dFdy after fract(), parallax may remain enabled at strong
+  // perspective / far distance and introduce a subtle "wavy / glass" distortion.
+  //
+  // Input: uvU = unwrapped tile UV (no fract(), no Y-flip)
+  // Output: unwrapped UV shifted by parallax. Caller then does fract() and Y-flip.
+  vec2 parallaxUvUnwrapped(vec2 uvU, float rotRad, vec3 viewDirW){
     float hStr = uBumpScale;
-    if(hStr <= 0.00001) return uv;
+    if(hStr <= 0.00001) return uvU;
 
-    // IMPORTANT (stability contract):
-    // Parallax UV displacement is great for close-up macro detail, but on repeating paving patterns
-    // it can introduce a subtle "wavy / refractive glass" distortion at mid/far distances.
-    // We therefore gate parallax by the screen-space UV footprint:
-    //  - if the UV changes too fast per pixel (many tiles on screen), disable parallax completely
-    //  - otherwise clamp the maximum UV shift to a fraction of the pixel footprint
-    // This keeps the pattern rigid while retaining close-up depth.
-    vec2 ddxUv = dFdx(uv);
-    vec2 ddyUv = dFdy(uv);
+    // Gate parallax by screen-space UV footprint (in unwrapped UV units).
+    vec2 ddxUv = dFdx(uvU);
+    vec2 ddyUv = dFdy(uvU);
     float du = max(length(ddxUv), length(ddyUv));
-    // Threshold tuned empirically for tiling textures: above this, parallax looks like distortion.
-    if(du > 0.012) return uv;
-    // Fade-in region for smoothness.
+    if(du > 0.012) return uvU;
     float parallaxFade = clamp((0.012 - du) / 0.008, 0.0, 1.0);
     hStr *= parallaxFade;
-    if(hStr <= 0.00001) return uv;
+    if(hStr <= 0.00001) return uvU;
 
     // Tangent basis aligned to the texture axes (same as in applyPBRLighting)
     float c = cos(rotRad);
@@ -1133,34 +1133,34 @@ function _smoothGuard(zoneId, distTarget, kTarget){
     vec3 V = normalize(viewDirW);
     vec3 Vts = vec3(dot(V, T), dot(V, B), dot(V, N0));
     float vz = abs(Vts.z);
+    if(vz < 0.35) return uvU;
 
-    // Disable at very grazing angles to avoid "swimming" and artifacts.
-    if(vz < 0.35) return uv;
-
-    // Steps: more at grazing, fewer at near-normal incidence (bounded 6..12)
     float stepsF = mix(12.0, 6.0, clamp((vz - 0.35) / (1.0 - 0.35), 0.0, 1.0));
     int steps = int(clamp(floor(stepsF + 0.5), 6.0, 12.0));
 
     float layerDepth = 1.0 / float(steps);
-    // Parallax direction (divide by z; clamp to avoid huge offsets)
     vec2 delta = (Vts.xy / max(Vts.z, 0.12)) * (hStr / float(steps));
-    // Clamp delta to a fraction of pixel footprint to avoid "refractive" warping.
     float maxShift = max(du * 0.65, 0.0005);
     delta = clamp(delta, vec2(-maxShift), vec2(maxShift));
 
-    vec2 cuv = uv;
+    vec2 cuvU = uvU;
     float curDepth = 0.0;
-    float height = texGray(uHeightMap, cuv);
 
-    // Basic parallax mapping (safe). Height is expected in [0..1].
+    // Sample height from wrapped UV, with Y-flip applied consistently.
+    vec2 suv = fract(cuvU);
+    suv.y = 1.0 - suv.y;
+    float height = texGray(uHeightMap, suv);
+
     for(int i=0;i<12;i++){
       if(i >= steps) break;
       if(curDepth >= height) break;
-      cuv -= delta;
+      cuvU -= delta;
       curDepth += layerDepth;
-      height = texGray(uHeightMap, cuv);
+      suv = fract(cuvU);
+      suv.y = 1.0 - suv.y;
+      height = texGray(uHeightMap, suv);
     }
-    return cuv;
+    return cuvU;
   }
 
   void main(){
@@ -1302,12 +1302,10 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       vec3 w;
       stochGet3(tuv, t0, t1, t2, w);
 
-      vec2 suv0 = fract(t0 + uPhase);
-      vec2 suv1 = fract(t1 + uPhase);
-      vec2 suv2 = fract(t2 + uPhase);
-      suv0.y = 1.0 - suv0.y;
-      suv1.y = 1.0 - suv1.y;
-      suv2.y = 1.0 - suv2.y;
+      // Use unwrapped UV for derivatives/parallax, then wrap for sampling.
+      vec2 uvU0 = t0 + uPhase;
+      vec2 uvU1 = t1 + uPhase;
+      vec2 uvU2 = t2 + uPhase;
 
       // Micro-variation tile ids (stable in tile-space, consistent across maps)
       vec2 tileId0 = floor(t0 + uPhase);
@@ -1316,10 +1314,17 @@ function _smoothGuard(zoneId, distTarget, kTarget){
 
 
       if(uBumpScale > 0.00001){
-        suv0 = fract(parallaxUv(suv0, rot, viewDirW));
-        suv1 = fract(parallaxUv(suv1, rot, viewDirW));
-        suv2 = fract(parallaxUv(suv2, rot, viewDirW));
+        uvU0 = parallaxUvUnwrapped(uvU0, rot, viewDirW);
+        uvU1 = parallaxUvUnwrapped(uvU1, rot, viewDirW);
+        uvU2 = parallaxUvUnwrapped(uvU2, rot, viewDirW);
       }
+
+      vec2 suv0 = fract(uvU0);
+      vec2 suv1 = fract(uvU1);
+      vec2 suv2 = fract(uvU2);
+      suv0.y = 1.0 - suv0.y;
+      suv1.y = 1.0 - suv1.y;
+      suv2.y = 1.0 - suv2.y;
 
       vec3 c0 = texture(uTile, suv0).rgb;
       vec3 c1 = texture(uTile, suv1).rgb;
@@ -1366,13 +1371,13 @@ function _smoothGuard(zoneId, distTarget, kTarget){
       if(uStochMode == 1){
         tuv = stochApply(tuv);
       }
-      suv = fract(tuv + uPhase);
-      suv.y = 1.0 - suv.y;
-
+      // Use unwrapped UV for derivatives/parallax, then wrap for sampling.
+      vec2 uvU = tuv + uPhase;
       if(uUsePBR == 1 && uBumpScale > 0.00001){
-        suv = parallaxUv(suv, rot, viewDirW);
-        suv = fract(suv);
+        uvU = parallaxUvUnwrapped(uvU, rot, viewDirW);
       }
+      suv = fract(uvU);
+      suv.y = 1.0 - suv.y;
 
       vec3 tile = texture(uTile, suv).rgb;
       tileLin = toLinear(tile);
