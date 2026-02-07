@@ -471,6 +471,18 @@ async function handlePhotoFile(file){
     });
     state.ui.activeCutoutId=null;
 
+    // Re-arm contouring scenario for the newly loaded photo.
+    // Important: after a reset or edge-cases there may be no zones / no activeZoneId.
+    // Ensure we always have a valid active zone so point placement works immediately.
+    try{
+      ensureActiveZone();
+      // New photo implies a fresh contouring flow; contour must be visible.
+      if(state.ui) state.ui.showContour = true;
+      updateContourToggleBtn();
+      renderZonesUI();
+      renderCutoutsUI();
+    }catch(_){ }
+
     // Reset 3D calibration (manual/auto) when a new photo is loaded to avoid carrying stale lines/results.
     try{
       if(state.ai && state.ai.calib3d){
