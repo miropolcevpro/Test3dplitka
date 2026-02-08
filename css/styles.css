@@ -15,7 +15,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .canvasToolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
 .toolGroup{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .hint{color:var(--muted);font-size:12px;padding:6px 10px;border:1px dashed rgba(255,255,255,0.14);border-radius:10px;flex:1;min-width:260px}
-.canvasWrap{position:relative;flex:1;min-height:0;background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
+.canvasWrap{position:relative;flex:1;min-height:0;background:#ffffff;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center}
 /* Canvases: WebGL base + 2D overlay. Display size is controlled in JS to preserve photo aspect ratio. */
 #glCanvas,#editorCanvas{display:block;position:absolute;left:50%;top:50%;
   /* Base centering + optional fullscreen viewer pan/zoom (defaults keep old behavior). */
