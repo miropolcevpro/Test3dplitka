@@ -260,6 +260,13 @@ body.isFullscreenViewer .bottomMenu,
 body.isFullscreenViewer .stepper{
   display:none !important;
 }
+
+/* Safety: ensure premium texture "favorite" stars never leak into fullscreen viewer.
+   Fullscreen viewer must remain strictly minimal (only Close + PNG buttons).
+   We keep this as an extra guard even though sidePane is normally hidden. */
+body.isFullscreenViewer .ppFavBtn{
+  display:none !important;
+}
 body.isFullscreenViewer .main{
   padding:0 !important;
   gap:0 !important;
