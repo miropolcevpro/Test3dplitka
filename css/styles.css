@@ -343,3 +343,16 @@ body.isFullscreenViewer .canvasWrap.isFullscreen{
 .seamBtns{display:flex;gap:8px;margin-top:8px}
 .seamBtns .btn{padding:6px 10px;border-radius:12px}
 
+
+
+/* Single-zone mode: disable multi-zone UI controls */
+body.singleZoneMode #addZoneBtn,
+body.singleZoneMode #splitZoneBtn,
+body.singleZoneMode #dupZoneBtn,
+body.singleZoneMode #delZoneBtn,
+body.singleZoneMode .zoneLinkToggle,
+body.singleZoneMode .zoneLinkBtn,
+body.singleZoneMode .zoneStar,
+body.singleZoneMode .zoneList .zoneItem .ppZoneActions{
+  display:none !important;
+}

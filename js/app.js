@@ -250,7 +250,28 @@ function setActiveStep(step){
     try{updateUxStatus();}catch(_){ }
   }
 
-  function addZoneAndArmContour(){
+  
+  function enforceSingleZoneMode(){
+    // Product decision: multi-zone paving is temporarily disabled for stability.
+    if(!state.ui) state.ui = {};
+    state.ui.singleZoneMode = true;
+    try{ document.body && document.body.classList.add("singleZoneMode"); }catch(_){}
+
+    // Keep only the master/first zone. Preserve cutouts in that zone.
+    if(Array.isArray(state.zones) && state.zones.length>1){
+      const z0 = state.zones[0];
+      state.zones = [z0];
+      if(state.ui.activeZoneId !== z0.id) state.ui.activeZoneId = z0.id;
+      if(!state.ui.masterZoneId) state.ui.masterZoneId = z0.id;
+    }
+  }
+
+function addZoneAndArmContour(){
+    if(state.ui && state.ui.singleZoneMode){
+      try{ API && API.setStatus && API.setStatus("Дополнительные участки временно отключены"); }catch(_){}
+      return;
+    }
+
     // Z-A: Atomic Add Zone Arm — create a new zone and immediately start contouring it.
     // Must be the single entry point for "+ Zone" to avoid state races.
     try{
@@ -317,6 +338,11 @@ function setActiveStep(step){
   }
 
   function startOrCancelSplit(){
+    if(state.ui && state.ui.singleZoneMode){
+      try{ API && API.setStatus && API.setStatus("Разделение на участки временно отключено"); }catch(_){}
+      return;
+    }
+
     const master = getMasterZone();
     if(!master){ API.setStatus("Нет участка для выделения"); return; }
     // Toggle off if already in split mode
@@ -2711,7 +2737,8 @@ if(calib3dToggleLinesBtn){
       pushHistory();
       state.assets.photoBitmap=null;state.assets.photoW=0;state.assets.photoH=0;
       state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
-      ensureActiveZone();renderZonesUI();ED.render();
+      ensureActiveZone();
+    enforceSingleZoneMode();renderZonesUI();ED.render();
       setActiveStep("photo");ED.setMode("photo");
       syncCloseButtonUI();
     });
@@ -2963,6 +2990,7 @@ el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
   async function bootstrap(){
     setBuildInfo();
     ensureActiveZone();
+    enforceSingleZoneMode();
 
     ED.init(el("editorCanvas"), el("glCanvas"));
     ED.bindInput();
