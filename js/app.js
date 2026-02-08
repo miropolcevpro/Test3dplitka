@@ -2689,59 +2689,6 @@ if(calib3dToggleLinesBtn){
     el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
     el("replacePhotoBtn").addEventListener("click",()=>el("photoInput").click());
 
-    // Auto-contour (Beta): generate a first-pass contour for the active/master zone.
-    const autoContourBtn = document.getElementById("autoContourBtn");
-    if(autoContourBtn){
-      autoContourBtn.addEventListener("click", async ()=>{
-        try{
-          if(!state.assets || !state.assets.photoBitmap){
-            API.setStatus("Сначала загрузите фото");
-            return;
-          }
-          if(!window.PhotoPaveAutoContour || typeof window.PhotoPaveAutoContour.run !== "function"){
-            API.setStatus("Автоконтур не готов");
-            return;
-          }
-
-          // Ensure there is an active zone.
-          if(!state.zones || !state.zones.length){
-            // Create the first zone and arm contour mode.
-            try{ addZoneAndArmContour(); }catch(_){ }
-          }
-
-          const z = S.getActiveZone() || (state.zones && state.zones[0]);
-          if(!z){ API.setStatus("Нет активной зоны"); return; }
-
-          API.setStatus("Автоконтур: вычисление…");
-          const poly = await window.PhotoPaveAutoContour.run();
-          if(!Array.isArray(poly) || poly.length < 3){
-            API.setStatus("Автоконтур: не удалось");
-            return;
-          }
-
-          // Apply as a closed contour so the user can immediately proceed, but keep editing enabled.
-          z.contour = poly.map(p=>({x:+p.x, y:+p.y}));
-          z.closed = true;
-
-          // Start contour mode and show overlay for manual refinement.
-          state.ui.showContour = true;
-          state.ui.mode = "contour";
-          try{ updateContourToggleBtn(); }catch(_){ }
-          try{ ED.resetInteraction(); }catch(_){ }
-          try{ ED.setMode("contour"); }catch(_){ }
-
-          // Notify guided flow (some patches listen to zoneClosed).
-          try{ window.dispatchEvent(new Event("pp:zoneClosed")); }catch(_){ }
-
-          ED.render();
-          API.setStatus("Автоконтур: готово — при необходимости подправьте точки");
-        }catch(e){
-          console.warn("[AutoContour] failed", e);
-          API.setStatus("Автоконтур: ошибка");
-        }
-      });
-    }
-
     // UX-P3: Guided flow triggers
     try{
       window.addEventListener("pp:zoneClosed",(ev)=>{
