@@ -356,3 +356,8 @@ body.singleZoneMode .zoneStar,
 body.singleZoneMode .zoneList .zoneItem .ppZoneActions{
   display:none !important;
 }
+
+
+/* v2.2.165: force-hide perspective control (not used in current mode) */
+#perspectiveField{display:none !important;}
+#perspectiveRange{display:none !important;}
