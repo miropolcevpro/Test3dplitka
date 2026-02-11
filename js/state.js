@@ -3,7 +3,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-		build: { version: "mvp-iter2.2.165-hide-perspective-strict",ts:new Date().toISOString()},
+		build: { version: "mvp-iter2.2.166-horizon_noflip_guard",ts:new Date().toISOString()},
 	    api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:false,config:null},
 
     ui:{

@@ -2226,10 +2226,30 @@ function _clampHorizonToFillContour(camBase, hVal, cfg){
 
   function _normalizeQuad(q){
     if(!q || q.length!==4) return null;
+    // q semantic order must stay: nearL, nearR, farR, farL (for homography mapping).
+    // Normalize only by enforcing near/far and left/right consistency; DO NOT reorder by winding sign,
+    // otherwise we can accidentally mirror textures on degenerate / narrow shapes.
     const area=_quadSignedArea(q);
     if(!isFinite(area) || Math.abs(area) < 1e-3) return null;
-    if(area < 0) return [q[0],q[3],q[2],q[1]];
-    return q;
+
+    let nL = q[0], nR = q[1], fR = q[2], fL = q[3];
+
+    // Ensure "near" is below "far" in image space (y grows downward).
+    const yNear = (nL.y + nR.y) * 0.5;
+    const yFar  = (fL.y + fR.y) * 0.5;
+    if(yNear < yFar){
+      // swap near<->far pairs while keeping left/right
+      const _nL = fL, _nR = fR, _fR = nR, _fL = nL;
+      nL=_nL; nR=_nR; fR=_fR; fL=_fL;
+    }
+
+    // Ensure left/right ordering
+    if(nR.x < nL.x){
+      const tn=nL; nL=nR; nR=tn;
+      const tf=fL; fL=fR; fR=tf;
+    }
+
+    return [nL, nR, fR, fL];
   }
 
   
@@ -2582,9 +2602,7 @@ function _inferQuadFromContour(contour, params, w, h, lockExtrema){
   const dyH = horizon * 0.22 * (photoH||h||1);
   farL.y += dyH; farR.y += dyH;
 
-  const conv = Math.max(0, Math.min(0.35, (-horizon)*0.25));
-  farL.x = farL.x + (cx - farL.x) * conv;
-  farR.x = farR.x + (cx - farR.x) * conv;
+  const conv = 0.0; // v2.2.166: horizon should not introduce lateral convergence (prevents "horizon moves left/right")
 
   // Ensure far remains "in front" of near along the inferred depth direction.
   // Default behavior uses image-space Y (y grows downward). For AI-guided quads, use projection on ai direction.
