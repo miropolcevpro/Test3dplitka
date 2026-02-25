@@ -2598,11 +2598,57 @@ function _inferQuadFromContour(contour, params, w, h, lockExtrema){
   const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1)); // kept for downstream camera mapping only
   const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
 
-  const cx = (nearL.x + nearR.x) * 0.5;
-  const dyH = horizon * 0.22 * (photoH||h||1);
-  farL.y += dyH; farR.y += dyH;
+  // v2.2.167: Horizon must move "into depth" (along the inferred depth axis),
+  // not drift left/right in screen X.
+  // On ambiguous contours (squares/rectangles/triangles), moving far edge only in Y can feel
+  // like "left-right" because the inferred axis may be unstable. We therefore apply horizon
+  // as a translation along an explicit depth direction d, and apply convergence symmetrically
+  // along the perpendicular axis u (never raw X).
+  const Href = (photoH||h||1);
 
-  const conv = 0.0; // v2.2.166: horizon should not introduce lateral convergence (prevents "horizon moves left/right")
+  // Infer a stable depth direction in image space.
+  // Prefer AI plane dir when available; otherwise use near->far mid vector.
+  let d = null;
+  if(usedAi && params && params._aiPlaneDir && isFinite(params._aiPlaneDir.x) && isFinite(params._aiPlaneDir.y)){
+    const dm = Math.hypot(params._aiPlaneDir.x, params._aiPlaneDir.y);
+    if(isFinite(dm) && dm > 1e-6) d = { x: params._aiPlaneDir.x/dm, y: params._aiPlaneDir.y/dm };
+  }
+  if(!d){
+    const midNear = { x:(nearL.x+nearR.x)*0.5, y:(nearL.y+nearR.y)*0.5 };
+    const midFar  = { x:(farL.x+farR.x)*0.5,   y:(farL.y+farR.y)*0.5 };
+    let dx = midFar.x - midNear.x;
+    let dy = midFar.y - midNear.y;
+    const dm = Math.hypot(dx,dy);
+    if(isFinite(dm) && dm > 1e-6) d = { x: dx/dm, y: dy/dm };
+  }
+  // Ensure d points "up" in image-space (towards far; y grows downward).
+  if(d && d.y > 0){ d = {x:-d.x, y:-d.y}; }
+  const u = d ? { x:-d.y, y:d.x } : { x:1, y:0 };
+
+  // Apply horizon as a shift along depth axis.
+  // Negative horizon => push far edge further "up" (more depth).
+  const shift = (-horizon) * 0.22 * Href;
+  if(d){
+    farL.x += d.x*shift; farL.y += d.y*shift;
+    farR.x += d.x*shift; farR.y += d.y*shift;
+  }else{
+    // Fallback: legacy Y shift
+    farL.y += (-horizon) * 0.22 * Href;
+    farR.y += (-horizon) * 0.22 * Href;
+  }
+
+  // Convergence: when horizon pushes far away (horizon<0), slightly narrow the far edge
+  // towards its midpoint along u (perpendicular to depth), never along raw X.
+  const convK = Math.max(0, Math.min(0.35, (-horizon)*0.25));
+  if(convK > 1e-6 && d){
+    const midFar = { x:(farL.x+farR.x)*0.5, y:(farL.y+farR.y)*0.5 };
+    const proj = (p)=>((p.x-midFar.x)*u.x + (p.y-midFar.y)*u.y);
+    const setFromProj = (p, t)=>({ x: midFar.x + u.x*t, y: midFar.y + u.y*t });
+    const tL = proj(farL);
+    const tR = proj(farR);
+    farL = setFromProj(farL, tL*(1.0-convK));
+    farR = setFromProj(farR, tR*(1.0-convK));
+  }
 
   // Ensure far remains "in front" of near along the inferred depth direction.
   // Default behavior uses image-space Y (y grows downward). For AI-guided quads, use projection on ai direction.
@@ -2666,12 +2712,25 @@ function _inferQuadFromContour(contour, params, w, h, lockExtrema){
       let fL = {x: baseFarL.x, y: baseFarL.y};
       let fR = {x: baseFarR.x, y: baseFarR.y};
 
-      const dy = (h0 * t) * 0.22 * (photoH||h||1);
-      fL.y += dy; fR.y += dy;
+      // Apply horizon along depth axis (never raw Y), and convergence along u.
+      const shift = (-(h0*t)) * 0.22 * (photoH||h||1);
+      if(d){
+        fL.x += d.x*shift; fL.y += d.y*shift;
+        fR.x += d.x*shift; fR.y += d.y*shift;
+      }else{
+        fL.y += shift; fR.y += shift;
+      }
 
       const cconv = Math.max(0, Math.min(0.35, (-(h0*t))*0.25));
-      fL.x = fL.x + (cx - fL.x) * cconv;
-      fR.x = fR.x + (cx - fR.x) * cconv;
+      if(cconv > 1e-6 && d){
+        const mid = { x:(fL.x+fR.x)*0.5, y:(fL.y+fR.y)*0.5 };
+        const proj = (p)=>((p.x-mid.x)*u.x + (p.y-mid.y)*u.y);
+        const setFrom = (tt)=>({ x: mid.x + u.x*tt, y: mid.y + u.y*tt });
+        const tL = proj(fL);
+        const tR = proj(fR);
+        fL = setFrom(tL*(1.0-cconv));
+        fR = setFrom(tR*(1.0-cconv));
+      }
 
       if(fL.y >= nearL.y - 1 || fR.y >= nearR.y - 1){
         const fy = Math.min(nearL.y, nearR.y) - 1;
