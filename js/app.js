@@ -66,6 +66,10 @@
       setHiddenById("calib3dFeature", true);
     }
 
+    if(!relEnabled("autoContourQuick", false) || !relVisible("autoContourQuick", true)){
+      setHiddenById("autoContourQuickBtn", true);
+    }
+
     if(!relEnabled("advancedPanel", true)){
       setHiddenById("toggleAdvancedBtn", true);
       setHiddenById("settingsAdvanced", true);
@@ -540,8 +544,26 @@
     }
   }
 
+  function updateAutoContourQuickUI(){
+    const btn = el("autoContourQuickBtn");
+    if(!btn) return;
+    if(!relVisible("autoContourQuick", true)){
+      setNodeHidden(btn, true);
+      return;
+    }
+    setNodeHidden(btn, false);
+    const z = S.getActiveZone ? S.getActiveZone() : null;
+    const hasPhoto = !!(state.assets && state.assets.photo);
+    const closed = !!(z && z.closed && Array.isArray(z.contour) && z.contour.length >= 4);
+    btn.disabled = !hasPhoto || !closed;
+    if(!hasPhoto) btn.title = "Сначала загрузите фото участка";
+    else if(!closed) btn.title = "Сначала замкните основной контур";
+    else btn.title = "Автоматически оценить перспективу по уже замкнутому контуру";
+  }
+
   function syncContourHintUi(){
     try{ updateContourAssistUI(); }catch(_){ }
+    try{ updateAutoContourQuickUI(); }catch(_){ }
     if(_contourAssistHintLock) return;
     try{
       const hint = el("hintText");
@@ -2183,6 +2205,7 @@ function applyChangeToTiling(change){
     const calib3dResetBtn = document.getElementById("calib3dResetBtn");
     const calib3dExitBtn = document.getElementById("calib3dExitBtn");
     const calib3dAutoContourBtn = document.getElementById("calib3dAutoContourBtn");
+    const autoContourQuickBtn = document.getElementById("autoContourQuickBtn");
     const calib3dToggleLinesBtn = document.getElementById("calib3dToggleLinesBtn");
     function renderAiStatus(){
       if(!aiStatusEl) return;
@@ -2367,6 +2390,7 @@ function applyChangeToTiling(change){
       if(!z || !z.closed || !Array.isArray(z.contour) || z.contour.length < 4){
         c3.status = "error";
         c3.error = "Сначала замкните контур зоны (минимум 4 точки).";
+        try{ API && API.setStatus && API.setStatus(c3.error); }catch(_){ }
         try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
         ED.render();
         return;
@@ -2375,6 +2399,7 @@ function applyChangeToTiling(change){
       if(!window.PhotoPaveCameraCalib || typeof window.PhotoPaveCameraCalib.autoLinesFromContour !== "function" || typeof window.PhotoPaveCameraCalib.computeFromLines !== "function"){
         c3.status = "error";
         c3.error = "Модуль калибровки не готов.";
+        try{ API && API.setStatus && API.setStatus(c3.error); }catch(_){ }
         try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
         ED.render();
         return;
@@ -2387,6 +2412,7 @@ function applyChangeToTiling(change){
       if(!r || !r.ok || !r.lines){
         c3.status = "error";
         c3.error = "Авто по контуру не удалось (" + (r && r.reason ? r.reason : "weak") + "). Попробуйте ручные линии.";
+        try{ API && API.setStatus && API.setStatus(c3.error); }catch(_){ }
         try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
         ED.render();
         return;
@@ -2425,11 +2451,13 @@ function applyChangeToTiling(change){
         c3.error = null;
         c3.warn = (res && res.reason) ? String(res.reason) : (r && r.warn ? String(r.warn) : "calibration_weak");
       }
+      try{ API && API.setStatus && API.setStatus((c3.status === "ready" && !c3.error) ? "Автоконтур применён" : (c3.warn ? ("Автоконтур: " + c3.warn) : "Автоконтур завершён")); }catch(_){ }
       try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
       ED.render();
     }
 
     if(calib3dAutoContourBtn && relEnabled("calib3d", false)) calib3dAutoContourBtn.addEventListener("click", _autoCalibFromContour);
+    if(autoContourQuickBtn && relEnabled("autoContourQuick", false)) autoContourQuickBtn.addEventListener("click", _autoCalibFromContour);
 if(calib3dToggleLinesBtn && relEnabled("calib3d", false)){
       calib3dToggleLinesBtn.addEventListener("click", ()=>{
         const c3 = _ensureCalib3DState();
@@ -3626,6 +3654,7 @@ el("exportPngBtn").addEventListener("click",()=>{ try{ ANALYTICS && ANALYTICS.tr
     ED.bindInput();
     bindUI();
     syncCloseButtonUI();
+    try{ updateAutoContourQuickUI(); }catch(_){ }
     pushHistory();
 
     try{
