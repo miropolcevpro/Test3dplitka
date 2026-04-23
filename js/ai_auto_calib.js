@@ -25,6 +25,21 @@
   }
 
   const state = S.state;
+  const RELEASE = window.PhotoPaveReleaseConfig || null;
+  const assetPolicy = (state.api && state.api.assetPolicy) || (RELEASE && RELEASE.assetDelivery) || {};
+
+  function _absAssetUrl(url){
+    try{ return new URL(url, document.baseURI).toString(); }catch(_){ return String(url||""); }
+  }
+  function _assetAllowed(url, kind, fallback){
+    try{
+      if(RELEASE && typeof RELEASE.isAssetAllowed === "function") return RELEASE.isAssetAllowed(url, kind);
+    }catch(_){ }
+    return !!fallback;
+  }
+  function _filterScriptUrls(urls){
+    return (urls||[]).map((u)=>_absAssetUrl(u)).filter((u)=>_assetAllowed(u, "script", true));
+  }
 
   function _now(){ return (typeof performance!=="undefined" && performance.now) ? performance.now() : Date.now(); }
   function _clamp(v,a,b){ v=+v; return v<a?a:(v>b?b:v); }
@@ -36,14 +51,14 @@
   // Priority is LOCAL (GitHub Pages repo) for maximum stability in Tilda iframe.
   // Recommended: ship a single-file build (WASM embedded) at:
   //   assets/vendor/opencv/opencv.js
-  const OPENCV_CANDIDATES = [
+  const OPENCV_CANDIDATES = _filterScriptUrls([
     // Local (preferred)
     "assets/vendor/opencv/opencv.js",
     // OpenCV official docs host (often available)
     "https://docs.opencv.org/4.x/opencv.js",
     // CDN fallback (may work depending on availability)
     "https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"
-  ];
+  ]);
 
   let _cvReady = null;
   function _loadScript(url){
@@ -64,16 +79,16 @@ let _cvWorkerReqId = 1;
 const _cvWorkerPending = new Map();
 
 function _absUrl(rel){
-  try{ return new URL(rel, document.baseURI).toString(); }catch(_){ return rel; }
+  return _absAssetUrl(rel);
 }
 
 function _getOpenCVCandidatesAbs(){
-  // Prefer local single-file build. Fallback to online sources.
-  return [
-    _absUrl("assets/vendor/opencv/opencv.js"),
+  // Prefer local single-file build. Fallback to allowlisted online sources.
+  return _filterScriptUrls([
+    "assets/vendor/opencv/opencv.js",
     "https://docs.opencv.org/4.x/opencv.js",
     "https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"
-  ];
+  ]);
 }
 
 function ensureOpenCV(){

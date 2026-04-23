@@ -17,6 +17,31 @@
   }
 
   const state = S.state;
+  const RELEASE = window.PhotoPaveReleaseConfig || null;
+  const assetPolicy = (state.api && state.api.assetPolicy) || (RELEASE && RELEASE.assetDelivery) || {};
+
+  function _absUrl(url){
+    try{ return new URL(url, window.location.href).toString(); }
+    catch(_){ return String(url||""); }
+  }
+  function _assetAllowed(url, kind, fallback){
+    try{
+      if(RELEASE && typeof RELEASE.isAssetAllowed === "function") return RELEASE.isAssetAllowed(url, kind);
+    }catch(_){ }
+    return !!fallback;
+  }
+  function _ensureAllowed(url, kind, label){
+    const abs = _absUrl(url);
+    if(!_assetAllowed(abs, kind, true)) throw new Error((label||kind||"asset") + " blocked by release asset policy: " + abs);
+    return abs;
+  }
+  function _filterScriptCandidates(list){
+    return (list||[]).filter((cand)=>{
+      const scriptOk = cand && cand.url && _assetAllowed(cand.url, "script", true);
+      const wasmOk = !cand || !cand.wasmBase || _assetAllowed(cand.wasmBase, "wasm", true);
+      return !!(scriptOk && wasmOk);
+    });
+  }
 
   // -------- Utilities
   function nowMs(){ return (typeof performance!=="undefined" && performance.now) ? performance.now() : Date.now(); }
@@ -79,10 +104,33 @@
     }
   }
 
-  function chooseTierAndQuality(deviceInfo){
-    // Conservative: WebGPU => ultra, else basic.
-    if(deviceInfo?.webgpu) return { tier:"high", quality:"ultra" };
-    return { tier:"low", quality:"basic" };
+  function probeWebGL2(){
+    try{
+      const c = document.createElement("canvas");
+      return !!(c.getContext("webgl2", { failIfMajorPerformanceCaveat:true }) || c.getContext("webgl2"));
+    }catch(_){ return false; }
+  }
+
+  function resolveCapabilityProfile(env){
+    try{
+      if(RELEASE && typeof RELEASE.resolveCapabilityProfile === "function") return RELEASE.resolveCapabilityProfile(env || {});
+    }catch(_){ }
+    return { tier:(env && env.webgpu) ? "full" : "reduced", label:(env && env.webgpu) ? "Full" : "Reduced", reason:"Fallback capability profile", ultraVisible:true, ultraAllowed:!!(env && env.webgpu), ultraDefault:!!(env && env.webgpu), runDepth:!!(env && env.webgpu), quality:(env && env.webgpu) ? "ultra" : "basic", preferProvider:(env && env.webgpu) ? "auto" : "none", maxInputLongSide:(env && env.webgpu) ? 336 : 0, exportScale:(env && env.webgpu) ? 1.0 : 0.9 };
+  }
+
+  async function probeCapability(info){
+    const webgpu = await probeWebGPU();
+    const bmp = info && info.bitmap;
+    const env = {
+      webgpu: !!webgpu.webgpu,
+      webgl2: probeWebGL2(),
+      mem: (typeof navigator !== "undefined" && typeof navigator.deviceMemory === "number") ? navigator.deviceMemory : null,
+      cores: (typeof navigator !== "undefined" && typeof navigator.hardwareConcurrency === "number") ? navigator.hardwareConcurrency : null,
+      isTouch: (typeof navigator !== "undefined" && typeof navigator.maxTouchPoints === "number") ? navigator.maxTouchPoints > 0 : false,
+      reducedMotion: !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
+      photoMp: (bmp && bmp.width && bmp.height) ? ((bmp.width * bmp.height) / 1000000) : 0
+    };
+    return { webgpu, env, profile: resolveCapabilityProfile(Object.assign({}, env, { webgpu: !!webgpu.webgpu })) };
   }
 
   function setStatus(nextStatus){
@@ -92,20 +140,22 @@
   }
 
   // -------- ORT loader (local-first, CDN fallback)
-  const USE_LOCAL_ORT = !!(S && S.state && S.state.ai && S.state.ai.models && S.state.ai.models.useLocalOrt);
-  const ORT_SCRIPT_CANDIDATES = [
-    // CDN (default). Pinned versions; wasmBase MUST match JS bundle version.
-    { url: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.min.js",
-      wasmBase: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/" },
+  const USE_LOCAL_ORT = !!((assetPolicy && assetPolicy.preferLocalAiRuntime) || (S && S.state && S.state.ai && S.state.ai.models && S.state.ai.models.useLocalOrt));
+  const ORT_SCRIPT_CANDIDATES = _filterScriptCandidates((()=>{
+    const list = [
+      // CDN (default). Pinned versions; wasmBase MUST match JS bundle version.
+      { url: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.min.js",
+        wasmBase: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/" },
 
-    { url: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/ort.all.min.js",
-      wasmBase: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/" }
-  ];
-
-  if(USE_LOCAL_ORT){
-    // Optional local override (kept off by default to avoid 404 noise in production).
-    ORT_SCRIPT_CANDIDATES.unshift({ url: "assets/ai/ort/ort.all.min.js", wasmBase: "assets/ai/ort/" });
-  }
+      { url: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/ort.all.min.js",
+        wasmBase: "https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.23.0/" }
+    ];
+    if(USE_LOCAL_ORT){
+      // Optional local override with highest priority.
+      list.unshift({ url: "assets/ai/ort/ort.all.min.js", wasmBase: "assets/ai/ort/" });
+    }
+    return list;
+  })());
 
   // Default depth model URL. Can be overridden via state.ai.models.depthUrl.
   // Team-provided model in Yandex Object Storage (Depth Anything V2 ViT-B outdoor dynamic).
@@ -126,9 +176,10 @@
 
   async function _loadScriptOnce(url){
     // Load script once; no preflight HEAD to avoid noisy 404 logs on GitHub Pages.
+    const abs = _ensureAllowed(url, "script", "AI runtime script");
     return new Promise((resolve,reject)=>{
       const s = document.createElement("script");
-      s.src = url;
+      s.src = abs;
       s.async = true;
       s.onload = ()=>resolve(true);
       s.onerror = ()=>reject(new Error("Failed to load script: "+url));
@@ -176,10 +227,10 @@
   let _depthSession = null;
   let _depthSessionProvider = null;
 
-  function _pickDepthInputLongSide(tier){
-    // Depth Anything V2 *dynamic* ONNX models require H and W to be multiples of 14.
-    // Pick values that are already multiples of 14 so snapping doesn't upscale.
-    // high: 336 (=24*14), mid/low: 280 (=20*14)
+  function _pickDepthInputLongSide(ai){
+    const cap = ai && ai.capability ? ai.capability : null;
+    if(cap && cap.maxInputLongSide) return cap.maxInputLongSide;
+    const tier = ai && ai.device ? ai.device.tier : "low";
     return (tier === "high") ? 336 : 280;
   }
 
@@ -459,8 +510,9 @@
     state.ai = state.ai || {};
     const ai = state.ai;
     if(ai.enabled === false) return;
-    // Patch 2+: prefer WebGPU when available; otherwise use WASM fallback (slower).
-    if(ai.quality !== "ultra") return;
+    const cap = ai.capability || {};
+    if(cap.runDepth === false) return;
+    if(ai.quality === "basic") return;
 
     const bmp = info?.bitmap;
     if(!bmp || !bmp.width || !bmp.height) return;
@@ -470,6 +522,7 @@
 
     try{
       const depthUrl = (ai.models && ai.models.depthUrl) ? ai.models.depthUrl : DEFAULT_DEPTH_MODEL_URL;
+      _ensureAllowed(depthUrl, "model", "Depth model");
       // If local model file is missing, skip depth stage to avoid console 404 noise.
       if(_isRelativeUrl(depthUrl)){
         const ok = await _headExists(depthUrl);
@@ -485,13 +538,17 @@
       const ort = await ensureOrtLoaded();
 
       // Prefer WebGPU. If it fails at session creation or run, we fallback to wasm (still safe, but can be slower).
-      let provider = "webgpu";
+      let provider = (cap.preferProvider === "wasm") ? "wasm" : "webgpu";
       let sessionInfo = null;
       try{
         sessionInfo = await _ensureDepthSession(ort, provider);
-      }catch(eWebgpu){
-        provider = "wasm";
-        sessionInfo = await _ensureDepthSession(ort, provider);
+      }catch(ePrimary){
+        if(provider !== "wasm"){
+          provider = "wasm";
+          sessionInfo = await _ensureDepthSession(ort, provider);
+        }else{
+          throw ePrimary;
+        }
       }
 
       const session = sessionInfo.session;
@@ -499,7 +556,7 @@
       const outName = (session.outputNames && session.outputNames.length) ? session.outputNames[0] : null;
       if(!inName || !outName) throw new Error("Depth model IO names not found");
 
-      const longSide = _pickDepthInputLongSide(ai.device.tier);
+      const longSide = _pickDepthInputLongSide(ai);
       // Depth Anything V2 dynamic ONNX requires H/W multiples of 14.
       // We detect dynamic models by filename to keep this patch minimal and safe.
       const isDynamic = /_dynamic\.onnx(\?|$)/i.test(depthUrl);
@@ -624,20 +681,44 @@
         }
       }catch(_){/* no-op */}
 
-      // Probe device
+      // Probe device + capability profile
       const tProbe0 = nowMs();
-      const dev = await probeWebGPU();
+      const capProbe = await probeCapability(info);
+      const dev = capProbe.webgpu || { webgpu:false, ms:0, error:null };
+      const env = capProbe.env || {};
+      const profile = capProbe.profile || resolveCapabilityProfile({ webgpu: !!dev.webgpu });
       ai.device = ai.device || {};
       ai.device.webgpu = !!dev.webgpu;
+      ai.device.webgl2 = !!env.webgl2;
+      ai.device.mem = env.mem ?? ai.device.mem ?? null;
+      ai.device.cores = env.cores ?? ai.device.cores ?? null;
       ai.device.probeMs = dev.ms ?? Math.round(nowMs() - tProbe0);
       if(dev.error) ai.device.error = dev.error;
-
-      const tier = chooseTierAndQuality(dev);
-      ai.device.tier = tier.tier;
-      ai.quality = tier.quality;
+      ai.capability = Object.assign({}, profile, { photoMp: env.photoMp || 0, mem: env.mem ?? null, cores: env.cores ?? null, webgl2: !!env.webgl2, webgpu: !!dev.webgpu });
+      ai.device.tier = profile.tier === "full" ? "high" : (profile.tier === "reduced" ? "mid" : "low");
+      ai.quality = profile.quality || "basic";
       ai.confidence = 0;
 
-      // Depth stage (Patch 2) - safe no-op if unavailable
+      if(profile.ultraAllowed === false){
+        ai.enabled = false;
+        ai.depthReady = false;
+        ai.depthMap = null;
+        setStatus("safe_mode");
+        window.dispatchEvent(new CustomEvent("ai:capability", { detail: { capability: ai.capability } }));
+        ai.timings.totalMs = Math.round(nowMs() - startedAt);
+        return;
+      }
+      if(ai.userToggled !== true){
+        ai.enabled = !!profile.ultraDefault;
+      }
+      window.dispatchEvent(new CustomEvent("ai:capability", { detail: { capability: ai.capability } }));
+      if(ai.enabled === false){
+        setStatus("idle");
+        ai.timings.totalMs = Math.round(nowMs() - startedAt);
+        return;
+      }
+
+      // Depth stage (Patch 2) - safe no-op if unavailable or downgraded.
       await runDepth(info);
 
       ai.timings.totalMs = Math.round(nowMs() - startedAt);
@@ -659,6 +740,7 @@
   // we cache the occlusion mask by photoHash and deliver it to the WebGL compositor.
 
   const MP_VERSION = "0.10.15";
+  const MP_IMPORT_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
   const MP_WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
   // Default model shipped by MediaPipe for InteractiveSegmenter (publicly hosted).
   const MP_DEFAULT_MODEL_URL = "https://storage.googleapis.com/mediapipe-tasks/interactive_segmenter/ptm_512_hdt_ptm_woid.tflite";
@@ -673,13 +755,14 @@
     if(_mpSegmenter) return _mpSegmenter;
     if(!_mpVision){
       // Dynamic import keeps this optional and avoids bundler requirements.
-      _mpVision = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`);
+      _mpVision = await import(_ensureAllowed(MP_IMPORT_URL, "script", "MediaPipe runtime"));
     }
     const FilesetResolver = _mpVision.FilesetResolver;
     const InteractiveSegmenter = _mpVision.InteractiveSegmenter;
-    const fileset = await FilesetResolver.forVisionTasks(MP_WASM_BASE);
+    const fileset = await FilesetResolver.forVisionTasks(_ensureAllowed(MP_WASM_BASE, "wasm", "MediaPipe wasm"));
+    const modelAssetPath = _ensureAllowed((state.ai?.models?.interactiveSegUrl || MP_DEFAULT_MODEL_URL), "model", "Interactive segmenter model");
     _mpSegmenter = await InteractiveSegmenter.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: (state.ai?.models?.interactiveSegUrl || MP_DEFAULT_MODEL_URL) },
+      baseOptions: { modelAssetPath },
       outputCategoryMask: true,
       outputConfidenceMasks: false
     });
@@ -827,10 +910,22 @@
   const API = {
     setEnabled(v){
       state.ai = state.ai || {};
+      state.ai.userToggled = true;
+      const cap = state.ai.capability || null;
+      if(v && cap && cap.ultraAllowed === false){
+        state.ai.enabled = false;
+        setStatus("safe_mode");
+        window.dispatchEvent(new CustomEvent("ai:capability", { detail: { capability: cap } }));
+        return false;
+      }
       state.ai.enabled = !!v;
       if(!state.ai.enabled){
         setStatus("idle");
       }
+      return state.ai.enabled;
+    },
+    getCapability(){
+      return state.ai && state.ai.capability ? state.ai.capability : null;
     },
     onPhotoLoaded(info){
       state.ai = state.ai || {};
@@ -852,7 +947,9 @@
     enabled: true,
     quality: "basic",
     status: "idle",
-    device: { webgpu:false, tier:"low" },
+    userToggled:false,
+    device: { webgpu:false, webgl2:true, tier:"low", mem:null, cores:null },
+    capability: { tier:"reduced", label:"Reduced", reason:"Ожидание проверки устройства", ultraVisible:true, ultraAllowed:true, ultraDefault:false, runDepth:true, quality:"balanced", preferProvider:"auto", maxInputLongSide:224, exportScale:0.92 },
     photoHash: null,
     horizonY: null,
     vanish: null,

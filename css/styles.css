@@ -11,6 +11,16 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .step{padding:8px 10px;border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:12px}
 .step--active{border-color:rgba(0,229,255,0.45);color:var(--text);background:rgba(0,229,255,0.08)}
 .main{display:flex;gap:12px;padding:10px 12px;flex:1;min-height:0;align-items:stretch}
+
+.simpleShell{display:flex;flex-direction:column;gap:10px;padding:12px 18px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(0,229,255,0.08),rgba(0,229,255,0.03));}
+.simpleShell__eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.simpleShell__head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.simpleShell__title{font-size:16px;font-weight:700;line-height:1.2}
+.simpleShell__text{font-size:13px;line-height:1.4;color:rgba(231,238,252,0.82);max-width:920px;margin-top:4px}
+.simpleShell__tag{padding:8px 10px;border-radius:999px;border:1px solid rgba(0,229,255,0.22);background:rgba(0,229,255,0.08);font-size:12px;color:var(--text);white-space:nowrap}
+.simpleShell__actions{display:flex;gap:10px;flex-wrap:wrap}
+@media (max-width:720px){.simpleShell{padding:12px 16px}.simpleShell__title{font-size:15px}.simpleShell__text{font-size:12px}.simpleShell__tag{font-size:11px;padding:7px 9px}}
+
 .canvasPane{background:var(--panel2);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;flex:1;min-width:0;min-height:0}
 .canvasToolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
 .toolGroup{display:flex;gap:8px;align-items:center;flex-wrap:wrap}

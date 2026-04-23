@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_167_0" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_175_p08" />
 </head>
 <body>
   <div class="app">
@@ -21,12 +21,26 @@
 
     <div class="stepper" id="stepper">
       <div class="step step--active" data-step="photo">1 Фото</div>
-      <div class="step" data-step="zones" hidden>2 Участки</div>
-      <div class="step" data-step="cutouts">3 Вырезы</div>
-      <div class="step" data-step="export">4 Сохранить</div>
+      <div class="step" data-step="zone">2 Зона</div>
+      <div class="step" data-step="tile">3 Плитка</div>
+      <div class="step" data-step="result">4 Результат</div>
     </div>
     <div class="uxStatus" id="uxStatus"></div>
     <div class="uxHint" id="uxHint"></div>
+    <section class="simpleShell" id="simpleShell" aria-live="polite">
+      <div class="simpleShell__eyebrow">Простой сценарий</div>
+      <div class="simpleShell__head">
+        <div>
+          <div class="simpleShell__title" id="simpleShellTitle">Загрузите фото участка</div>
+          <div class="simpleShell__text" id="simpleShellText">Начните с фотографии двора или дорожки. Затем система проведёт вас по шагам.</div>
+        </div>
+        <div class="simpleShell__tag" id="simpleShellStepTag">Шаг 1 из 4</div>
+      </div>
+      <div class="simpleShell__actions">
+        <button class="btn" id="simpleShellPrimaryBtn" type="button">Загрузить фото</button>
+        <button class="btn btn--ghost" id="simpleShellSecondaryBtn" type="button">Доп. инструменты</button>
+      </div>
+    </section>
 
     <main class="main">
       <aside class="leftPane" id="leftPane">
@@ -61,7 +75,7 @@
           <div class="toolGroup">
             <button class="btn btn--ghost" id="modePhoto">Фото</button>
             <button class="btn btn--ghost" id="modeContour">Контур</button>
-            <button class="btn btn--ghost" id="modeCutout">Вырез</button>
+            <button class="btn btn--ghost" id="modeCutout" hidden>Вырез</button>
             <button class="btn btn--ghost" id="modeView">Просмотр</button>
             <button class="btn btn--ghost btn--iconText" id="openFullscreenBtn" title="На весь экран">
               <span class="btnIcon" aria-hidden="true">⛶</span>
@@ -229,6 +243,7 @@
               <div id="aiStatusText" class="note note--compact"></div>
 
               <!-- Premium: interactive occlusion (tile under objects) -->
+              <div id="occlusionFeature">
               <label class="chkline" style="margin-top:8px">
                 <input type="checkbox" id="aiOccChk" checked />
                 <span>Перекрытия (объекты)</span>
@@ -240,7 +255,9 @@
               <div class="note note--compact" id="aiOccHint" style="margin-top:6px; display:none">
                 Режим выделения: клик по объекту на фото. Shift+клик — убрать выделение.
               </div>
+              </div>
 
+              <div id="calib3dFeature">
               <div class="note" style="margin-top:10px">
                 <b>3D‑калибровка перспективы (Beta)</b><br />
                 Для профессиональной перспективы отметьте 4 линии: <i>A1+A2</i> — вдоль направления укладки (в глубину), <i>B1+B2</i> — поперёк.
@@ -269,6 +286,7 @@
                 <button id="calib3dExitBtn" type="button" class="btn btn--ghost">Выйти</button>
               </div>
               <div id="calib3dStatusText" class="note note--compact" style="margin-top:6px"></div>
+              </div>
             </div>
 
             </div>
@@ -303,7 +321,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" id="cutoutsPanel" hidden>
           <div class="panel__title">Вырезы</div>
           <div class="panel__body">
             <div class="row">
@@ -333,19 +351,23 @@
 
     <footer class="footer">
       <div>Photo Editor MVP • Iteration 1 • <span id="buildInfo"></span></div>
+      <div><button class="btn btn--ghost" id="copyDiagBtn" type="button">Копировать диагностику</button></div>
       <div class="muted">Рекомендуется: ПК Chrome/Edge/Яндекс.Браузер. Мобильная адаптация заложена.</div>
     </footer>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/state.js?v=iter2_2_167_0"></script>
-  <script src="js/updater.js?v=iter2_2_167_0"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_167_0"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_167_0"></script>
-  <script src="js/api.js?v=iter2_2_167_0"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_167_0"></script>
-  <script src="js/camera_calib.js?v=iter2_2_167_0"></script>
-  <script src="js/editor.js?v=iter2_2_167_0"></script>
-  <script src="js/app.js?v=iter2_2_167_0"></script>
+  <script src="js/release_config.js?v=iter2_2_175_p08"></script>
+  <script src="js/state.js?v=iter2_2_175_p08"></script>
+  <script src="js/diagnostics.js?v=iter2_2_175_p08"></script>
+  <script src="js/analytics.js?v=iter2_2_175_p08"></script>
+  <script src="js/updater.js?v=iter2_2_169_p02"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_172_p05"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_171_p04"></script>
+  <script src="js/api.js?v=iter2_2_173_p06"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_169_p02"></script>
+  <script src="js/camera_calib.js?v=iter2_2_169_p02"></script>
+  <script src="js/editor.js?v=iter2_2_175_p08"></script>
+  <script src="js/app.js?v=iter2_2_175_p08"></script>
 </body>
 </html>

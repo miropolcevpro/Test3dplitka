@@ -2,6 +2,8 @@
 window.PhotoPaveEditor=(function(){
   const {state,getActiveZone,getActiveCutout,pushHistory}=window.PhotoPaveState;
   const {loadImage}=window.PhotoPaveAPI;
+  const DIAG=window.PhotoPaveDiagnostics||null;
+  const ANALYTICS=window.PhotoPaveAnalytics||null;
   let canvas,ctx,dpr=1;
   let glCanvas=null;
   let compositor=null;
@@ -35,12 +37,14 @@ window.PhotoPaveEditor=(function(){
       compositor.init(glCanvas);
     }catch(e){
       console.error(e);
+      try{ DIAG && DIAG.report && DIAG.report("render_init_error", e, { stage:"compositor_init" }); }catch(_){ }
       window.PhotoPaveAPI.setStatus("WebGL2 недоступен — требуется современный браузер");
     }
 
     if(glCanvas){
       glCanvas.addEventListener('webglcontextlost', (ev)=>{
         try{ ev.preventDefault(); }catch(_){ }
+        try{ DIAG && DIAG.report && DIAG.report("render_context_lost", new Error("WebGL context lost"), { stage:"webglcontextlost" }); }catch(_){ }
         window.PhotoPaveAPI.setStatus('3D-движок был сброшен браузером. Перезагрузите страницу.');
       }, {passive:false});
       glCanvas.addEventListener('webglcontextrestored', ()=>{
@@ -51,7 +55,7 @@ window.PhotoPaveEditor=(function(){
           }
           if(compositor && glCanvas) compositor.resize(glCanvas.width||1, glCanvas.height||1);
           render();
-        }catch(e){ console.error(e); }
+        }catch(e){ console.error(e); try{ DIAG && DIAG.report && DIAG.report("render_context_restore_error", e, { stage:"webglcontextrestored" }); }catch(_){ } }
       });
     }
     window.addEventListener("resize",resize);resize();
@@ -886,6 +890,7 @@ function polyPath(points){
         await compositor.render(state);
       }catch(e){
         console.warn("[WebGLCompositor] render failed:", e);
+        try{ DIAG && DIAG.report && DIAG.report("render_error", e, { stage:"compositor_render" }); }catch(_){ }
         window.PhotoPaveAPI.setStatus("Ошибка WebGL-рендера (см. консоль)");
       }
     }
@@ -1172,7 +1177,9 @@ if(state.ui.mode==="contour"&&zone){
       return;
     }
     pushHistory();
+    const contourWasEmpty = !(zone.contour && zone.contour.length);
     zone.contour.push(pt);
+    if(contourWasEmpty){ try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("contour_started", { zoneId: zone.id || null, source:"canvas_point" }, { allowDuplicate:true }); }catch(_){ } }
     // Mobile-friendly auto-close: if the last added point lands near the first point,
     // close the polygon without requiring a perfectly accurate tap on the first handle.
     if(isCloseToFirst(zone.contour, zone.contour[zone.contour.length-1], SNAP_CLOSE_CSS*1.3)){
@@ -1216,7 +1223,9 @@ if(state.ui.mode==="contour"&&zone){
       return;
     }
     pushHistory();
+    const cutoutWasEmpty = !(cut.polygon && cut.polygon.length);
     cut.polygon.push(pt);
+    if(cutoutWasEmpty){ try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("cutout_started", { zoneId: zone.id || null, cutoutId: cut.id || null, source:"canvas_point", stage:"drawing" }, { allowDuplicate:true }); }catch(_){ } }
     cut.closed=false;
     render();
     return;
@@ -1404,6 +1413,9 @@ if(state.ui.mode==="contour"&&zone){
   }
   function setMode(mode){
     if(mode==="plane") mode="contour";
+    try{
+      if(state.ui && state.ui.singleZoneMode && mode==="split") mode="contour";
+    }catch(_){ }
     state.ui.mode=mode;
     hoverCanvas=null;
     hoverCloseCandidate=false;
@@ -1422,11 +1434,13 @@ if(state.ui.mode==="contour"&&zone){
     (async ()=>{
       try{
         if(!compositor){
+          try{ DIAG && DIAG.report && DIAG.report("export_blocked", new Error("WebGL compositor is not initialized"), { stage:"export_preflight" }); }catch(_){ }
           window.PhotoPaveAPI.setStatus("Экспорт недоступен: WebGL композитор не инициализирован");
           return;
         }
         // Robust download: prefer Blob/ObjectURL to avoid data: URL limits and blocked clicks in some browsers/iframes.
         const fileName = "paving_preview.png";
+        try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("export_started", { source:"editor_export" }); }catch(_){ }
         let blob = null;
         if(compositor && typeof compositor.exportPNGBlob === "function"){
           blob = await compositor.exportPNGBlob(state, {maxLongSide: Math.max(1, state.assets.photoW, state.assets.photoH)});
@@ -1450,12 +1464,14 @@ if(state.ui.mode==="contour"&&zone){
         catch(_){
           try{ window.open(url, "_blank"); }catch(__){}
         }
+        try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("export_success", { fileName: fileName, source:"editor_export", width: state.assets && state.assets.photoW ? state.assets.photoW : 0, height: state.assets && state.assets.photoH ? state.assets.photoH : 0 }); }catch(_){ }
         setTimeout(()=>{
           try{ document.body.removeChild(a); }catch(_){ }
           try{ URL.revokeObjectURL(url); }catch(_){ }
         }, 1500);
       }catch(e){
         console.warn(e);
+        try{ DIAG && DIAG.report && DIAG.report("export_error", e, { stage:"export_png" }); }catch(_){ }
         window.PhotoPaveAPI.setStatus("Не удалось экспортировать PNG (см. консоль)");
       }
     })();

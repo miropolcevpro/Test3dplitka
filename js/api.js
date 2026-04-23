@@ -1,17 +1,52 @@
 
 window.PhotoPaveAPI=(function(){
   const {state}=window.PhotoPaveState;
+  const RELEASE=window.PhotoPaveReleaseConfig||null;
+  const DIAG=window.PhotoPaveDiagnostics||null;
+  const assetPolicy=(state.api && state.api.assetPolicy) || (RELEASE && RELEASE.assetDelivery) || {};
   const setStatus=(t)=>{const el=document.getElementById("statusText");if(el)el.textContent=t||"";};
+
+  function _absUrl(url){
+    try{ return new URL(url, window.location.href).toString(); }
+    catch(_){ return String(url||""); }
+  }
+  function _assetAllowed(url, kind, fallback){
+    try{
+      if(RELEASE && typeof RELEASE.isAssetAllowed === "function") return RELEASE.isAssetAllowed(url, kind);
+    }catch(_){ }
+    return !!fallback;
+  }
+  function _ensureAllowed(url, kind, label){
+    const abs = _absUrl(url);
+    if(!_assetAllowed(abs, kind, true)) throw new Error((label||kind||"asset") + " blocked by release asset policy: " + abs);
+    return abs;
+  }
+  function _setAssetError(message, withStatus, extra){
+    state.assets = state.assets || {};
+    const prev = state.assets.lastLoadError || null;
+    state.assets.lastLoadError = message || null;
+    if(message && withStatus !== false) setStatus(message);
+    if(message && message !== prev){
+      try{
+        DIAG && DIAG.report && DIAG.report("asset_error", new Error(message), Object.assign({ withStatus: withStatus !== false }, extra||{}));
+      }catch(_){ }
+    }
+    return message;
+  }
+  function _clearAssetError(){
+    state.assets = state.assets || {};
+    state.assets.lastLoadError = null;
+    return null;
+  }
   async function _headExists(url){
     try{ const r=await fetch(url,{method:"HEAD",cache:"no-store"}); return (r && typeof r.ok==="boolean") ? !!r.ok : false; }
     catch(_){ return null; }
   }
 
   async function fetchJson(url,opts={}){
-    // opts may include headers, method, body
-
-    const res=await fetch(url,{...opts,headers:{...(opts.headers||{}),"Accept":"application/json"}});
-    if(!res.ok){const txt=await res.text().catch(()=> "");throw new Error(`HTTP ${res.status} ${res.statusText} for ${url} :: ${txt.slice(0,120)}`);}
+    const abs=_ensureAllowed(url,"json","JSON asset");
+    const res=await fetch(abs,{...opts,headers:{...(opts.headers||{}),"Accept":"application/json"}});
+    if(!res.ok){const txt=await res.text().catch(()=> "");throw new Error(`HTTP ${res.status} ${res.statusText} for ${abs} :: ${txt.slice(0,120)}`);}
     return await res.json();
   }
 
@@ -29,10 +64,10 @@ async function tryJsonCandidates(urls){
 function absFromStorageMaybe(p){
   if(!p) return null;
   if(typeof p!=="string") return null;
-  if(/^https?:\/\//i.test(p)) return p;
-  // common cases: "surfaces/..." or "/surfaces/..."
-  const key=p.replace(/^\//,"");
-  return state.api.storageBase.replace(/\/$/,"")+"/"+key;
+  const abs = /^https?:\/\//i.test(p)
+    ? p
+    : (state.api.storageBase.replace(/\/$/,"") + "/" + p.replace(/^\//,""));
+  return _assetAllowed(abs, "image", true) ? abs : null;
 }
   async function loadConfig(){
     setStatus("Загрузка config…");
@@ -41,34 +76,30 @@ function absFromStorageMaybe(p){
     try{cfg=await fetchJson(base+"/config");}catch(e1){try{cfg=await fetchJson(base+"/api/config");}catch(e2){cfg=null;}}
     state.api.config=cfg;
     const cand=cfg&&(cfg.apiBase||cfg.apiBaseUrl||cfg.baseUrl||cfg.gatewayBaseUrl||cfg.url);
-    state.api.apiBase=(typeof cand==="string"&&cand.startsWith("http"))?cand.replace(/\/$/,""):base;
+    if(typeof cand==="string" && cand.startsWith("http") && _assetAllowed(cand, "json", true)){
+      state.api.apiBase=cand.replace(/\/$/,"");
+    }else{
+      state.api.apiBase=base;
+    }
     setStatus("API: "+state.api.apiBase);
     return state.api.apiBase;
   }
   async function loadShapes(){
   setStatus("Загрузка форм…");
-  // In this photo-editor we treat shapes as PUBLIC static content.
-  // Many deployments protect /api/shapes with JWT, so we do NOT rely on it.
-  const baseHref=window.location.href;
-  const candidates=[
-    // current folder
-    new URL("shapes.json", baseHref).toString(),
-    // common subfolders
-    new URL("data/shapes.json", baseHref).toString(),
-    new URL("frontend_github_pages/shapes.json", baseHref).toString(),
-    // explicit project pages (robust for iframe)
-    "https://miropolcevpro.github.io/Test3dplitka/shapes.json",
-    // legacy
-    "https://miropolcevpro.github.io/test3d/shapes.json"
-  ];
+  const relCandidates=(assetPolicy && Array.isArray(assetPolicy.shapesCandidates) && assetPolicy.shapesCandidates.length)
+    ? assetPolicy.shapesCandidates
+    : ["shapes.json","data/shapes.json","frontend_github_pages/shapes.json"];
+  const candidates=[...new Set(relCandidates.map((rel)=>_absUrl(rel)).filter((url)=>_assetAllowed(url,"json",true)))];
 
   try{
     const shapes=await tryJsonCandidates(candidates);
     state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
+    _clearAssetError();
     return;
   }catch(eStatic){
     console.warn("Shapes load failed (static). Ensure shapes.json is deployed next to the editor.", eStatic);
     state.catalog.shapes=[];
+    _setAssetError("Формы не загружены: проверьте локальный shapes.json рядом с редактором.", true, { kind:"shapes", candidates:candidates });
     return;
   }
 }
@@ -248,25 +279,34 @@ function normalizePaletteTextures(pal, shapeId){
     }
     state.catalog.palettesByShape[shapeId]=null;
     state.catalog.texturesByShape[shapeId]=[];
-    setStatus("Текстуры для этой формы временно недоступны");
+    _setAssetError("Текстуры для этой формы временно недоступны", true, { kind:"palette", shapeId:shapeId, url:s3Url });
     return {palette:null,textures:[]};
   }
 
   state.catalog.palettesByShape[shapeId]=pal;
-  const tex=normalizePaletteTextures(pal, shapeId).map(t=>({
-    ...t,
-    previewUrl: absFromStorageMaybe(t.previewUrl),
-    albedoUrl: absFromStorageMaybe(t.albedoUrl),
-    maps: t.maps ? {
+  const tex=[];
+  let blockedCount=0;
+  for(const t of normalizePaletteTextures(pal, shapeId)){
+    const previewUrl=absFromStorageMaybe(t.previewUrl);
+    const albedoUrl=absFromStorageMaybe(t.albedoUrl);
+    const maps=t.maps ? {
       albedo: absFromStorageMaybe(t.maps.albedo),
       normal: absFromStorageMaybe(t.maps.normal),
       roughness: absFromStorageMaybe(t.maps.roughness),
       ao: absFromStorageMaybe(t.maps.ao),
       height: absFromStorageMaybe(t.maps.height),
-    } : null
-  }));
+    } : null;
+    if(!albedoUrl){ blockedCount++; continue; }
+    tex.push({
+      ...t,
+      previewUrl,
+      albedoUrl,
+      maps
+    });
+  }
   state.catalog.texturesByShape[shapeId]=tex;
-  setStatus("Текстур: "+tex.length);
+  _clearAssetError();
+  setStatus(blockedCount ? ("Текстур: "+tex.length+" · "+blockedCount+" скрыто политикой поставки") : ("Текстур: "+tex.length));
   return {palette:pal,textures:tex};
 }
 
@@ -274,67 +314,105 @@ function normalizePaletteTextures(pal, shapeId){
   // Use this for WebGL texture uploads of data maps (normal/roughness/ao/height) to avoid taint/security errors.
   async function loadImageStrict(url){
     async function tryLoad(u){
+      const abs = _ensureAllowed(u, "image", "Image asset");
       return await new Promise((resolve,reject)=>{
         const img=new Image();
         img.crossOrigin="anonymous";
         img.onload=()=>resolve(img);
-        img.onerror=()=>reject(new Error("Image load failed: "+u+" (CORS-only)"));
-        img.src=u;
+        img.onerror=()=>reject(new Error("Image load failed: "+abs+" (CORS-only)"));
+        img.src=abs;
       });
     }
     let finalUrl=url;
     try{
-      return await tryLoad(finalUrl);
+      const img = await tryLoad(finalUrl);
+      state.assets.exportSafe = true;
+      state.assets.exportBlockedReason = null;
+      _clearAssetError();
+      return img;
     }catch(e1){
       const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(finalUrl, null, null) : null;
       if(alt && alt!==finalUrl){
-        return await tryLoad(alt);
+        const img = await tryLoad(alt);
+        state.assets.exportSafe = true;
+        state.assets.exportBlockedReason = null;
+        _clearAssetError();
+        return img;
       }
+      const msg = "Текстура недоступна для безопасной загрузки по CORS: " + String(finalUrl||"");
+      state.assets.exportSafe = false;
+      state.assets.exportBlockedReason = msg;
+      _setAssetError(msg, true, { kind:"image", url: String(finalUrl||"") });
       throw e1;
     }
   }
 
   async function loadImage(url){
     const cache=state.assets.textureCache;
-    // Cache key should be the final URL actually used.
     if(cache.has(url)) return cache.get(url).img;
 
-    // Two-pass strategy:
-    // 1) Try CORS-safe load (crossOrigin="anonymous") so canvas export works.
-    // 2) If it fails (likely missing CORS on bucket for this domain), retry WITHOUT CORS so rendering works,
-    //    but warn that export may be blocked ("tainted canvas") until CORS is fixed.
     async function tryLoad(u, useCORS){
+      const abs = _ensureAllowed(u, "image", "Image asset");
       return await new Promise((resolve,reject)=>{
         const img=new Image();
         if(useCORS) img.crossOrigin="anonymous";
-        img.onload=()=>resolve(img);
-        img.onerror=()=>reject(new Error("Image load failed: "+u+(useCORS?" (CORS)":" (no-CORS)")));
-        img.src=u;
+        img.onload=()=>resolve({img, finalUrl:abs});
+        img.onerror=()=>reject(new Error("Image load failed: "+abs+(useCORS?" (CORS)":" (no-CORS)")));
+        img.src=abs;
       });
     }
 
-    let finalUrl=url;
+    let finalUrl=resolveAssetUrl(url, null, null) || url;
     let img=null;
 
     try{
-      img=await tryLoad(finalUrl, true);
+      const loaded=await tryLoad(finalUrl, true);
+      img=loaded.img;
+      finalUrl=loaded.finalUrl;
+      state.assets.exportSafe = true;
+      state.assets.exportBlockedReason = null;
+      _clearAssetError();
     }catch(e1){
-      // Retry once by rewriting gateway/proxy URLs to Object Storage
       const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(finalUrl, null, null) : null;
       if(alt && alt!==finalUrl){
         try{
-          img=await tryLoad(alt, true);
-          finalUrl=alt;
+          const loaded=await tryLoad(alt, true);
+          img=loaded.img;
+          finalUrl=loaded.finalUrl;
+          state.assets.exportSafe = true;
+          state.assets.exportBlockedReason = null;
+          _clearAssetError();
         }catch(e2){
-          // Fall back to no-CORS load (rendering will work; exporting may not)
-          console.warn("[assets] CORS-safe image load failed, falling back to no-CORS. Export may be blocked until CORS is configured.", e2);
-          img=await tryLoad(alt, false);
-          finalUrl=alt;
+          if(assetPolicy && assetPolicy.allowNoCorsImageFallback){
+            console.warn("[assets] CORS-safe image load failed, falling back to no-CORS. Export may be blocked until CORS is configured.", e2);
+            const loaded=await tryLoad(alt, false);
+            img=loaded.img;
+            finalUrl=loaded.finalUrl;
+            state.assets.exportSafe = false;
+            state.assets.exportBlockedReason = "Texture loaded without CORS; PNG export may be blocked.";
+            _setAssetError(state.assets.exportBlockedReason, true, { kind:"image", url: String(alt||finalUrl||"") });
+          }else{
+            const msg = "Текстура заблокирована: нужен CORS и разрешённый production-origin. URL: " + String(alt||finalUrl||"");
+            state.assets.exportSafe = false;
+            state.assets.exportBlockedReason = msg;
+            _setAssetError(msg, true, { kind:"image", url: String(finalUrl||"") });
+            throw new Error(msg);
+          }
         }
-      }else{
-        // Fall back to no-CORS load
+      }else if(assetPolicy && assetPolicy.allowNoCorsImageFallback){
         console.warn("[assets] CORS-safe image load failed, falling back to no-CORS. Export may be blocked until CORS is configured.", e1);
-        img=await tryLoad(finalUrl, false);
+        const loaded=await tryLoad(finalUrl, false);
+        img=loaded.img;
+        finalUrl=loaded.finalUrl;
+        state.assets.exportSafe = false;
+        state.assets.exportBlockedReason = "Texture loaded without CORS; PNG export may be blocked.";
+        _setAssetError(state.assets.exportBlockedReason, true, { kind:"image", url: String(finalUrl||"") });
+      }else{
+        const msg = "Текстура заблокирована: нужен CORS и разрешённый production-origin. URL: " + String(finalUrl||"");
+        state.assets.exportSafe = false;
+        state.assets.exportBlockedReason = msg;
+        _setAssetError(msg, true, { kind:"image", url: String(alt||finalUrl||"") });
+        throw new Error(msg);
       }
     }
 

@@ -2,10 +2,111 @@
 (function(){
   const S=window.PhotoPaveState,API=window.PhotoPaveAPI,ED=window.PhotoPaveEditor;
   const {state,makeZone,makeCutout,pushHistory,undo,redo}=S;
+  const stateClone=(S && typeof S.clone==="function") ? S.clone : ((o)=>JSON.parse(JSON.stringify(o)));
+  const RELEASE=window.PhotoPaveReleaseConfig||null;
+  const DIAG=window.PhotoPaveDiagnostics||null;
+  const ANALYTICS=window.PhotoPaveAnalytics||null;
   const el=(id)=>document.getElementById(id);
   const escapeHtml=(s)=>String(s||"").replace(/[&<>'"]/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[c]));
   const ESC_ATTR_MAP={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
   const escapeAttr=(s)=>String(s||"").replace(/[&<>"']/g,(c)=>ESC_ATTR_MAP[c]);
+  const relEnabled=(name,fallback)=>{
+    try{ return RELEASE && typeof RELEASE.isEnabled==="function" ? RELEASE.isEnabled(name, fallback) : !!fallback; }catch(_){ return !!fallback; }
+  };
+  const relVisible=(name,fallback)=>{
+    try{ return RELEASE && typeof RELEASE.isVisible==="function" ? RELEASE.isVisible(name, fallback) : !!fallback; }catch(_){ return !!fallback; }
+  };
+  const SIMPLE_MODE = (RELEASE && RELEASE.simpleMode) || { enabled:true };
+  const _SECONDARY_TOOLS_KEY = "pp_secondary_tools_v1";
+  function setNodeHidden(node, hidden){
+    if(!node) return;
+    node.hidden = !!hidden;
+    node.style.display = hidden ? "none" : "";
+    node.setAttribute("aria-hidden", hidden ? "true" : "false");
+  }
+  function setHiddenById(id, hidden){
+    const node = document.getElementById(id);
+    if(!node) return;
+    setNodeHidden(node, hidden);
+  }
+  function isSingleZoneRuntime(){
+    return !!(state.ui && state.ui.singleZoneMode);
+  }
+  function applyReleaseFlags(){
+    state.release = state.release || {};
+    state.release.preset = (RELEASE && RELEASE.preset) || state.release.preset || "legacy";
+    state.release.patch = (RELEASE && RELEASE.patch) || state.release.patch || null;
+    try{ document.body && document.body.classList.add("releasePreset--" + String(state.release.preset||"legacy")); }catch(_){ }
+
+    if(!relEnabled("ultra", true)){
+      state.ai = state.ai || {};
+      state.ai.enabled = false;
+    }
+
+    if(!relEnabled("occlusion", false)){
+      state.ai = state.ai || {};
+      state.ai.occlusionEnabled = false;
+      state.ai._occPickMode = false;
+      state.ai.occlusionMask = null;
+      setHiddenById("occlusionFeature", true);
+    }else if(!relVisible("occlusion", true)){
+      setHiddenById("occlusionFeature", true);
+    }
+
+    if(!relEnabled("calib3d", false)){
+      state.ai = state.ai || {};
+      state.ai.calib3d = state.ai.calib3d || {};
+      state.ai.calib3d.enabled = false;
+      state.ai.calib3d.active = null;
+      state.ai.calib3d.showLines = false;
+      if(state.ui && state.ui.mode === "calib") state.ui.mode = "view";
+      setHiddenById("calib3dFeature", true);
+    }else if(!relVisible("calib3d", true)){
+      setHiddenById("calib3dFeature", true);
+    }
+
+    if(!relEnabled("advancedPanel", true)){
+      setHiddenById("toggleAdvancedBtn", true);
+      setHiddenById("settingsAdvanced", true);
+    }
+
+    if(!relEnabled("multiZone", false) || !relVisible("multiZone", false)){
+      if(state.ui){ state.ui.singleZoneMode = true; }
+      setHiddenById("addZoneBtn", true);
+      setHiddenById("dupZoneBtn", true);
+      setHiddenById("delZoneBtn", true);
+    }
+
+    if(!relEnabled("splitZone", false) || !relVisible("splitZone", false)){
+      setHiddenById("splitZoneBtn", true);
+      if(state.ui && state.ui.mode === "split") state.ui.mode = "contour";
+    }
+
+    if(!relEnabled("aiDebugOverlay", false)){
+      state.ai = state.ai || {};
+      state.ai.debugOverlay = false;
+      setHiddenById("aiDebugOverlay", true);
+    }
+  }
+
+  function getCapabilityState(){
+    const ai = state.ai || {};
+    return ai.capability || null;
+  }
+
+  function applyCapabilityUiPolicy(){
+    const cap = getCapabilityState() || {};
+    const aiChk = document.getElementById("aiUltraChk");
+    if(aiChk){
+      const ultraWrap = aiChk.closest(".field");
+      const allowUltra = relEnabled("ultra", true) && (cap.ultraAllowed !== false);
+      const showUltra = relVisible("ultra", true) && (cap.ultraVisible !== false);
+      if(ultraWrap) setNodeHidden(ultraWrap, !showUltra);
+      aiChk.disabled = !allowUltra;
+      aiChk.checked = allowUltra ? (state.ai && state.ai.enabled !== false) : false;
+      aiChk.title = allowUltra ? "" : String(cap.reason || "Недоступно на этом устройстве");
+    }
+  }
 
   // Patch B: keep separate material params for base and ultra modes.
   // We avoid refactoring the whole codebase by keeping z.material.params as a pointer
@@ -18,12 +119,12 @@
   // Only a UI remap and a slightly better default.
   // Material params (active set: base/ultra). Keep defaults stable and backwards-compatible.
   // offsetU/offsetV are tile-space phase shifts used to align seams between zones.
-  const DEFAULT_MAT_PARAMS={scale:12.0,rotation:0,offsetU:0.0,offsetV:0.0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.18};
+  const DEFAULT_MAT_PARAMS=stateClone((S && S.defaults && S.defaults.materialParams) || {scale:12.0,rotation:0,offsetU:0.0,offsetV:0.0,opacity:1.0,blendMode:"source-over",opaqueFill:true,perspective:0.75,horizon:0.18});
 
   // Slider mapping: ui in [-1..1] -> horizon internal in [H_UP_MIN..H_DOWN_MAX], centered at H_NEUTRAL.
   // - Negative UI range is compressed (less "lift up")
   // - Positive UI range is expanded (more "into the distance")
-  const H_NEUTRAL = 0.18;
+  const H_NEUTRAL = (typeof DEFAULT_MAT_PARAMS.horizon === "number" ? DEFAULT_MAT_PARAMS.horizon : 0.18);
   const H_UP_MIN  = -0.35;
   const H_DOWN_MAX = 1.00;
   const _clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
@@ -47,7 +148,7 @@
       return _clamp((h - H_NEUTRAL)/k, -1, 1);
     }
   }
-  const _clone=(o)=>JSON.parse(JSON.stringify(o));
+  const _clone=stateClone;
   function ensureZoneMaterialParams(z){
     if(!z || !z.material) return;
     const m=z.material;
@@ -76,6 +177,58 @@
   function normalizeAllZones(){
     (state.zones||[]).forEach(ensureZoneMaterialParams);
   }
+
+  function resetUiForSession(overrides){
+    if(S && typeof S.resetUiState === "function") return S.resetUiState(state.ui || (state.ui={}), overrides || null);
+    state.ui = state.ui || {};
+    Object.assign(state.ui, {
+      showContour:true,
+      activeStep:"photo",
+      mode:"photo",
+      editScope:"active",
+      masterZoneId:null,
+      activeZoneId:null,
+      activeCutoutId:null,
+      draggingPoint:null,
+      selectedPoint:null,
+      isPointerDown:false,
+      pointerCaptureId:null,
+      splitDraft:null,
+      _prevMode:null
+    }, overrides||{});
+    return state.ui;
+  }
+
+  function resetAiRuntimeState(){
+    if(S && typeof S.resetAiState === "function") return S.resetAiState(state.ai || (state.ai={}), { preserveUserToggles:true, preserveDevice:true });
+    state.ai = state.ai || {};
+    state.ai.photoHash = null;
+    state.ai.status = "idle";
+    state.ai.depthMap = null;
+    state.ai.depthReady = false;
+    state.ai.occlusionMask = null;
+    state.ai._occPickMode = false;
+    state.ai.floorHintMask = null;
+    state.ai.timings = {};
+    state.ai.errors = [];
+    return state.ai;
+  }
+
+  function broadcastResetState(){
+    try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
+    try{ window.dispatchEvent(new CustomEvent("ai:status", { detail:{ status:(state.ai && state.ai.status) || "idle" } })); }catch(_){ }
+  }
+
+  function hardResetEditorInteraction(){
+    if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
+    else if(state.ui){
+      state.ui.draggingPoint = null;
+      state.ui.selectedPoint = null;
+      state.ui.isPointerDown = false;
+      state.ui.pointerCaptureId = null;
+    }
+  }
+
   // Contour visibility helpers (shared across UI + auto-hide behaviors).
   function isContourShown(){ return !(state.ui && state.ui.showContour === false); }
   function updateContourToggleBtn(){
@@ -84,9 +237,45 @@
     b.textContent = isContourShown() ? "Скрыть контур" : "Показать контур";
   }
 
+  function normalizeSingleZoneRuntime(){
+    if(!isSingleZoneRuntime()) return;
+
+    state.ui.editScope = "active";
+    state.ui.splitDraft = null;
+    if(state.ui.mode === "split") state.ui.mode = "contour";
+
+    if(Array.isArray(state.zones) && state.zones.length > 1){
+      const z0 = state.zones[0];
+      state.zones = z0 ? [z0] : [];
+    }
+
+    const first = (state.zones && state.zones[0]) ? state.zones[0] : null;
+    if(!first){
+      state.ui.activeZoneId = null;
+      state.ui.masterZoneId = null;
+      state.ui.activeCutoutId = null;
+      return;
+    }
+
+    ensureZoneLinkFields(first);
+    first.linked = false;
+    first.baseParams = null;
+    resetZoneOverrides(first);
+
+    state.ui.activeZoneId = first.id;
+    state.ui.masterZoneId = first.id;
+
+    const cuts = Array.isArray(first.cutouts) ? first.cutouts : [];
+    if(!cuts.length){
+      state.ui.activeCutoutId = null;
+    }else if(!state.ui.activeCutoutId || !cuts.some(c=>c && c.id===state.ui.activeCutoutId)){
+      state.ui.activeCutoutId = cuts[0].id;
+    }
+  }
+
   // UX-P2: show seam offset controls only when there are 2+ участков (zones).
   function updateOffsetControlsVisibility(){
-    const many = ((state.zones||[]).length > 1);
+    const many = !isSingleZoneRuntime() && ((state.zones||[]).length > 1);
     const u = el("offsetUField");
     const v = el("offsetVField");
     const step = el("seamStepField");
@@ -126,7 +315,7 @@
       if(isFinite(nv) && nv>0) _setSeamStepStored(nv);
     });
   }
-  function setAdvancedOpen(open){
+  function setAdvancedOpen(open, meta){
     const adv = el("settingsAdvanced");
     const btn = el("toggleAdvancedBtn");
     if(!adv) return;
@@ -134,6 +323,7 @@
       adv.hidden = false;
       if(btn) btn.textContent = "Скрыть дополнительные";
       try{ localStorage.setItem(_ADV_KEY, "1"); }catch(e){}
+      if(meta && meta.source && meta.source !== "restore"){ try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("advanced_mode_opened", { source: meta.source }); }catch(_){ } }
     }else{
       adv.hidden = true;
       if(btn) btn.textContent = "Дополнительно";
@@ -143,19 +333,129 @@
   function initAdvancedToggle(){
     const btn = el("toggleAdvancedBtn");
     const adv = el("settingsAdvanced");
+    if(!relEnabled("advancedPanel", true) || !relVisible("advancedPanel", true)){
+      if(btn){ btn.hidden = true; btn.style.display = "none"; }
+      if(adv){ adv.hidden = true; adv.style.display = "none"; }
+      return;
+    }
     if(!btn || !adv) return;
     let open = false;
     try{ open = (localStorage.getItem(_ADV_KEY) === "1"); }catch(e){}
-    setAdvancedOpen(open);
+    setAdvancedOpen(open, { source:"restore" });
     btn.addEventListener("click", ()=>{
-      setAdvancedOpen(!!adv.hidden);
+      setAdvancedOpen(!!adv.hidden, { source:"toggle_button" });
     });
   }
 
 
 
 
-  function setBuildInfo(){el("buildInfo").textContent=`${state.build.version} • ${state.build.ts}`;}
+  function normalizeSimpleStep(step){
+    const v = String(step || "").toLowerCase();
+    if(v === "zones" || v === "cutouts" || v === "zone") return "zone";
+    if(v === "tile") return "tile";
+    if(v === "export" || v === "result") return "result";
+    return "photo";
+  }
+  function getSimpleFlowState(){
+    const hasPhoto = !!(state.assets && state.assets.photoBitmap);
+    const zone = (S && typeof S.getActiveZone === "function") ? S.getActiveZone() : null;
+    const zoneClosed = !!(zone && zone.closed && Array.isArray(zone.contour) && zone.contour.length >= 3);
+    const hasTexture = !!(zone && zone.material && (zone.material.textureId || zone.material.textureUrl));
+    const current = normalizeSimpleStep(state.ui && state.ui.activeStep);
+    let step = current;
+    if(!hasPhoto) step = "photo";
+    else if(current === "zone") step = "zone";
+    else if(!zoneClosed) step = "zone";
+    else if(current === "tile") step = "tile";
+    else if(!hasTexture) step = "tile";
+    else step = "result";
+    return { hasPhoto, zone, zoneClosed, hasTexture, step };
+  }
+  function setSecondaryToolsOpen(open){
+    state.ui = state.ui || {};
+    if(state.ui.mode === "cutout") open = true;
+    state.ui.secondaryToolsOpen = !!open;
+    try{ localStorage.setItem(_SECONDARY_TOOLS_KEY, open ? "1" : "0"); }catch(_){ }
+    const cutoutsPanel = el("cutoutsPanel");
+    const modeCutout = el("modeCutout");
+    const canShow = !!(state.assets && state.assets.photoBitmap) && relEnabled("secondaryTools", true) && relVisible("secondaryTools", true);
+    setNodeHidden(cutoutsPanel, !(canShow && state.ui.secondaryToolsOpen));
+    setNodeHidden(modeCutout, !(canShow && state.ui.secondaryToolsOpen));
+    const btn = el("simpleShellSecondaryBtn");
+    if(btn){
+      btn.hidden = !canShow;
+      btn.textContent = state.ui.secondaryToolsOpen ? "Скрыть доп. инструменты" : "Доп. инструменты";
+    }
+  }
+  function restoreSecondaryToolsState(){
+    state.ui = state.ui || {};
+    let open = !!(state.ui.secondaryToolsOpen);
+    try{
+      const saved = localStorage.getItem(_SECONDARY_TOOLS_KEY);
+      if(saved === "1") open = true;
+      if(saved === "0") open = false;
+    }catch(_){ }
+    if(state.ui.mode === "cutout") open = true;
+    setSecondaryToolsOpen(open);
+  }
+  function updateSimpleShell(){
+    const shell = el("simpleShell");
+    if(!shell) return;
+    if(!SIMPLE_MODE || SIMPLE_MODE.enabled === false || !relVisible("simpleModeShell", true)){
+      setNodeHidden(shell, true);
+      return;
+    }
+    setNodeHidden(shell, false);
+    const model = getSimpleFlowState();
+    state.ui = state.ui || {};
+    state.ui.shellMode = "simple";
+    state.ui.activeStep = model.step;
+    const titleEl = el("simpleShellTitle");
+    const textEl = el("simpleShellText");
+    const tagEl = el("simpleShellStepTag");
+    const primaryBtn = el("simpleShellPrimaryBtn");
+    let title = "Загрузите фото участка";
+    let text = "Начните с фотографии двора или дорожки. Затем система проведёт вас по шагам.";
+    let primaryLabel = "Загрузить фото";
+    let primaryAction = "photo";
+    if(model.step === "zone"){
+      title = "Шаг 2. Обведите участок мощения";
+      text = model.zoneClosed
+        ? "Контур уже замкнут. При необходимости уточните форму участка или добавьте вырезы через доп. инструменты."
+        : "Поставьте минимум 3 точки по краю будущего мощения и замкните контур. Вырезы доступны отдельно, когда основной участок готов.";
+      primaryLabel = (state.ui && state.ui.mode === "contour") ? "Продолжить обводку" : "Перейти к контуру";
+      primaryAction = "contour";
+    }else if(model.step === "tile"){
+      title = "Шаг 3. Выберите форму и плитку";
+      text = "Сначала выберите форму снизу, затем текстуру слева. После выбора сможете сразу открыть чистый результат.";
+      primaryLabel = "Выбрать плитку";
+      primaryAction = "tile";
+    }else if(model.step === "result"){
+      title = "Шаг 4. Проверьте результат и сохраните PNG";
+      text = "Откройте чистый просмотр, сравните результат и скачайте PNG или отправьте его дальше. Тонкая настройка и вырезы остаются в дополнительных инструментах.";
+      primaryLabel = (state.ui && state.ui.mode === "view") ? "Скачать PNG" : "Открыть результат";
+      primaryAction = (state.ui && state.ui.mode === "view") ? "export" : "view";
+    }
+    if(titleEl) titleEl.textContent = title;
+    if(textEl) textEl.textContent = text;
+    if(tagEl) tagEl.textContent = model.step === "photo" ? "Шаг 1 из 4" : model.step === "zone" ? "Шаг 2 из 4" : model.step === "tile" ? "Шаг 3 из 4" : "Шаг 4 из 4";
+    if(primaryBtn){
+      primaryBtn.hidden = false;
+      primaryBtn.textContent = primaryLabel;
+      primaryBtn.dataset.action = primaryAction;
+    }
+    document.querySelectorAll(".stepper .step").forEach((s)=>s.classList.toggle("step--active", s.dataset.step===model.step));
+    restoreSecondaryToolsState();
+  }
+
+  function setBuildInfo(){
+    const preset = (state.release && state.release.preset) || (state.build && state.build.preset) || null;
+    const patch = (state.release && state.release.patch) || null;
+    const suffix = preset ? ` • ${preset}` : "";
+    const patchSuffix = patch ? ` • ${patch}` : "";
+    el("buildInfo").textContent=`${state.build.version}${suffix}${patchSuffix} • ${state.build.ts}`;
+  }
   
   // UX-P1: show user what is being edited (active segment + scope + mode)
   function _zoneIndexById(id){
@@ -166,7 +466,7 @@
   function _modeLabel(m){
     if(m==="contour") return "Контур";
     if(m==="cutout") return "Вырез";
-    if(m==="split")  return "Выделение участка";
+    if(m==="split")  return isSingleZoneRuntime() ? "Контур" : "Выделение участка";
     if(m==="view")   return "Просмотр";
     return "Редактирование";
   }
@@ -177,11 +477,13 @@
     const z = getActiveZone ? getActiveZone() : null;
     const idx = z ? _zoneIndexById(z.id) : null;
     const isMaster = !!(z && ui.masterZoneId && z.id===ui.masterZoneId);
-    const name = idx ? `Участок ${idx}` : "—";
-    const scope = (ui.editScope==="all") ? "Все участки" : "Этот участок";
+    const singleZone = isSingleZoneRuntime();
+    const name = singleZone ? "Основной участок" : (idx ? `Участок ${idx}` : "—");
+    const scope = singleZone ? "Текущий участок" : ((ui.editScope==="all") ? "Все участки" : "Этот участок");
     const mode = _modeLabel(ui.mode);
     // Show concise line; do not expose internal ids.
-    elx.textContent = `Редактируете: ${isMaster ? "★ " : ""}${name}  •  Режим: ${mode}  •  Изменять: ${scope}`;
+    elx.textContent = `Редактируете: ${(!singleZone && isMaster) ? "★ " : ""}${name}  •  Режим: ${mode}  •  Изменять: ${scope}`;
+    try{ updateSimpleShell(); }catch(_){ }
   }
 
 
@@ -207,7 +509,7 @@
   }
   function guideToTextures(){
     try{
-      setActiveStep("zones");
+      setActiveStep("tile");
       const panel = document.getElementById("texturesPanel");
       if(panel){
         pulseEl(panel, 2600);
@@ -218,7 +520,8 @@
   }
   function guideToExport(){
     try{
-      setActiveStep("export");
+      try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("compare_opened", { source:"mode_view_button" }); }catch(_){ }
+      setActiveStep("result");
       const b = document.getElementById("exportPngBtn");
       if(b) pulseEl(b, 2600);
       setUxHint("Готово. Нажмите “Скачать PNG”.", 4500);
@@ -226,8 +529,9 @@
   }
 
 function setActiveStep(step){
-    state.ui.activeStep=step;
-    document.querySelectorAll(".stepper .step").forEach(s=>s.classList.toggle("step--active",s.dataset.step===step));
+    const normalized = normalizeSimpleStep(step);
+    state.ui.activeStep = normalized;
+    updateSimpleShell();
   }
   // UX-P1
   try{updateUxStatus();}catch(_){ }
@@ -247,6 +551,7 @@ function setActiveStep(step){
     if(state.ui && !state.ui.masterZoneId && state.zones[0]) state.ui.masterZoneId = state.zones[0].id;
     // Ensure material params are migrated and mode-pointers are correct.
     normalizeAllZones();
+    normalizeSingleZoneRuntime();
     try{updateUxStatus();}catch(_){ }
   }
 
@@ -254,16 +559,15 @@ function setActiveStep(step){
   function enforceSingleZoneMode(){
     // Product decision: multi-zone paving is temporarily disabled for stability.
     if(!state.ui) state.ui = {};
-    state.ui.singleZoneMode = true;
-    try{ document.body && document.body.classList.add("singleZoneMode"); }catch(_){}
+    state.ui.singleZoneMode = !relEnabled("multiZone", false);
+    try{
+      if(state.ui.singleZoneMode) document.body && document.body.classList.add("singleZoneMode");
+      else document.body && document.body.classList.remove("singleZoneMode");
+    }catch(_){}
 
-    // Keep only the master/first zone. Preserve cutouts in that zone.
-    if(Array.isArray(state.zones) && state.zones.length>1){
-      const z0 = state.zones[0];
-      state.zones = [z0];
-      if(state.ui.activeZoneId !== z0.id) state.ui.activeZoneId = z0.id;
-      if(!state.ui.masterZoneId) state.ui.masterZoneId = z0.id;
-    }
+    if(!state.ui.singleZoneMode) return;
+
+    normalizeSingleZoneRuntime();
   }
 
 function addZoneAndArmContour(){
@@ -321,7 +625,7 @@ function addZoneAndArmContour(){
     if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
 
     renderZonesUI();
-    setActiveStep("zones");
+    setActiveStep("zone");
     ED.setMode("contour");
     syncCloseButtonUI();
     ED.render();
@@ -351,7 +655,7 @@ function addZoneAndArmContour(){
       state.ui.splitDraft = null;
       state.ui.mode = "contour";
       if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
-      setActiveStep("zones");
+      setActiveStep("zone");
       ED.setMode("contour");
       updateSplitZoneBtnUI();
       syncCloseButtonUI();
@@ -370,7 +674,7 @@ function addZoneAndArmContour(){
     state.ui.showContour = true;
     updateContourToggleBtn();
     if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
-    setActiveStep("zones");
+    setActiveStep("zone");
     state.ui.mode = "split";
     ED.setMode("split");
     updateSplitZoneBtnUI();
@@ -437,7 +741,7 @@ function addZoneAndArmContour(){
 
     renderZonesUI();
     syncSettingsUI();
-    setActiveStep("zones");
+    setActiveStep("zone");
     if(ED && typeof ED.resetInteraction === "function") ED.resetInteraction();
     ED.setMode("contour");
     syncCloseButtonUI();
@@ -464,11 +768,15 @@ function addZoneAndArmContour(){
 
   function renderZonesUI(){
     const wrap=el("zonesList");
+    if(!wrap) return;
+    normalizeSingleZoneRuntime();
     wrap.innerHTML="";
     const master = getMasterZone();
     if(master && state.ui && !state.ui.masterZoneId) state.ui.masterZoneId = master.id;
+    const singleZone = isSingleZoneRuntime();
+    const list = singleZone ? ((state.zones && state.zones[0]) ? [state.zones[0]] : []) : (state.zones||[]);
 
-    for(const z of (state.zones||[])){
+    for(const z of list){
       ensureZoneLinkFields(z);
       const isActive = (z.id===state.ui.activeZoneId);
       const isMaster = (master && z.id===master.id);
@@ -478,7 +786,7 @@ function addZoneAndArmContour(){
 
       const div=document.createElement("div");
       div.className="listItem"+(isActive?" listItem--active":"");
-      const title = escapeHtml(z.name)+(hasMatOv?" *":"");
+      const title = escapeHtml(singleZone ? (z.name || "Основной участок") : z.name)+(hasMatOv?" *":"");
       const matLabel = z.material.textureId ? ("Материал: "+escapeHtml(z.material.textureId)) : "Материал: не выбран";
 
       div.innerHTML=`
@@ -487,13 +795,14 @@ function addZoneAndArmContour(){
           <div class="listItem__sub">${matLabel}</div>
         </div>
         <div class="listItem__controls">
-          <button type="button" class="badge linkBadge" title="${escapeAttr(linkTitle)}" data-zone="${escapeAttr(z.id)}">${linkText}</button>
+          ${singleZone ? "" : `<button type="button" class="badge linkBadge" title="${escapeAttr(linkTitle)}" data-zone="${escapeAttr(z.id)}">${linkText}</button>`}
           <label class="badge"><input type="checkbox" ${z.enabled?"checked":""}/> видно</label>
         </div>`;
 
       div.addEventListener("click",(e)=>{
         const t=e.target;
         if(t && (t.type==="checkbox" || (t.classList && t.classList.contains("linkBadge")))) return;
+        if(singleZone) return;
         pushHistory();
         state.ui.activeZoneId=z.id;
         state.ui.activeCutoutId=(z.cutouts&&z.cutouts[0])?z.cutouts[0].id:null;
@@ -509,7 +818,7 @@ function addZoneAndArmContour(){
       if(linkBtn){
         linkBtn.addEventListener("click",(e)=>{
           e.stopPropagation();
-          if(isMaster) return;
+          if(isMaster || singleZone) return;
           pushHistory();
           toggleZoneLink(z);
           renderZonesUI();
@@ -522,6 +831,7 @@ function addZoneAndArmContour(){
     }
     renderCutoutsUI();
     updateOffsetControlsVisibility();
+    try{ updateSimpleShell(); }catch(_){ }
   }
 
   function renderShapesUI(){
@@ -907,6 +1217,7 @@ card.addEventListener("click",()=>{
         if(ps) _pp_clearPreview();
         pushHistory();
         applyMaterialChange(shapeId, texObj);
+        try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("texture_selected", { shapeId: shapeId || null, textureId: t.textureId || null, source: canHover ? "card_click" : "tap_commit", tileSizeM: t.tileSizeM || null }); }catch(_){ }
         _pp_pushRecent(shapeId, t.textureId);
         renderTexturesUI();renderZonesUI();ED.render();
         try{ guideToExport(); }catch(_){ }
@@ -1024,8 +1335,9 @@ card.addEventListener("click",()=>{
     }
   }
 
-async function handlePhotoFile(file){
+async function handlePhotoFile(file, source){
     if(!file) return;
+    try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("photo_upload_started", { source: source || "input", fileName: file.name || null, fileType: file.type || null, fileSize: file.size || 0 }); }catch(_){ }
     API.setStatus("Загрузка фото…");
     const maxSide=3072;
     const prevBitmap = state.assets ? state.assets.photoBitmap : null;
@@ -1061,51 +1373,37 @@ async function handlePhotoFile(file){
     // (materials, tuned horizon/perspective, hidden contour toggle, dragging/selection, etc.).
     // This keeps UX stable: user can immediately start placing contour points on the same photo.
     try{
-      // Reset editor interaction flags (safety)
-      state.ui.draggingPoint=null;
-      state.ui.selectedPoint=null;
-      state.ui.isPointerDown=false;
-      // Always show contour after a new photo is loaded (otherwise it looks "broken")
-      state.ui.showContour=true;
-      state.ui.activeCutoutId=null;
+      resetUiForSession({
+        activeStep:"zone",
+        mode:"contour",
+        showContour:true,
+        editScope:(state.ui && state.ui.editScope) || "active"
+      });
+      resetAiRuntimeState();
 
-      // Reset all zones (materials + params + tuned flags) to defaults by recreating.
       state.zones.length=0;
       state.ui.activeZoneId=null;
-      // Reset floor plane too (if enabled in future)
+      state.ui.activeCutoutId=null;
       if(state.floorPlane){ state.floorPlane.points=[]; state.floorPlane.closed=false; }
+
       const z=makeZone();
       state.zones.push(z);
       state.ui.activeZoneId=z.id;
+      state.ui.masterZoneId=z.id;
+      hardResetEditorInteraction();
+      broadcastResetState();
     }catch(_){
-      // Fallback: at least clear contour/cutouts if something unexpected happens.
+      // Fallback: at least clear contour/cutouts and stale interactive/runtime flags.
       (state.zones||[]).forEach(z=>{ z.contour=[]; z.closed=false; z.cutouts=[]; });
-      state.ui.activeCutoutId=null;
-      state.ui.showContour=true;
-      state.ui.draggingPoint=null;
-      state.ui.selectedPoint=null;
-      state.ui.isPointerDown=false;
+      resetUiForSession({ activeStep:"zone", mode:"contour", showContour:true });
+      resetAiRuntimeState();
+      hardResetEditorInteraction();
+      broadcastResetState();
     }
 
-    // Reset 3D calibration (manual/auto) when a new photo is loaded to avoid carrying stale lines/results.
-    try{
-      if(state.ai && state.ai.calib3d){
-        const c3 = state.ai.calib3d;
-        c3.active = null;
-        c3.lines = {A1:null,A2:null,B1:null,B2:null};
-        c3.result = null;
-        c3.lastGoodResult = null;
-        c3.status = "idle";
-        c3.error = null;
-        c3.warn = null;
-        // Keep enabled flag as-is, but hide overlays by default.
-        c3.showLines = false;
-      }
-      try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
-    }catch(_){}
-
+    try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("photo_upload_success", { source: source || "input", fileType: file.type || null, fileSize: file.size || 0, width: nw, height: nh, resized: !!(nw !== w || nh !== h) }); }catch(_){ }
     API.setStatus(`Фото загружено (${nw}×${nh})`);
-    setActiveStep("zones");
+    setActiveStep("zone");
     ED.setMode("contour");
     try{ updateContourToggleBtn(); }catch(_){ }
     try{ renderZonesUI(); syncSettingsUI(); }catch(_){ }
@@ -1167,7 +1465,10 @@ async function handlePhotoFile(file){
 
   // Z-C: edit scope helpers (pro-style global edits)
   function _getEditScope(){
-    try{ return (state.ui && state.ui.editScope) ? state.ui.editScope : "active"; }catch(_){ return "active"; }
+    try{
+      if(isSingleZoneRuntime()) return "active";
+      return (state.ui && state.ui.editScope) ? state.ui.editScope : "active";
+    }catch(_){ return "active"; }
   }
   function _targetsForScope(){
     const scope=_getEditScope();
@@ -1611,6 +1912,21 @@ function applyChangeToTiling(change){
   function bindUI(){
     // UX-P2: basic/advanced settings panels
     initAdvancedToggle();
+    try{
+      const shellBtn = el("simpleShellPrimaryBtn");
+      if(shellBtn){
+        shellBtn.addEventListener("click", ()=>{
+          const action = shellBtn.dataset.action || "photo";
+          if(action === "photo"){ try{ el("photoInput").click(); }catch(_){} return; }
+          if(action === "contour"){ setActiveStep("zone"); ED.setMode("contour"); syncCloseButtonUI(); try{ pulseEl(el("modeContour"), 1800); }catch(_){} return; }
+          if(action === "tile"){ guideToTextures(); return; }
+          if(action === "view"){ try{ el("modeView").click(); }catch(_){} return; }
+          if(action === "export"){ try{ el("exportPngBtn").click(); }catch(_){} return; }
+        });
+      }
+      const shellSecondaryBtn = el("simpleShellSecondaryBtn");
+      if(shellSecondaryBtn){ shellSecondaryBtn.addEventListener("click", ()=>{ setSecondaryToolsOpen(!(state.ui && state.ui.secondaryToolsOpen)); }); }
+    }catch(_){ }
     // Premium-P3: seam nudge step selector
     initSeamStepUI();
     // Premium P1: textures search + favorites + recent
@@ -1624,11 +1940,23 @@ function applyChangeToTiling(change){
       if(b) b.checked = (scope === "all");
       const onChange = ()=>{
         state.ui = state.ui || {};
-        state.ui.editScope = (b && b.checked) ? "all" : "active";
+        if(isSingleZoneRuntime()){
+          state.ui.editScope = "active";
+          if(a) a.checked = true;
+          if(b) b.checked = false;
+        }else{
+          state.ui.editScope = (b && b.checked) ? "all" : "active";
+        }
         try{updateUxStatus();}catch(_){ }
       };
       if(a) a.addEventListener("change", onChange);
       if(b) b.addEventListener("change", onChange);
+      if(isSingleZoneRuntime()){
+        if(a) a.checked = true;
+        if(b) b.checked = false;
+        const bLabel = b && typeof b.closest === "function" ? b.closest("label") : null;
+        setNodeHidden(bLabel, true);
+      }
     }catch(_){ }
 
     // Contour visibility toggle (overlay)
@@ -1669,9 +1997,10 @@ function applyChangeToTiling(change){
     function renderAiStatus(){
       if(!aiStatusEl) return;
       const a = state.ai || {};
+      const cap = a.capability || {};
       const st = a.status || "idle";
       const q = a.quality || "basic";
-      const tier = a.device && a.device.tier ? a.device.tier : "";
+      const tier = cap.label || (a.device && a.device.tier ? a.device.tier : "");
       const wg = (a.device && a.device.webgpu) ? "WebGPU" : "no WebGPU";
       const depth = (a.depthMap && a.depthReady) ? "depth" : "";
       const occ = (a.occlusionMask && a.occlusionMask.canvas) ? "occ" : "";
@@ -1682,15 +2011,31 @@ function applyChangeToTiling(change){
       if(depth) txt += ` • ${depth}`;
       if(occ) txt += ` • ${occ}`;
       aiStatusEl.textContent = txt;
+      aiStatusEl.title = cap.reason ? String(cap.reason) : "";
+      try{ applyCapabilityUiPolicy(); }catch(_){ }
     }
     if(aiChk){
       aiChk.checked = (state.ai && state.ai.enabled !== false);
+      aiChk.disabled = !relEnabled("ultra", true);
+      if(!relVisible("ultra", true)){
+        const ultraWrap = aiChk.closest(".field");
+        if(ultraWrap){ ultraWrap.hidden = true; ultraWrap.style.display = "none"; }
+      }
+      try{ applyCapabilityUiPolicy(); }catch(_){ }
       aiChk.addEventListener("change", ()=>{
-        state.ai = state.ai || {};
-        state.ai.enabled = aiChk.checked;
-        if(window.AIUltraPipeline && typeof window.AIUltraPipeline.setEnabled==="function"){
-          window.AIUltraPipeline.setEnabled(aiChk.checked);
+        if(!relEnabled("ultra", true)){
+          aiChk.checked = false;
+          return;
         }
+        state.ai = state.ai || {};
+        let enabled = aiChk.checked;
+        if(window.AIUltraPipeline && typeof window.AIUltraPipeline.setEnabled==="function"){
+          enabled = window.AIUltraPipeline.setEnabled(aiChk.checked) !== false;
+        }else{
+          state.ai.userToggled = true;
+          state.ai.enabled = enabled;
+        }
+        aiChk.checked = !!enabled;
         // Patch B: re-point all zone material params so base/ultra stay independent.
         normalizeAllZones();
         syncSettingsUI();
@@ -1700,7 +2045,7 @@ function applyChangeToTiling(change){
     }
 
     // Occlusion toggle (enabled by default, but does nothing until user creates a mask).
-    if(aiOccChk){
+    if(aiOccChk && relEnabled("occlusion", false)){
       aiOccChk.checked = !(state.ai && state.ai.occlusionEnabled === false);
       aiOccChk.addEventListener("change", ()=>{
         state.ai = state.ai || {};
@@ -1711,7 +2056,7 @@ function applyChangeToTiling(change){
     }
 
     // Enter/exit pick mode (click on photo to select an object).
-    if(aiOccPickBtn){
+    if(aiOccPickBtn && relEnabled("occlusion", false)){
       aiOccPickBtn.addEventListener("click", ()=>{
         state.ai = state.ai || {};
         state.ai._occPickMode = !(state.ai._occPickMode);
@@ -1722,11 +2067,12 @@ function applyChangeToTiling(change){
 
     function _ensureCalib3DState(){
       state.ai = state.ai || {};
-      state.ai.calib3d = state.ai.calib3d || {enabled:false, use3DRenderer:true, forceBottomUp:true, contourDefinesAxis:true, disableAiQuad:true, allowFallbackK:true, applyToActiveZone:false, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, status:"idle", error:null};
+      state.ai.calib3d = state.ai.calib3d || ((S && typeof S.makeDefaultAiCalib3dState === "function") ? S.makeDefaultAiCalib3dState() : {enabled:false, use3DRenderer:true, forceBottomUp:true, contourDefinesAxis:true, disableAiQuad:true, allowFallbackK:true, applyToActiveZone:false, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, lastGoodResult:null, status:"idle", error:null, warn:null, showLines:false});
       return state.ai.calib3d;
     }
 
     function _enterCalibMode(key){
+      if(!relEnabled("calib3d", false)) return;
       const c3 = _ensureCalib3DState();
       if(c3.enabled !== true){ c3.enabled = true; if(calib3dEnableChk) calib3dEnableChk.checked = true; }
       c3.active = key;
@@ -1749,10 +2095,11 @@ function applyChangeToTiling(change){
 
     function _resetCalib3D(){
       const c3 = _ensureCalib3DState();
-      c3.lines = {A1:null,A2:null,B1:null,B2:null};
-      c3.result = null;
-      c3.status = "idle";
-      c3.error = null;
+      const keepEnabled = !!c3.enabled;
+      const keepApply = (c3.applyToActiveZone !== false);
+      const next = (S && typeof S.makeDefaultAiCalib3dState === "function") ? S.makeDefaultAiCalib3dState() : {enabled:false, use3DRenderer:true, forceBottomUp:true, contourDefinesAxis:true, disableAiQuad:true, allowFallbackK:true, applyToActiveZone:false, active:null, lines:{A1:null,A2:null,B1:null,B2:null}, result:null, lastGoodResult:null, status:"idle", error:null, warn:null, showLines:false};
+      Object.keys(c3).forEach((k)=>{ delete c3[k]; });
+      Object.assign(c3, next, { enabled: keepEnabled, applyToActiveZone: keepApply });
       try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
       ED.render();
     }
@@ -1795,7 +2142,7 @@ function applyChangeToTiling(change){
       }
 }
 
-    if(calib3dEnableChk){
+    if(calib3dEnableChk && relEnabled("calib3d", false)){
       calib3dEnableChk.addEventListener("change", ()=>{
         const c3 = _ensureCalib3DState();
         c3.enabled = !!calib3dEnableChk.checked;
@@ -1804,19 +2151,21 @@ function applyChangeToTiling(change){
         ED.render();
       });
     }
-    if(calib3dApplyChk){
+    if(calib3dApplyChk && relEnabled("calib3d", false)){
       calib3dApplyChk.addEventListener("change", ()=>{
         const c3 = _ensureCalib3DState();
         c3.applyToActiveZone = !!calib3dApplyChk.checked;
         _syncCalib3DUI();
       });
     }
-    if(calib3dA1Btn) calib3dA1Btn.addEventListener("click", ()=>_enterCalibMode("A1"));
-    if(calib3dA2Btn) calib3dA2Btn.addEventListener("click", ()=>_enterCalibMode("A2"));
-    if(calib3dB1Btn) calib3dB1Btn.addEventListener("click", ()=>_enterCalibMode("B1"));
-    if(calib3dB2Btn) calib3dB2Btn.addEventListener("click", ()=>_enterCalibMode("B2"));
-    if(calib3dResetBtn) calib3dResetBtn.addEventListener("click", _resetCalib3D);
-    if(calib3dExitBtn) calib3dExitBtn.addEventListener("click", _exitCalibMode);
+    if(relEnabled("calib3d", false)){
+      if(calib3dA1Btn) calib3dA1Btn.addEventListener("click", ()=>_enterCalibMode("A1"));
+      if(calib3dA2Btn) calib3dA2Btn.addEventListener("click", ()=>_enterCalibMode("A2"));
+      if(calib3dB1Btn) calib3dB1Btn.addEventListener("click", ()=>_enterCalibMode("B1"));
+      if(calib3dB2Btn) calib3dB2Btn.addEventListener("click", ()=>_enterCalibMode("B2"));
+      if(calib3dResetBtn) calib3dResetBtn.addEventListener("click", _resetCalib3D);
+      if(calib3dExitBtn) calib3dExitBtn.addEventListener("click", _exitCalibMode);
+    }
 
     // Auto calibration from the already drawn contour (test)
     async function _autoCalibFromContour(){
@@ -1890,8 +2239,8 @@ function applyChangeToTiling(change){
       ED.render();
     }
 
-    if(calib3dAutoContourBtn) calib3dAutoContourBtn.addEventListener("click", _autoCalibFromContour);
-if(calib3dToggleLinesBtn){
+    if(calib3dAutoContourBtn && relEnabled("calib3d", false)) calib3dAutoContourBtn.addEventListener("click", _autoCalibFromContour);
+if(calib3dToggleLinesBtn && relEnabled("calib3d", false)){
       calib3dToggleLinesBtn.addEventListener("click", ()=>{
         const c3 = _ensureCalib3DState();
         c3.showLines = !(c3.showLines);
@@ -1909,7 +2258,7 @@ if(calib3dToggleLinesBtn){
     try{ _syncCalib3DUI(); }catch(_){ }
 
     // Clear occlusion mask
-    if(aiOccClearBtn){
+    if(aiOccClearBtn && relEnabled("occlusion", false)){
       aiOccClearBtn.addEventListener("click", ()=>{
         state.ai = state.ai || {};
         state.ai.occlusionMask = null;
@@ -1929,6 +2278,7 @@ if(calib3dToggleLinesBtn){
         const st = e.detail && e.detail.status ? String(e.detail.status) : "";
         if(st==="loading" || st==="running") UltraLoadUI.start();
         if(st==="ready") UltraLoadUI.stop(true);
+        if(st==="idle" || st==="safe_mode") UltraLoadUI.hide();
         return;
       }
       if(e && e.type==="ai:depthReady"){
@@ -1956,9 +2306,21 @@ if(calib3dToggleLinesBtn){
 
     window.addEventListener("ai:status", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
     window.addEventListener("ai:ready", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
-    window.addEventListener("ai:error", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
+    window.addEventListener("ai:error", (e)=>{
+      try{
+        const msg = e && e.detail && e.detail.error ? String(e.detail.error) : "AI error";
+        DIAG && DIAG.report && DIAG.report("ai_error", new Error(msg), { stage:"ai_pipeline", status: state.ai && state.ai.status ? state.ai.status : null });
+      }catch(_){ }
+      renderAiStatus(e); _onUltraProgress(e);
+    });
     window.addEventListener("ai:depthReady", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
     window.addEventListener("ai:occlusionReady", (e)=>{ renderAiStatus(e); _onUltraProgress(e); });
+    window.addEventListener("ai:capability", ()=>{
+      try{ applyCapabilityUiPolicy(); }catch(_){ }
+      try{ normalizeAllZones(); syncSettingsUI(); }catch(_){ }
+      try{ ED.render(); }catch(_){ }
+      renderAiStatus();
+    });
     renderAiStatus();
 
     // AI debug overlay (Patch 3.1)
@@ -2053,45 +2415,46 @@ if(calib3dToggleLinesBtn){
     // URL flags
     try{
       const qs = new URLSearchParams(location.search);
-      if(qs.get("aidebug")==="1"){ setAiDebugOverlayEnabled(true); }
-      if(qs.get("debugMetrics")==="1"){
+      const allowDevUrlFlags = relEnabled("devUrlFlags", false);
+      if(allowDevUrlFlags && relEnabled("aiDebugOverlay", false) && qs.get("aidebug")==="1"){ setAiDebugOverlayEnabled(true); }
+      if(allowDevUrlFlags && relEnabled("debugMetrics", false) && qs.get("debugMetrics")==="1"){
         // Dev-only near-metric overlay (B2). Does not affect rendering.
         window.__PP_DEBUG_METRICS = true;
         setAiDebugOverlayEnabled(true);
       }
       // PhotoFit mode: ?photofit=legacy (per-pixel) or default global exposure
-      const pf = qs.get('photofit');
+      const pf = allowDevUrlFlags ? qs.get('photofit') : null;
       if(pf==='legacy'){ window.__PP_PHOTOFIT_MODE = 'legacy'; }
       else if(pf==='global'){ window.__PP_PHOTOFIT_MODE = 'global'; }
       else { window.__PP_PHOTOFIT_MODE = 'global'; }
 
       // GGX specular (Ultra/PBR): enabled by default.
       // Use ?ggx=0 to force-disable (fallback to legacy spec), or ?ggx=1 to force-enable.
-      const ggx = qs.get('ggx');
+      const ggx = allowDevUrlFlags ? qs.get('ggx') : null;
       if(ggx === '0'){ window.__PP_GGX = 0; }
       else if(ggx === '1'){ window.__PP_GGX = 1; }
       else { window.__PP_GGX = 1; }
 
       // Stochastic tiling (Ultra-only): breaks visible repetition by applying a large-scale random phase/rotation per super-tile.
       // Default is OFF (safe). Enable with ?stoch=1. Optional: ?stochTier=low|mid|high, ?stochRot=1.
-      const st = qs.get('stoch');
+      const st = allowDevUrlFlags ? qs.get('stoch') : null;
       if(st === '1'){ window.__PP_STOCH = 1; }
       else { window.__PP_STOCH = 0; }
-      const stTier = qs.get('stochTier');
+      const stTier = allowDevUrlFlags ? qs.get('stochTier') : null;
       if(stTier === 'low' || stTier === 'mid' || stTier === 'high'){ window.__PP_STOCH_TIER = stTier; }
-      const stRot = qs.get('stochRot');
+      const stRot = allowDevUrlFlags ? qs.get('stochRot') : null;
       if(stRot === '1'){ window.__PP_STOCH_ROT = 1; }
       else if(stRot === '0'){ window.__PP_STOCH_ROT = 0; }
 
       // Micro-variation (Ultra-only): subtle per-tile variations to reduce "wallpaper" look.
       // Default: AUTO (enabled when stochastic tiling is enabled). Override: ?micro=0 or ?micro=1.
-      const micro = qs.get('micro');
+      const micro = allowDevUrlFlags ? qs.get('micro') : null;
       if(micro === '0'){ window.__PP_MICRO = 0; }
       else if(micro === '1'){ window.__PP_MICRO = 1; }
       // Optional tuning (safe ranges): ?microAlbedo=0.035&microRough=0.06&microSpec=0.04
-      const mA = qs.get('microAlbedo');
-      const mR = qs.get('microRough');
-      const mS = qs.get('microSpec');
+      const mA = allowDevUrlFlags ? qs.get('microAlbedo') : null;
+      const mR = allowDevUrlFlags ? qs.get('microRough') : null;
+      const mS = allowDevUrlFlags ? qs.get('microSpec') : null;
       if(mA !== null && mA !== ''){ const v = parseFloat(mA); if(isFinite(v)) window.__PP_MICRO_A = v; }
       if(mR !== null && mR !== ''){ const v = parseFloat(mR); if(isFinite(v)) window.__PP_MICRO_R = v; }
       if(mS !== null && mS !== ''){ const v = parseFloat(mS); if(isFinite(v)) window.__PP_MICRO_S = v; }
@@ -2099,7 +2462,7 @@ if(calib3dToggleLinesBtn){
       // Stochastic Level B (3-tap blend) control. Intended for desktop/high tier only.
       // Default is AUTO (enabled on desktop when stochTier=high).
       // Force-enable: ?stoch3=1, force-disable: ?stoch3=0.
-      const st3 = qs.get('stoch3');
+      const st3 = allowDevUrlFlags ? qs.get('stoch3') : null;
       if(st3 === '1'){ window.__PP_STOCH_3TAP = 1; }
       else if(st3 === '0'){ window.__PP_STOCH_3TAP = 0; }
 
@@ -2169,13 +2532,15 @@ if(calib3dToggleLinesBtn){
     window.addEventListener("ai:status", drawAiDebugOverlay);
     window.addEventListener("ai:error", drawAiDebugOverlay);
 
-    // Ctrl+Shift+D toggles debug overlay
-    window.addEventListener("keydown",(e)=>{
-      if(e.ctrlKey && e.shiftKey && (e.key==="D" || e.key==="d")){
-        setAiDebugOverlayEnabled(!(state.ai && state.ai.debugOverlay));
-        e.preventDefault();
-      }
-    });
+    // Ctrl+Shift+D toggles debug overlay (dev-only, release-gated)
+    if(relEnabled("aiDebugOverlay", false)){
+      window.addEventListener("keydown",(e)=>{
+        if(e.ctrlKey && e.shiftKey && (e.key==="D" || e.key==="d")){
+          setAiDebugOverlayEnabled(!(state.ai && state.ai.debugOverlay));
+          e.preventDefault();
+        }
+      });
+    }
 
     // Horizontal wheel scrolling for the shapes strip (keep orientation horizontal, allow mouse wheel).
     const shapesStrip = document.getElementById("shapesList");
@@ -2199,12 +2564,12 @@ if(calib3dToggleLinesBtn){
 
     el("modePhoto").addEventListener("click",()=>{setActiveStep("photo");ED.setMode("photo");syncCloseButtonUI();});
     const btnPlane=el("modePlane");
-    if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});}
-    el("modeContour").addEventListener("click",()=>{setActiveStep("zones");ED.setMode("contour");syncCloseButtonUI();});
-    el("modeCutout").addEventListener("click",()=>{setActiveStep("cutouts");ED.setMode("cutout");syncCloseButtonUI();});
+    if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zone");ED.setMode("contour");syncCloseButtonUI();});}
+    el("modeContour").addEventListener("click",()=>{setActiveStep("zone");ED.setMode("contour");syncCloseButtonUI();});
+    el("modeCutout").addEventListener("click",()=>{setSecondaryToolsOpen(true);setActiveStep("zone");ED.setMode("cutout");syncCloseButtonUI();});
     // "Просмотр" is a quick clean preview: it also hides the contour overlay automatically.
     el("modeView").addEventListener("click",()=>{
-      setActiveStep("export");
+      setActiveStep("result");
       // Auto-hide contour on entering view so user sees the pure material render.
       state.ui.showContour = false;
       updateContourToggleBtn();
@@ -2642,18 +3007,19 @@ if(calib3dToggleLinesBtn){
       z.contour=[];
       z.closed=false;
       z.cutouts=[];
+      z.baseParams=null;
       state.ui.activeCutoutId=null;
 
       // 2) Reset per-zone perspective params that could have been auto-applied by 3D calibration.
       // Keep the rest of the material settings intact (texture/scale/rotation/etc.).
       if(z.material){
         if(z.material.params_base){
-          if(typeof z.material.params_base.horizon === "number") z.material.params_base.horizon = 0.0;
-          if(typeof z.material.params_base.perspective === "number") z.material.params_base.perspective = 0.75;
+          if(typeof z.material.params_base.horizon === "number") z.material.params_base.horizon = DEFAULT_MAT_PARAMS.horizon;
+          if(typeof z.material.params_base.perspective === "number") z.material.params_base.perspective = DEFAULT_MAT_PARAMS.perspective;
         }
         if(z.material.params_ultra){
-          if(typeof z.material.params_ultra.horizon === "number") z.material.params_ultra.horizon = 0.0;
-          if(typeof z.material.params_ultra.perspective === "number") z.material.params_ultra.perspective = 0.75;
+          if(typeof z.material.params_ultra.horizon === "number") z.material.params_ultra.horizon = DEFAULT_MAT_PARAMS.horizon;
+          if(typeof z.material.params_ultra.perspective === "number") z.material.params_ultra.perspective = DEFAULT_MAT_PARAMS.perspective;
         }
         // Also clear "manual tuned" flags so future auto-calibration isn't suppressed.
         z.material._ultraTuned = {horizon:false, perspective:false};
@@ -2663,17 +3029,15 @@ if(calib3dToggleLinesBtn){
       try{ if(typeof _resetCalib3D === "function") _resetCalib3D(); }catch(_){ }
 
       // 4) Ensure editor is in contour mode so user can immediately re-draw.
-      setActiveStep("zones");
-      ED.setMode("contour");
-
-      // 4b) After reset, re-arm UI interaction state for building a NEW contour.
-      // If the user previously hid the contour overlay while tuning materials,
-      // they would otherwise see "nothing happens" when placing points.
-      state.ui = state.ui || {};
-      state.ui.showContour = true;
-      state.ui.selectedPoint = null;
-      state.ui.draggingPoint = null;
-      state.ui.isPointerDown = false;
+      resetUiForSession({
+        activeStep:"zone",
+        mode:"contour",
+        showContour:true,
+        editScope:(state.ui && state.ui.editScope) || "active",
+        masterZoneId:(state.ui && state.ui.masterZoneId) || z.id,
+        activeZoneId:z.id
+      });
+      hardResetEditorInteraction();
       updateContourToggleBtn();
 
       syncCloseButtonUI();
@@ -2712,7 +3076,7 @@ if(calib3dToggleLinesBtn){
       });
     }
 
-    el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0]));
+    el("photoInput").addEventListener("change",(e)=>handlePhotoFile(e.target.files[0], "input"));
     el("replacePhotoBtn").addEventListener("click",()=>el("photoInput").click());
 
     // UX-P3: Guided flow triggers
@@ -2720,6 +3084,7 @@ if(calib3dToggleLinesBtn){
       window.addEventListener("pp:zoneClosed",(ev)=>{
         try{
           // When a contour is closed, guide user to choose texture (especially for the first/main area).
+          try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("contour_completed", { zoneId: state.ui && state.ui.activeZoneId ? state.ui.activeZoneId : null, points: (S.getActiveZone() && S.getActiveZone().contour) ? S.getActiveZone().contour.length : 0 }); }catch(_){ }
           guideToTextures();
         }catch(_){}
       });
@@ -2730,20 +3095,42 @@ if(calib3dToggleLinesBtn){
     const cw=document.getElementById("canvasWrap");
     if(cw){
       cw.addEventListener("dragover",(e)=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});
-      cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f);});
+      cw.addEventListener("drop",(e)=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePhotoFile(f, "drop");});
     }
 
         el("resetProjectBtn").addEventListener("click",()=>{
       pushHistory();
-      state.assets.photoBitmap=null;state.assets.photoW=0;state.assets.photoH=0;
-      state.zones=[];state.ui.activeZoneId=null;state.ui.activeCutoutId=null;
+      const prevBitmap = state.assets && state.assets.photoBitmap;
+      try{ if(prevBitmap && prevBitmap.close) prevBitmap.close(); }catch(_){ }
+
+      if(S && typeof S.resetProjectState === "function") S.resetProjectState(state);
+      else {
+        state.assets.photoBitmap=null; state.assets.photoW=0; state.assets.photoH=0;
+        state.zones=[];
+        resetUiForSession();
+        resetAiRuntimeState();
+      }
+
       ensureActiveZone();
-    enforceSingleZoneMode();renderZonesUI();ED.render();
-      setActiveStep("photo");ED.setMode("photo");
+      enforceSingleZoneMode();
+      hardResetEditorInteraction();
+      broadcastResetState();
+      renderZonesUI();
+      ED.render();
+      setActiveStep("photo");
+      ED.setMode("photo");
+      updateContourToggleBtn();
       syncCloseButtonUI();
+      try{ syncSettingsUI(); }catch(_){ }
     });
 
-    el("addZoneBtn").addEventListener("click",()=>{ addZoneAndArmContour(); });
+    el("addZoneBtn").addEventListener("click",()=>{
+      if(isSingleZoneRuntime()){
+        try{ API && API.setStatus && API.setStatus("Single-zone релиз: дополнительные участки отключены"); }catch(_){ }
+        return;
+      }
+      addZoneAndArmContour();
+    });
 
     const splitBtn = document.getElementById("splitZoneBtn");
     if(splitBtn){
@@ -2754,12 +3141,17 @@ if(calib3dToggleLinesBtn){
     window.addEventListener("pp:splitClosed",()=>{
       // Apply only if we are in split mode and there is a draft.
       try{
+        if(isSingleZoneRuntime()) return;
         if(state.ui && state.ui.mode==="split" && state.ui.splitDraft && state.ui.splitDraft.closed){
           applySplitDraft();
         }
       }catch(e){ console.warn(e); }
     });
     el("dupZoneBtn").addEventListener("click",()=>{
+      if(isSingleZoneRuntime()){
+        try{ API && API.setStatus && API.setStatus("Single-zone релиз: дублирование участков отключено"); }catch(_){ }
+        return;
+      }
       const z=S.getActiveZone();if(!z)return;pushHistory();
       const copy=JSON.parse(JSON.stringify(z));
       copy.id=S.uid("zone");copy.name=z.name+" (копия)";
@@ -2768,6 +3160,7 @@ if(calib3dToggleLinesBtn){
       renderZonesUI();syncSettingsUI();ED.render();
     });
     el("delZoneBtn").addEventListener("click",()=>{
+      if(isSingleZoneRuntime()) return;
       if(state.zones.length<=1)return;
       const id=state.ui.activeZoneId;if(!id)return;pushHistory();
       state.zones=state.zones.filter(z=>z.id!==id);
@@ -2779,7 +3172,8 @@ if(calib3dToggleLinesBtn){
     el("addCutoutBtn").addEventListener("click",()=>{
       const z=S.getActiveZone();if(!z)return;pushHistory();
       const c=makeCutout((z.cutouts.length+1));z.cutouts.push(c);state.ui.activeCutoutId=c.id;
-      renderZonesUI();setActiveStep("cutouts");ED.setMode("cutout");
+      try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("cutout_started", { source:"add_cutout_button", zoneId: z.id, cutoutId: c.id, stage:"created" }, { allowDuplicate:true }); }catch(_){ }
+      setSecondaryToolsOpen(true);renderZonesUI();setActiveStep("zone");ED.setMode("cutout");
       syncCloseButtonUI();
     });
     el("delCutoutBtn").addEventListener("click",()=>{
@@ -2879,7 +3273,7 @@ el("blendSelect").addEventListener("change",()=>{const z=S.getActiveZone();if(!z
       applyChangeToTiling({horizon: uiToHorizon(uiVal)});
       ED.render();
     });
-el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
+el("exportPngBtn").addEventListener("click",()=>{ try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("export_clicked", { source:"export_button" }); }catch(_){ } ED.exportPNG(); });
     el("copySummaryBtn").addEventListener("click",async ()=>{const t=makeSummaryText();await navigator.clipboard.writeText(t).catch(()=>{});API.setStatus("Описание скопировано");});
     el("waBtn").addEventListener("click",()=>openMessenger("wa"));
     el("tgBtn").addEventListener("click",()=>openMessenger("tg"));
@@ -2988,6 +3382,9 @@ el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
   })();
 
   async function bootstrap(){
+    try{ ANALYTICS && ANALYTICS.init && ANALYTICS.init(); }catch(_){ }
+    try{ DIAG && DIAG.note && DIAG.note("bootstrap_start", { patch:(state.release&&state.release.patch)||null }); }catch(_){ }
+    applyReleaseFlags();
     setBuildInfo();
     ensureActiveZone();
     enforceSingleZoneMode();
@@ -3009,9 +3406,11 @@ el("exportPngBtn").addEventListener("click",()=>ED.exportPNG());
       updateSplitZoneBtnUI();
       syncSettingsUI();
       await ED.render();
+      try{ DIAG && DIAG.note && DIAG.note("bootstrap_ready", { shapes:(state.catalog&&state.catalog.shapes?state.catalog.shapes.length:0) }); }catch(_){ }
       API.setStatus("Готово");
     }catch(e){
       console.error(e);
+      try{ DIAG && DIAG.report && DIAG.report("init_error", e, { stage:"bootstrap" }); }catch(_){ }
       API.setStatus("Ошибка инициализации API (см. консоль)");
       renderZonesUI();
       updateSplitZoneBtnUI();
