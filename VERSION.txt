@@ -1,2 +1,2 @@
-mvp-iter2.2.178-forms-bottom-visibility-hotfix
-Patch: P09-HF2 forms bottom visibility hotfix
+mvp-iter2.2.179-workspace-photo-area-cleanup
+Patch: P10 workspace photo area cleanup

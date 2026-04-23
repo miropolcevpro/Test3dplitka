@@ -455,7 +455,10 @@
     }
     if(titleEl) titleEl.textContent = title;
     if(textEl) textEl.textContent = text;
-    if(tagEl) tagEl.textContent = model.step === "photo" ? "Шаг 1 из 4" : model.step === "zone" ? "Шаг 2 из 4" : model.step === "tile" ? "Шаг 3 из 4" : "Шаг 4 из 4";
+    const stepTagText = model.step === "photo" ? "Шаг 1 из 4" : model.step === "zone" ? "Шаг 2 из 4" : model.step === "tile" ? "Шаг 3 из 4" : "Шаг 4 из 4";
+    if(tagEl) tagEl.textContent = stepTagText;
+    const compactStepTag = el("compactStepTag");
+    if(compactStepTag) compactStepTag.textContent = stepTagText;
     if(primaryBtn){
       primaryBtn.hidden = false;
       primaryBtn.textContent = primaryLabel;
@@ -1026,7 +1029,8 @@ function addZoneAndArmContour(){
       const paneH = pane.clientHeight || 0;
       const toolbarH = toolbar ? toolbar.offsetHeight : 0;
       const bottomH = bottomMenu.offsetHeight || 0;
-      const available = Math.max(220, paneH - toolbarH - bottomH - 8);
+      const desktopMin = (window.innerWidth >= 1100 ? (window.innerHeight >= 820 ? 360 : 320) : 240);
+      const available = Math.max(desktopMin, paneH - toolbarH - bottomH - 6);
       wrap.style.setProperty("--canvas-wrap-max-h", available + "px");
     }catch(_){ }
   }
