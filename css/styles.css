@@ -30,7 +30,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .contourAssist__actions{display:flex;gap:8px;flex-wrap:wrap}
 .contourAssist.isReady{border-color:rgba(255,215,0,0.35);background:rgba(255,215,0,0.08)}
 .contourAssist.isComplete{border-color:rgba(68,212,123,0.35);background:rgba(68,212,123,0.08)}
-.canvasWrap{position:relative;flex:1;min-height:0;background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
+.canvasWrap{position:relative;flex:1 1 auto;min-height:220px;max-height:var(--canvas-wrap-max-h, none);background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
 /* Canvases: WebGL base + 2D overlay. Display size is controlled in JS to preserve photo aspect ratio. */
 #glCanvas,#editorCanvas{display:block;position:absolute;left:50%;top:50%;
   /* Base centering + optional fullscreen viewer pan/zoom (defaults keep old behavior). */
@@ -85,12 +85,12 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 
 
 @media (min-width: 1100px){
-  .canvasWrap{min-height:520px;height:calc(70vh - 140px);}
+  .canvasWrap{min-height:260px;height:auto;}
 }
 
 
 /* Bottom selector bar (shapes + textures) */
-.bottomMenu{background:rgba(15,18,24,0.92);backdrop-filter:blur(10px);border-top:1px solid rgba(255,255,255,0.08);padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px;flex:0 0 auto;min-height:138px;position:relative;z-index:3}
+.bottomMenu{background:rgba(15,18,24,0.92);backdrop-filter:blur(10px);border-top:1px solid rgba(255,255,255,0.08);padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px;flex:0 0 auto;min-height:138px;position:relative;z-index:3;margin-top:auto}
 .bottomSection{display:flex;flex-direction:column;gap:6px}
 .bottomTitle{font-size:12px;color:var(--muted);letter-spacing:.02em;padding:0 4px}
 

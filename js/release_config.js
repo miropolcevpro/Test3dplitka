@@ -1,6 +1,6 @@
 window.PhotoPaveReleaseConfig=(function(){
   const preset = "public-core";
-  const patch = "P09-HF1";
+  const patch = "P09-HF2";
   const currentOrigin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin.replace(/\/$/,"") : "";
   const DEFAULT_GATEWAY = "https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const features = {

@@ -1004,6 +1004,7 @@ function addZoneAndArmContour(){
       wrap.appendChild(card);
     }
     // After DOM is updated, adaptively size shape cards so the strip fits without clipping.
+    requestAnimationFrame(fitCanvasWrapForBottomMenu);
     requestAnimationFrame(fitShapesToBottomMenu);
   }
 
@@ -1011,6 +1012,25 @@ function addZoneAndArmContour(){
   // Ensure the shapes strip never gets visually clipped by the bottom bar height in fixed-layout iframe contexts.
   // We preserve the "frame hugs the image" logic (aspect-ratio per preview), and only adaptively reduce the overall
   // preview size (card width), so the thumbnails fully fit into the allocated bottom area.
+  function fitCanvasWrapForBottomMenu(){
+    try{
+      const pane = document.querySelector(".canvasPane");
+      const wrap = document.getElementById("canvasWrap");
+      const toolbar = pane ? pane.querySelector(".canvasToolbar") : null;
+      const bottomMenu = pane ? pane.querySelector(".bottomMenu") : null;
+      if(!pane || !wrap || !bottomMenu) return;
+      if(document.body.classList.contains("isFullscreenViewer") || wrap.classList.contains("isFullscreen")){
+        wrap.style.removeProperty("--canvas-wrap-max-h");
+        return;
+      }
+      const paneH = pane.clientHeight || 0;
+      const toolbarH = toolbar ? toolbar.offsetHeight : 0;
+      const bottomH = bottomMenu.offsetHeight || 0;
+      const available = Math.max(220, paneH - toolbarH - bottomH - 8);
+      wrap.style.setProperty("--canvas-wrap-max-h", available + "px");
+    }catch(_){ }
+  }
+
   function fitShapesToBottomMenu(){
     try{
       const list = el("shapesList");
@@ -2682,8 +2702,9 @@ if(calib3dToggleLinesBtn && relEnabled("calib3d", false)){
       }, { passive:false });
     }
 
-    // Recompute adaptive shape thumbnail sizing on resize (iframe layouts can clip the bottom bar).
+    // Recompute layout on resize (iframe layouts can clip the bottom bar).
     window.addEventListener("resize", ()=>{
+      requestAnimationFrame(fitCanvasWrapForBottomMenu);
       requestAnimationFrame(fitShapesToBottomMenu);
       requestAnimationFrame(fitLeftTexturesPanelForThree);
     });
@@ -3570,6 +3591,7 @@ el("exportPngBtn").addEventListener("click",()=>{ try{ ANALYTICS && ANALYTICS.tr
       await API.loadShapes();
       renderShapesUI();
       await loadTexturesForActiveShape();
+      requestAnimationFrame(fitCanvasWrapForBottomMenu);
       renderZonesUI();
       updateSplitZoneBtnUI();
       syncSettingsUI();
