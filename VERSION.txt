@@ -1,9 +1,4 @@
-mvp-iter2.2.189-admin-noauth-separation-hotfix
-Patch: P18.1
-Base: P18 (mvp-iter2.2.188-admin-shell-foundation)
-Date: 2026-04-23
-Notes:
-- Public index cleaned from admin shell markup and admin shell script.
-- Added separate admin.html entrypoint for protected Tilda admin page.
-- Admin shell now supports no-token/read-only mode via bootstrap requireAuth:false.
-- Admin token badge replaced with protected-page badge in no-auth mode.
+mvp-iter2.2.190-github-tilda-admin-hosting-hotfix
+Patch: P18.2
+Base: P18.1 admin no-auth separation hotfix
+Notes: Adds deploy-ready /photo-pave-admin/ hosted bundle for GitHub Pages + Tilda iframe integration; public root remains clean.

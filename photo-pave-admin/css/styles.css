@@ -1,0 +1,427 @@
+
+:root{--bg:#0f1218;--panel:#151a22;--panel2:#10141b;--text:#e7eefc;--muted:#9db0d3;--accent:#00e5ff;--danger:#ff4d4f;--border:rgba(255,255,255,0.08);--shadow:0 8px 30px rgba(0,0,0,0.35);--radius:14px;--font:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
+*{box-sizing:border-box}html,body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,#0f1218);color:var(--text);height:100%;overflow:hidden}
+body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,#0f1218);color:var(--text)}
+.app{height:100vh;display:flex;flex-direction:column;min-height:0}
+.topbar{display:flex;gap:10px;justify-content:space-between;align-items:center;padding:6px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(15,18,24,0.94);backdrop-filter:blur(10px);z-index:10;min-height:42px}
+.brand__title{font-weight:700;font-size:14px;line-height:1.1}
+.brand__subtitle{display:none}
+.topbar__right{display:flex;align-items:center;gap:8px;min-width:0}
+.status{color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(32vw,240px)}
+.compactStepTag{padding:5px 8px;border-radius:999px;border:1px solid rgba(0,229,255,0.20);background:rgba(0,229,255,0.07);font-size:11px;color:var(--text);white-space:nowrap}
+.stepper,.simpleShell,.uxStatus,.uxHint{display:none !important}
+.step{padding:8px 10px;border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:12px}
+.step--active{border-color:rgba(0,229,255,0.45);color:var(--text);background:rgba(0,229,255,0.08)}
+.main{display:flex;gap:10px;padding:6px 10px;flex:1;min-height:0;align-items:stretch}
+
+.simpleShell{display:flex;flex-direction:column;gap:10px;padding:12px 18px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(0,229,255,0.08),rgba(0,229,255,0.03));}
+.simpleShell__eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.simpleShell__head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.simpleShell__title{font-size:16px;font-weight:700;line-height:1.2}
+.simpleShell__text{font-size:13px;line-height:1.4;color:rgba(231,238,252,0.82);max-width:920px;margin-top:4px}
+.simpleShell__tag{padding:8px 10px;border-radius:999px;border:1px solid rgba(0,229,255,0.22);background:rgba(0,229,255,0.08);font-size:12px;color:var(--text);white-space:nowrap}
+.simpleShell__actions{display:flex;gap:10px;flex-wrap:wrap}
+@media (max-width:720px){.topbar{padding:6px 10px;min-height:40px}.brand__title{font-size:13px}.status{display:none}.compactStepTag{font-size:10px;padding:5px 7px}.main{padding:4px 6px}.simpleShell{padding:12px 16px}.simpleShell__title{font-size:15px}.simpleShell__text{font-size:12px}.simpleShell__tag{font-size:11px;padding:7px 9px}}
+
+.canvasPane{background:var(--panel2);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;flex:1;min-width:0;min-height:0}
+.canvasToolbar{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:7px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.toolGroup{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.toolGroup .btn{padding:7px 10px}
+.hint{display:none !important}
+.contourAssist{display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:0;border:none;background:transparent;min-width:0;flex:0 1 auto}
+.contourAssist__status{display:none}
+.contourAssist__actions{display:flex;gap:6px;flex-wrap:wrap}
+.contourAssist__actions .btn{padding:7px 10px}
+.contourAssist.isReady,.contourAssist.isComplete{border:none;background:transparent}
+.canvasWrap{position:relative;flex:1 1 auto;min-height:280px;max-height:var(--canvas-wrap-max-h, none);background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
+/* Canvases: WebGL base + 2D overlay. Display size is controlled in JS to preserve photo aspect ratio. */
+#glCanvas,#editorCanvas{display:block;position:absolute;left:50%;top:50%;
+  /* Base centering + optional fullscreen viewer pan/zoom (defaults keep old behavior). */
+  transform:translate(-50%,-50%) translate(var(--viewer-pan-x, 0px), var(--viewer-pan-y, 0px)) scale(var(--viewer-zoom, 1));
+  touch-action:none;max-width:100%;max-height:100%;}
+#glCanvas{z-index:0;}
+#editorCanvas{z-index:1;}
+.kbdHelp{display:none}
+.sidePane{background:transparent;display:flex;flex-direction:column;gap:10px;min-height:0;flex:0 0 360px;max-width:420px;min-width:300px;overflow:auto;}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+.panel--textures{min-height:240px}
+.panel__title{padding:10px 12px;border-bottom:1px solid var(--border);font-weight:600;font-size:13px}
+.panel__body{padding:10px 12px}
+.panel__body--textures{padding:10px 10px}
+.panel__body--textures{overflow:auto;max-height:42vh}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.btn{appearance:none;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:var(--text);padding:8px 10px;border-radius:12px;cursor:pointer;font-size:12px}
+.btn:hover{background:rgba(255,255,255,0.10)}
+.btn--ghost{background:transparent}
+.btn--ghost.isToggled{background:rgba(255,255,255,0.12);border-color:rgba(255,255,255,0.28)}
+.btn--ghost.isToggled:hover{background:rgba(255,255,255,0.16)}
+.btn--danger{border-color:rgba(255,77,79,0.45);background:rgba(255,77,79,0.10)}
+.btn--active{box-shadow:0 0 0 2px rgba(0,0,0,0.18) inset}
+.btn--iconText{display:inline-flex;align-items:center;gap:8px}
+.btnIcon{display:inline-block;line-height:1;font-size:14px;opacity:.95}
+.note{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.35}
+.hr{height:1px;background:var(--border);margin:12px 0}
+.list{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.listItem{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.04)}
+.listItem--active{border-color:rgba(0,229,255,0.45);background:rgba(0,229,255,0.06)}
+.listItem__meta{display:flex;flex-direction:column;gap:2px}
+.listItem__title{font-size:12px;font-weight:600}
+.listItem__sub{font-size:11px;color:var(--muted)}
+.grid{display:grid;gap:8px}
+.grid--shapes{grid-template-columns:repeat(3,minmax(0,1fr))}
+.grid--textures{grid-template-columns:repeat(4,minmax(0,1fr))}
+.card{border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.04);border-radius:14px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column}
+.card:hover{background:rgba(255,255,255,0.07)}
+.card--active{border-color:rgba(0,229,255,0.45);background:rgba(0,229,255,0.06)}
+.thumb{width:100%;aspect-ratio:4/3;background:#0b0e14;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.card__label{padding:7px 8px;font-size:11px;color:var(--text);display:flex;justify-content:space-between;gap:6px}
+.badge{font-size:10px;color:var(--muted)}
+.field{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.field span{font-size:12px;color:var(--muted)}
+.field input[type="range"]{width:100%}
+.field select{width:100%;padding:8px 10px;border-radius:12px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:var(--text)}
+.footer{padding:4px 10px 5px;border-top:1px solid rgba(255,255,255,0.06);color:rgba(157,176,211,0.64);display:flex;justify-content:flex-end;align-items:center;gap:0;min-height:22px;flex:0 0 auto}
+.footer__build{margin-left:auto;font-size:10px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(62vw,520px);opacity:.72;letter-spacing:.01em;text-align:right}
+.footer__build span{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
+@media (max-width:720px){.footer{padding:3px 8px 4px;min-height:18px}.footer__build{max-width:74vw;font-size:9px;opacity:.62}}
+
+.muted{color:var(--muted);font-size:12px}
+@media (max-width:1100px){.main{grid-template-columns:1fr}.sidePane{order:2}.canvasPane{order:1}.grid--textures{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@media (max-width:720px){.grid--shapes{grid-template-columns:repeat(2,minmax(0,1fr))}.grid--textures{grid-template-columns:repeat(3,minmax(0,1fr))}.contourAssist{width:100%;justify-content:flex-start}.contourAssist__actions{width:100%}.contourAssist__actions .btn{flex:1}.canvasWrap{min-height:240px}}
+
+
+@media (min-width: 1100px){
+  .canvasWrap{min-height:360px;height:auto;}
+}
+
+
+/* Bottom selector bar (shapes + textures) */
+.bottomMenu{background:rgba(15,18,24,0.92);backdrop-filter:blur(10px);border-top:1px solid rgba(255,255,255,0.08);padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px;flex:0 0 auto;min-height:138px;position:relative;z-index:3;margin-top:auto}
+.bottomSection{display:flex;flex-direction:column;gap:6px}
+.bottomTitle{font-size:12px;color:var(--muted);letter-spacing:.02em;padding:0 4px}
+
+/* Ultra mode loader (ONNX / CV init indicator) */
+.bottomHeader{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:0 4px}
+.ultraLoad{display:none;min-width:220px;max-width:360px;flex:0 1 360px}
+.ultraLoad--on{display:block}
+.ultraLoad__text{font-size:11px;color:rgba(46,240,107,0.95);line-height:1.1;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.95;transition:opacity .25s ease}
+.ultraLoad__bar{height:4px;border-radius:999px;background:rgba(255,255,255,0.10);overflow:hidden;border:1px solid rgba(255,255,255,0.10)}
+.ultraLoad__fill{height:100%;width:0%;background:rgba(46,240,107,0.95);border-radius:999px;transition:width .22s ease}
+.ultraLoad__text.isFading{opacity:.35}
+
+@media (max-width: 720px){
+  .bottomHeader{align-items:flex-start;flex-direction:column;gap:6px}
+  .ultraLoad{min-width:unset;max-width:none;width:100%}
+  .ultraLoad__text{white-space:normal}
+}
+
+.hscroll{display:flex;gap:10px;overflow-x:auto;overflow-y:hidden;padding:6px 4px 10px 4px;scrollbar-width:thin;scrollbar-gutter:stable both-edges}
+/* Keep the horizontal scrollbar ("ползунок") visible and easy to grab in iframe contexts */
+.hscroll::-webkit-scrollbar{height:10px}
+.hscroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.18);border-radius:999px}
+.hscroll .card{flex:0 0 auto}
+.hscroll__note{padding:10px 12px;border:1px dashed rgba(255,255,255,0.14);border-radius:12px;color:var(--muted);font-size:12px;background:rgba(255,255,255,0.03);min-width:min(320px,100%)}
+
+/* Shapes row: keep image size policy (contain) but make the frame fit the preview (no empty bars)
+   by adapting thumbnail aspect-ratio per image. */
+.hscroll--shapes .card{width:var(--shape-card-w,180px);height:auto;padding:0}
+.hscroll--shapes .card__label{display:none !important}
+.hscroll--shapes .title,.hscroll--shapes .badge{display:none !important}
+.hscroll--shapes .thumb{height:auto !important;aspect-ratio:var(--shape-ar, 4/3) !important}
+.hscroll--shapes .thumb img{object-fit:contain}
+
+/* Textures grid in the right sidebar */
+.texturesGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.texturesGrid .card{height:160px;padding:0}
+.texturesGrid .thumb{flex:1;height:auto;aspect-ratio:auto}
+.texturesGrid .thumb img{width:100%;height:100%;object-fit:contain}
+.texturesGrid .card__label{padding:8px 10px}
+.texturesGrid .card__label span:first-child{font-size:12px;line-height:1.2;display:block;max-height:2.4em;overflow:hidden}
+.texturesGrid .card__label span:last-child{display:none}
+
+/* Textures row: larger preview, no cropping (object-fit: contain), caption stays */
+.hscroll--textures .card{width:240px;height:170px;padding:0}
+.hscroll--textures .thumb{flex:1;height:auto;aspect-ratio:auto}
+.hscroll--textures .thumb img{object-fit:contain}
+.hscroll--textures .card__label{padding:8px 10px}
+.hscroll--textures .card__label span:first-child{font-size:12px;line-height:1.2;display:block;max-height:2.4em;overflow:hidden}
+.hscroll--textures .card__label span:last-child{display:none}
+
+/* Right textures panel (adaptive grid) */
+.texturesGrid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));align-items:stretch;}
+.texturesGrid .card{height:156px;padding:0}
+.texturesGrid .thumb{flex:1;aspect-ratio:auto}
+.texturesGrid .thumb img{object-fit:contain}
+.texturesGrid .card__label{padding:8px 10px}
+.texturesGrid .card__label span:first-child{font-size:12px;line-height:1.2;display:block;max-height:2.4em;overflow:hidden}
+.texturesGrid .card__label span:last-child{display:none}
+
+@media (max-width: 1200px){
+  .texturesGrid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+  .texturesGrid .card{height:150px}
+}
+@media (max-width: 720px){
+  .texturesGrid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+  .texturesGrid .card{height:138px}
+}
+
+@media (max-width: 1100px){
+  .main{flex-direction:column}
+  .sidePane{flex:0 0 auto;max-width:none;min-width:0}
+}
+@media (max-width: 768px){
+  .topbar{position:sticky;top:0}
+  .sidePane{order:2}
+  .canvasPane{order:1}
+  .bottomMenu{min-height:124px}
+  .hscroll--shapes .card{width:var(--shape-card-w,150px);height:auto}
+  .hscroll--textures .card{width:200px;height:150px}
+}
+
+/* Upload overlay */
+.uploadOverlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:18px;background:linear-gradient(180deg,rgba(11,14,20,0.85),rgba(11,14,20,0.65));}
+.uploadOverlay__box{max-width:520px;width:100%;background:rgba(21,26,34,0.92);border:1px solid rgba(255,255,255,0.14);border-radius:16px;box-shadow:var(--shadow);padding:16px}
+.uploadOverlay__title{font-weight:700;font-size:16px;margin-bottom:6px}
+.uploadOverlay__subtitle{color:var(--muted);font-size:13px;line-height:1.35;margin-bottom:12px}
+
+
+/* Hide explicit plane controls: perspective is inferred from the contour for a simpler UX */
+#modePlane, #resetPlaneBtn { display: none !important; }
+
+
+/* Left textures column (single column + vertical scroll)
+   Goal: free more space for the photo canvas by making the left column more compact.
+   Important: do NOT upscale texture preview images; instead we shrink paddings and make the
+   card frame fit tightly around the preview.
+*/
+.leftPane{flex:0 0 190px;max-width:220px;min-width:170px;min-height:0;display:flex;flex-direction:column;gap:10px}
+.leftPane #texturesPanel{display:flex;flex-direction:column;flex:1;min-height:0}
+.leftPane #texturesPanel .panel__body--textures{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
+.leftPane #texturesPanel .panel__body--textures{padding:8px 8px}
+.leftPane .texturesGrid{display:flex;flex-direction:column;gap:8px}
+.leftPane .texturesGrid .card{width:100%}
+
+/* Tight texture cards in the left column: remove empty fields around square previews
+   by using a square thumbnail box. This keeps the preview scale consistent while
+   allowing the overall column to be narrower.
+*/
+.leftPane .texturesGrid .card{border-radius:12px}
+.leftPane .texturesGrid .thumb{aspect-ratio:1/1;background:#0b0e14}
+.leftPane .texturesGrid .thumb img{object-fit:contain}
+.leftPane .texturesGrid .card__label{padding:6px 8px}
+
+/* Ensure upload overlay is always visible above canvases */
+.canvasWrap{position:relative}
+.uploadOverlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:20}
+.uploadOverlay__box{max-width:520px}
+
+
+/* Hide legacy blend mode UI (keep DOM to avoid JS regressions) */
+#blendSelect{display:none !important}
+
+/* Left bottom textures: keep export on top, textures anchored bottom */
+#leftPane{display:flex;flex-direction:column;min-height:0;gap:10px;flex:0 0 190px;max-width:220px;min-width:170px}
+#leftPane #texturesPanel{margin-top:auto;display:flex;flex-direction:column;min-height:0; height: var(--left-textures-panel-h, auto);}
+/* Left textures list: use the available space and show at least 3 items fully (height is set from JS).
+   Also move the scrollbar to the LEFT side for better ergonomics in the left column. */
+#leftPane #texturesPanel .panel__body--textures{
+  flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;
+  padding:8px 8px;
+  max-height:none; /* override the global 42vh limit for the left column */
+  direction: rtl;  /* put scrollbar on the left */
+}
+/* Restore normal text/layout flow inside the list */
+#leftPane #texturesPanel #texturesList,
+#leftPane #texturesPanel .note{ direction: ltr; text-align:left; }
+
+/* Left scrollbar styling for textures */
+#leftPane #texturesPanel .panel__body--textures{scrollbar-width:thin; scrollbar-color: rgba(0,229,255,0.45) rgba(255,255,255,0.06);}
+#leftPane #texturesPanel .panel__body--textures::-webkit-scrollbar{width:10px}
+#leftPane #texturesPanel .panel__body--textures::-webkit-scrollbar-thumb{background:rgba(0,229,255,0.35);border-radius:999px;border:2px solid rgba(15,18,24,0.92)}
+#leftPane #texturesPanel .panel__body--textures::-webkit-scrollbar-track{background:rgba(255,255,255,0.06);border-radius:999px}
+#leftPane .texturesGrid{display:flex;flex-direction:column;gap:8px}
+#leftPane .texturesGrid .card{width:100%;border-radius:12px}
+#leftPane .texturesGrid .thumb{aspect-ratio:1/1;background:#0b0e14}
+#leftPane .texturesGrid .thumb img{object-fit:contain}
+#leftPane .texturesGrid .card__label{padding:6px 8px}
+
+/* Ensure textures are not shown on right even if stray markup exists */
+.sidePane .panel__body--textures{display:none !important}
+
+
+/* Ultra AI toggle (Patch 1) */
+.chkline{display:flex;align-items:center;gap:8px;user-select:none;}
+.chkline input{margin:0;}
+.note--compact{margin-top:6px;font-size:12px;opacity:.85;line-height:1.2;}
+
+
+/* AI Debug Overlay (Patch 3.1) — hidden by default, enabled via ?aidebug=1 or Ctrl+Shift+D */
+.aiDebugOverlay{position:absolute;left:10px;top:10px;display:none;gap:10px;align-items:flex-start;z-index:5;padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.45);backdrop-filter:blur(6px)}
+.aiDebugOverlay canvas{display:block;border-radius:10px;border:1px solid rgba(255,255,255,0.10);background:rgba(0,0,0,0.20)}
+.aiDebugOverlay--on{display:flex}
+
+/* Fullscreen viewer (CSS fullscreen + optional Fullscreen API)
+   Uses the existing canvases to avoid CORS/export issues.
+*/
+.fullscreenOverlay{position:absolute;inset:0;display:none;pointer-events:none;touch-action:none;z-index:10}
+.fullscreenTopbar{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:12px 12px;pointer-events:auto;z-index:20;background:linear-gradient(180deg, rgba(0,0,0,0.62), rgba(0,0,0,0.0));}
+.fullscreenSpacer{flex:1}
+.canvasWrap.isFullscreen.viewerUiHidden .fullscreenTopbar{opacity:0;pointer-events:none;transition:opacity .18s ease;}
+.canvasWrap.isFullscreen .fullscreenTopbar{opacity:1;transition:opacity .18s ease;}
+.canvasWrap.isFullscreen{position:fixed;inset:0;z-index:9999;border-radius:0;border:none;box-shadow:none;background:#000}
+.canvasWrap.isFullscreen .fullscreenOverlay{display:block}
+.canvasWrap.isFullscreen #editorCanvas{pointer-events:none}
+.canvasWrap.isFullscreen #glCanvas{pointer-events:none}
+html.isFullscreenViewer,
+body.isFullscreenViewer{overflow:hidden;height:100%}
+
+/* Pseudo fullscreen: hide surrounding UI so the viewer truly fills the viewport
+   even when Fullscreen API is blocked by Permissions Policy (common for iframe embeds). */
+body.isFullscreenViewer .topbar,
+body.isFullscreenViewer .sidePane,
+body.isFullscreenViewer .bottomMenu,
+body.isFullscreenViewer .stepper{
+  display:none !important;
+}
+
+/* Safety: ensure premium texture "favorite" stars never leak into fullscreen viewer.
+   Fullscreen viewer must remain strictly minimal (only Close + PNG buttons).
+   We keep this as an extra guard even though sidePane is normally hidden. */
+body.isFullscreenViewer .ppFavBtn{
+  display:none !important;
+}
+body.isFullscreenViewer .main{
+  padding:0 !important;
+  gap:0 !important;
+}
+body.isFullscreenViewer .canvasPane{
+  border:none !important;
+  border-radius:0 !important;
+  box-shadow:none !important;
+  margin:0 !important;
+  position:fixed !important;
+  inset:0 !important;
+}
+
+body.isFullscreenViewer .canvasWrap.isFullscreen{
+  position:fixed;
+  inset:0;
+  width:100vw;
+  /* Prefer dynamic viewport units on mobile to avoid "needs scroll to see full image" issues */
+  height:100vh;
+  height:100dvh;
+  max-height:100dvh;
+}
+
+
+/* UX-P1: active context line */
+.uxStatus{font-size:12px;line-height:1.25;opacity:.85;margin:8px 0 0 0;padding:0 16px;}
+
+
+/* UX-P2: Basic / Advanced settings sections */
+.settingsBasic{display:block;}
+.settingsAdvanced{display:block;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12);}
+.settingsAdvanced[hidden]{display:none;}
+
+
+/* UX-P3: guided flow hints + soft pulse highlight */
+.uxHint{
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255,255,255,0.78);
+}
+.uxHint:empty{ display:none; }
+
+.ppPulse{
+  outline: 2px solid rgba(80, 220, 140, 0.85);
+  outline-offset: 2px;
+  border-radius: 10px;
+  animation: ppPulseAnim 1.2s ease-in-out infinite;
+}
+@keyframes ppPulseAnim{
+  0%{ outline-color: rgba(80,220,140,0.15); }
+  50%{ outline-color: rgba(80,220,140,0.85); }
+  100%{ outline-color: rgba(80,220,140,0.15); }
+}
+
+
+/* Premium P1: textures search + favorites + recent */
+.ppTexControls{display:flex;flex-direction:column;gap:8px;margin:8px 0 10px 0}
+.ppInput{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.22);color:#fff;outline:none}
+.ppInput::placeholder{color:rgba(255,255,255,.55)}
+.ppTexFilters{display:flex;gap:8px;flex-wrap:wrap}
+.ppChip{padding:8px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:#fff;font-size:12px;line-height:1;cursor:pointer}
+.ppChip--active{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22)}
+/* Favorite button inside texture cards */
+.card{position:relative}
+.ppFavBtn{position:absolute;top:8px;right:8px;z-index:2;width:28px;height:28px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:rgba(255,255,255,.85);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px}
+.ppFavBtn--on{background:rgba(255,215,0,.18);border-color:rgba(255,215,0,.35);color:#ffd24a}
+
+/* Premium P3: seam nudge controls */
+.seamStepRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.seamStepLabel{opacity:.85}
+.seamStepSel{padding:6px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:#fff}
+.seamStepHint{opacity:.65;font-size:12px}
+.seamBtns{display:flex;gap:8px;margin-top:8px}
+.seamBtns .btn{padding:6px 10px;border-radius:12px}
+
+
+
+/* Single-zone mode: disable multi-zone UI controls */
+body.singleZoneMode #addZoneBtn,
+body.singleZoneMode #splitZoneBtn,
+body.singleZoneMode #dupZoneBtn,
+body.singleZoneMode #delZoneBtn,
+body.singleZoneMode .zoneLinkToggle,
+body.singleZoneMode .zoneLinkBtn,
+body.singleZoneMode .zoneStar,
+body.singleZoneMode .zoneList .zoneItem .ppZoneActions{
+  display:none !important;
+}
+
+
+/* v2.2.165: force-hide perspective control (not used in current mode) */
+#perspectiveField{display:none !important;}
+#perspectiveRange{display:none !important;}
+
+
+/* Scene preset admin shell (separate locked Tilda page) */
+.scenePresetAdminShell{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(122,162,255,0.10),rgba(122,162,255,0.04));}
+.scenePresetAdminShell__head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.scenePresetAdminShell__eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.scenePresetAdminShell__title{font-size:16px;font-weight:700;line-height:1.2}
+.scenePresetAdminShell__headActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.scenePresetAdminShell__badge{padding:7px 9px;border-radius:999px;border:1px solid rgba(122,162,255,0.28);background:rgba(122,162,255,0.12);font-size:11px;color:var(--text);white-space:nowrap}
+.scenePresetAdminShell__badge--muted{border-color:rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:var(--muted)}
+.scenePresetAdminShell__statusbar{display:flex;flex-direction:column;gap:4px}
+.scenePresetAdminShell__status{font-size:13px;font-weight:600}
+.scenePresetAdminShell__substatus{font-size:12px;color:var(--muted)}
+.scenePresetAdminShell__toolbar{display:flex;gap:8px;flex-wrap:wrap}
+.scenePresetAdminShell__grid{display:grid;grid-template-columns:minmax(280px, 420px) minmax(320px, 1fr);gap:12px;min-height:0}
+.scenePresetAdminShell__panel{background:rgba(8,11,17,0.22);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:10px 10px 12px;min-height:0}
+.scenePresetAdminShell__panelTitle{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.03em;text-transform:uppercase;margin-bottom:8px}
+.scenePresetAdminShell__sceneList{display:flex;flex-direction:column;gap:8px;max-height:250px;overflow:auto;padding-right:2px}
+.scenePresetAdminShell__sceneItem{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:10px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.04);cursor:pointer}
+.scenePresetAdminShell__sceneItem:hover{background:rgba(255,255,255,0.07)}
+.scenePresetAdminShell__sceneItem.isActive{border-color:rgba(122,162,255,0.48);background:rgba(122,162,255,0.10)}
+.scenePresetAdminShell__sceneText{display:flex;flex-direction:column;gap:4px;min-width:0}
+.scenePresetAdminShell__sceneTitle{font-size:13px;font-weight:600;line-height:1.25}
+.scenePresetAdminShell__sceneSub{font-size:11px;color:var(--muted);line-height:1.35}
+.scenePresetAdminShell__chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.scenePresetAdminShell__chip{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.03em;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06)}
+.scenePresetAdminShell__chip--draft{border-color:rgba(255,191,71,0.30);background:rgba(255,191,71,0.12);color:#ffd89c}
+.scenePresetAdminShell__chip--published{border-color:rgba(46,240,107,0.30);background:rgba(46,240,107,0.12);color:#9cf1bb}
+.scenePresetAdminShell__chip--active{border-color:rgba(122,162,255,0.34);background:rgba(122,162,255,0.12);color:#d8e4ff}
+.scenePresetAdminShell__meta{display:flex;flex-direction:column;gap:8px;padding-top:6px}
+.scenePresetAdminShell__metaCard{padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.04)}
+.scenePresetAdminShell__metaTitle{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:6px}
+.scenePresetAdminShell__metaRow{display:flex;justify-content:space-between;gap:10px;font-size:12px;line-height:1.35}
+.scenePresetAdminShell__metaRow span:last-child{text-align:right;color:var(--text)}
+.scenePresetAdminShell__empty{padding:14px;border:1px dashed rgba(255,255,255,0.14);border-radius:12px;color:var(--muted);font-size:12px;line-height:1.45}
+body.ppAdminShellCollapsed .scenePresetAdminShell__grid,
+body.ppAdminShellCollapsed .scenePresetAdminShell__toolbar{display:none}
+body.ppAdminShellMode .simpleShell{display:none !important}
+@media (max-width: 980px){.scenePresetAdminShell__grid{grid-template-columns:1fr}.scenePresetAdminShell__sceneList{max-height:210px}}
+@media (max-width: 720px){.scenePresetAdminShell{padding:10px 12px}.scenePresetAdminShell__title{font-size:15px}.scenePresetAdminShell__toolbar .btn{flex:1 1 170px}.scenePresetAdminShell__headActions{width:100%}}

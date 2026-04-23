@@ -1,0 +1,4467 @@
+/*
+  PhotoPave WebGL Compositor (Full Pipeline)
+  - Renders background photo + multiple zones with projective tiled textures
+  - Uses per-zone mask (with holes) generated on CPU (2D canvas) and sampled in GPU
+  - No Canvas2D fill fallback: the visual output is always produced by WebGL
+
+  Public API:
+    PhotoPaveCompositor.init(glCanvas)
+    PhotoPaveCompositor.setPhoto(imageBitmap, photoW, photoH)
+    PhotoPaveCompositor.resize(renderW, renderH)
+    PhotoPaveCompositor.render(state) // async
+    PhotoPaveCompositor.exportPNG(state, {maxLongSide}) // async -> dataURL
+*/
+
+window.PhotoPaveCompositor = (function(){
+  const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+  const lerp = (a,b,t)=>a + (b-a)*t;
+  const smoothstep = (e0,e1,x)=>{
+    const t = clamp((x - e0) / ((e1 - e0) || 1e-6), 0, 1);
+    return t*t*(3 - 2*t);
+  };
+  const EPS = 1e-9;
+
+  // Dev-only debug metrics (B2). Enabled by URL flag ?debugMetrics=1 (set in app.js).
+  // Must have zero effect on rendering unless explicitly enabled.
+  let _lastDebugMetrics = null;
+
+  function _applyH_rowMajor(H, u, v){
+    // H is row-major 3x3 mapping plane (u,v,1) -> screen (x,y,1)
+    const x = H[0]*u + H[1]*v + H[2];
+    const y = H[3]*u + H[4]*v + H[5];
+    const z = H[6]*u + H[7]*v + H[8];
+    const iz = (Math.abs(z) > 1e-12) ? (1.0/z) : 0.0;
+    return { x: x*iz, y: y*iz, z };
+  }
+
+  function _computeNearMetrics(Hm, planeMetric, rotDeg){
+    try{
+      if(!Hm || !planeMetric) return null;
+      const W = Math.max(1e-6, +planeMetric.W || 1.0);
+      const D = Math.max(1e-6, +planeMetric.D || 1.0);
+
+      // Anchors slightly inside the near edge (v=0 is the near boundary).
+      const v0 = 0.05 * D;
+      const anchorsU = [0.10*W, 0.50*W, 0.90*W];
+
+      // Directions aligned with the tile grid in plane space.
+      const r = ((+rotDeg || 0) * Math.PI) / 180.0;
+      const cr = Math.cos(r), sr = Math.sin(r);
+      // Using a right-handed 2D basis aligned with the grid.
+      const Ux = cr, Uy = sr;
+      const Vx = -sr, Vy = cr;
+
+      const step = 0.02 * Math.min(W, D); // local finite difference, plane units
+
+      const out = { anchors: [], worst: { rho: 1.0, anis: 1.0, shearDeg: 0.0 }, step, rotDeg: (+rotDeg||0) };
+
+      for(let i=0;i<anchorsU.length;i++){
+        const u0 = anchorsU[i];
+        const p0 = _applyH_rowMajor(Hm, u0, v0);
+        const pU = _applyH_rowMajor(Hm, u0 + step*Ux, v0 + step*Uy);
+        const pV = _applyH_rowMajor(Hm, u0 + step*Vx, v0 + step*Vy);
+
+        const jux = pU.x - p0.x, juy = pU.y - p0.y;
+        const jvx = pV.x - p0.x, jvy = pV.y - p0.y;
+
+        const lenU = Math.hypot(jux, juy);
+        const lenV = Math.hypot(jvx, jvy);
+
+        let rho = 1.0;
+        if(lenU > 1e-9 && lenV > 1e-9) rho = lenU / lenV;
+
+        let ang = 90.0;
+        if(lenU > 1e-9 && lenV > 1e-9){
+          const dot = (jux*jvx + juy*jvy) / (lenU*lenV);
+          const c = Math.max(-1.0, Math.min(1.0, dot));
+          ang = Math.acos(c) * 180.0 / Math.PI;
+        }
+        const shearDeg = Math.abs(90.0 - ang);
+
+        const anis = (isFinite(rho) && rho > 1e-9) ? Math.max(rho, 1.0/rho) : NaN;
+        const a = { label: (i===0?'L':(i===1?'C':'R')), u:u0, v:v0, rho, anis, shearDeg, lenU, lenV, angDeg: ang };
+        out.anchors.push(a);
+
+        // Worst-of: maximize deviation from rho=1, and maximize shear.
+        // Worst-of: maximize anisotropy (symmetric) and maximize shear.
+        if(isFinite(anis) && anis > out.worst.anis){
+          out.worst.anis = anis;
+          out.worst.rho = rho;
+        }
+        if(shearDeg > out.worst.shearDeg) out.worst.shearDeg = shearDeg;
+      }
+
+      return out;
+    }catch(_){
+      return null;
+    }
+  }
+
+  // Build a plane->screen homography from a camera model.
+  // For plane coordinates (u,v,0), using H = K * [r1 r2 t].
+  function _homographyFromCam(cam){
+    try{
+      if(!cam || !cam.R || !cam.t || !cam.Kinv) return null;
+      const f = 1.0 / Math.max(1e-9, cam.Kinv[0]);
+      const cx = -cam.Kinv[2] * f;
+      const cy = -cam.Kinv[5] * f;
+      if(!isFinite(f) || !isFinite(cx) || !isFinite(cy) || f <= 2) return null;
+
+      const K = [
+        f, 0, cx,
+        0, f, cy,
+        0, 0, 1
+      ];
+
+      // M = [r1 r2 t] (columns), row-major.
+      const R = cam.R;
+      const t = cam.t;
+      const M = [
+        R[0], R[1], t[0],
+        R[3], R[4], t[1],
+        R[6], R[7], t[2]
+      ];
+
+      return _mul3x3(K, M);
+    }catch(_){
+      return null;
+    }
+  }
+
+  function _computeNearMetricsFromCam(cam, planeMetric, rotDeg){
+    const Hc = _homographyFromCam(cam);
+    if(!Hc) return null;
+    return _computeNearMetrics(Hc, planeMetric, rotDeg);
+  }
+
+  function _nearMetricsPass(m, cfg){
+    if(!m || !m.worst) return true;
+    const rho = Math.max(1e-6, +m.worst.rho || 1.0);
+    const anis = Math.max(rho, 1.0/rho);
+    const shear = Math.max(0, +m.worst.shearDeg || 0);
+    const rhoMax = (cfg && isFinite(cfg.rhoMax)) ? cfg.rhoMax : 1.30;
+    const shearMax = (cfg && isFinite(cfg.shearMax)) ? cfg.shearMax : 20.0;
+    return (anis <= rhoMax + 1e-6) && (shear <= shearMax + 1e-6);
+  }
+
+  // Near-field quality guard (B3): deterministically reduces "rubber" by adjusting camera only.
+  // Priority: pitch↓ (keep horizon via cyShift) -> distance↑. No UV warp, no anisotropic UV scale.
+  function _applyNearGuard(camBase, cfg){
+    try{
+      if(!camBase) return null;
+      const f = cfg.f;
+      const cx = cfg.cx;
+      const cyCur = cfg.cyCur;
+      const planeMetric = cfg.planeMetric;
+      const rotDeg = cfg.rotDeg;
+
+      const pitchDes = cfg.pitchDes || 0.0;
+      const distDes = cfg.distDes || 1.0;
+      const distMax = cfg.distMax || distDes;
+
+      // Orthonormalize a pair of basis vectors (r1,r2) and rebuild a right-handed rotation.
+      function orthoFromR12(r1, r2){
+        // r1 normalize
+        let n1 = Math.hypot(r1[0],r1[1],r1[2]);
+        if(!isFinite(n1) || n1 < 1e-9) return null;
+        r1 = [r1[0]/n1, r1[1]/n1, r1[2]/n1];
+
+        // Gram-Schmidt r2
+        const d12 = r1[0]*r2[0] + r1[1]*r2[1] + r1[2]*r2[2];
+        r2 = [r2[0]-d12*r1[0], r2[1]-d12*r1[1], r2[2]-d12*r1[2]];
+        let n2 = Math.hypot(r2[0],r2[1],r2[2]);
+        if(!isFinite(n2) || n2 < 1e-9) return null;
+        r2 = [r2[0]/n2, r2[1]/n2, r2[2]/n2];
+
+        // r3 = r1 x r2
+        let r3 = [
+          r1[1]*r2[2] - r1[2]*r2[1],
+          r1[2]*r2[0] - r1[0]*r2[2],
+          r1[0]*r2[1] - r1[1]*r2[0]
+        ];
+        let n3 = Math.hypot(r3[0],r3[1],r3[2]);
+        if(!isFinite(n3) || n3 < 1e-9) return null;
+        r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+
+        return [
+          r1[0], r2[0], r3[0],
+          r1[1], r2[1], r3[1],
+          r1[2], r2[2], r3[2]
+        ];
+      }
+
+      function buildCam(pitchRad, distScale){
+        const pose = _applyPitchToCam(camBase, pitchRad);
+        return {
+          R: pose.R,
+          // IMPORTANT: "distance" should primarily affect the camera height above the plane.
+          // Scaling all components of t moves the camera away along its translation direction,
+          // which often preserves the same near-field distortion while just shifting the mapping.
+          // Scaling tz is the correct lever to reduce foreshortening (approaches affine as tz→∞)
+          // without introducing any UV warp.
+          t: [pose.t[0], pose.t[1], pose.t[2]*distScale],
+          Kinv: [
+            1/f, 0, -cx/f,
+            0, 1/f, -cyCur/f,
+            0, 0, 1
+          ]
+        };
+      }
+
+      function evalCam(pitchRad, distScale){
+        const cam = buildCam(pitchRad, distScale);
+        const m = _computeNearMetricsFromCam(cam, planeMetric, rotDeg);
+        return {cam, m};
+      }
+
+      // Start with desired.
+      let pitchEff = pitchDes;
+      let distEff = distDes;
+      let r = evalCam(pitchEff, distEff);
+
+      if(_nearMetricsPass(r.m, cfg)){
+        return { pitchEff, distEff, metrics: r.m, stage: 'none' };
+      }
+
+      // 1) Reduce pitch (binary search for max retained pitch that passes).
+      if(Math.abs(pitchDes) > 1e-6){
+        const sgn = (pitchDes >= 0) ? 1 : -1;
+        const baseAbs = Math.abs(pitchDes);
+        // If even pitch=0 doesn't pass, skip to distance.
+        const r0 = evalCam(0.0, distEff);
+        if(_nearMetricsPass(r0.m, cfg)){
+          let lo = 0.0, hi = 1.0;
+          let best = 0.0;
+          for(let i=0;i<10;i++){
+            const mid = 0.5*(lo+hi);
+            const rr = evalCam(sgn*baseAbs*mid, distEff);
+            if(_nearMetricsPass(rr.m, cfg)){
+              best = mid;
+              lo = mid;
+            }else{
+              hi = mid;
+            }
+          }
+          pitchEff = sgn*baseAbs*best;
+          r = evalCam(pitchEff, distEff);
+          if(_nearMetricsPass(r.m, cfg)){
+            return { pitchEff, distEff, metrics: r.m, stage: 'pitch' };
+          }
+        }else{
+          pitchEff = 0.0;
+          r = r0;
+        }
+      }
+
+      // 2) Increase distance (binary search minimal distance that passes).
+      if(isFinite(distMax) && distMax > distEff + 1e-6){
+        const rHi = evalCam(pitchEff, distMax);
+        if(_nearMetricsPass(rHi.m, cfg)){
+          let lo = distEff, hi = distMax;
+          let best = distMax;
+          for(let i=0;i<10;i++){
+            const mid = 0.5*(lo+hi);
+            const rr = evalCam(pitchEff, mid);
+            if(_nearMetricsPass(rr.m, cfg)){
+              best = mid;
+              hi = mid;
+            }else{
+              lo = mid;
+            }
+          }
+          distEff = best;
+          r = evalCam(pitchEff, distEff);
+          return { pitchEff, distEff, metrics: r.m, stage: 'dist' };
+        }else{
+          // Best effort: clamp to max and continue to the next lever (flatten).
+          distEff = distMax;
+          r = rHi;
+        }
+      }
+
+      // 3) Flatten the base tilt if distance alone is insufficient.
+      // Some photos/quads produce an extremely steep plane orientation even at Horizon≈0,
+      // which makes the near-field look "squashed". We stay camera-only by adjusting R,
+      // without any UV warp: we attenuate the Z components of r1/r2 (plane directions)
+      // and re-orthonormalize. This reduces foreshortening while keeping the in-plane
+      // directions stable.
+      try{
+        const flattenMin = (cfg && isFinite(cfg.flattenMin)) ? cfg.flattenMin : 0.20; // smaller => more orthographic
+        const flattenMax = 1.00;
+
+        // Evaluate at most-flattened candidate first.
+        function evalFlatten(k){
+          const pose = _applyPitchToCam(camBase, pitchEff);
+          const R0 = pose.R;
+          const r1 = [R0[0], R0[3], R0[6]];
+          const r2 = [R0[1], R0[4], R0[7]];
+          const r1k = [r1[0], r1[1], r1[2]*k];
+          const r2k = [r2[0], r2[1], r2[2]*k];
+          const Rk = orthoFromR12(r1k, r2k);
+          if(!Rk) return null;
+          const cam = {
+            R: Rk,
+            t: [pose.t[0], pose.t[1], pose.t[2]*distEff],
+            Kinv: [
+              1/f, 0, -cx/f,
+              0, 1/f, -cyCur/f,
+              0, 0, 1
+            ]
+          };
+          const m = _computeNearMetricsFromCam(cam, planeMetric, rotDeg);
+          return { cam, m };
+        }
+
+        const rMin = evalFlatten(flattenMin);
+        if(rMin && _nearMetricsPass(rMin.m, cfg)){
+          // Binary search maximal k (closest to original) that still passes.
+          let lo = flattenMin, hi = flattenMax;
+          let best = flattenMin;
+          let bestRes = rMin;
+          for(let i=0;i<10;i++){
+            const mid = 0.5*(lo+hi);
+            const rr = evalFlatten(mid);
+            if(rr && _nearMetricsPass(rr.m, cfg)){
+              best = mid;
+              bestRes = rr;
+              lo = mid;
+            }else{
+              hi = mid;
+            }
+          }
+
+          // Commit: override R in the result cam via stage info.
+          // Caller currently rebuilds cam3d from camBase + pitch/dist; to keep changes isolated,
+          // we report flattenK and let caller apply it.
+          return { pitchEff, distEff, metrics: bestRes.m, stage: 'flatten', flattenK: best };
+          }
+      }catch(_){/*noop*/}
+
+      // If we reached here, we didn't find a passing solution.
+      // Still return the best-effort metrics at the current (pitchEff, distEff).
+      const stage = (isFinite(distMax) && distMax > distDes + 1e-6) ? 'distMax' : 'noSolution';
+      return { pitchEff, distEff, metrics: r.m, stage };
+    }catch(_){
+      return null;
+    }
+  }
+
+
+
+// C1 (polish): smooth guard-controlled parameters to avoid visible "snaps" when the
+// near-quality guard switches stage (dist/flatten) while the user adjusts sliders.
+// This is camera-only; it does not affect UV/tiling. Smoothing is applied to distEff
+// and flattenK only (pitch remains immediate) to preserve the Horizon feel.
+const _guardSmoothState = new Map(); // zoneId -> {dist, k, t}
+function _smoothGuard(zoneId, distTarget, kTarget){
+  if(!zoneId) return { distEff: distTarget, kEff: kTarget };
+
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const st = _guardSmoothState.get(zoneId);
+
+  // Time-constant smoothing (~120ms) + per-frame delta clamp to remove micro-jitters.
+  const tauMs = 120.0;
+  const maxDistDelta = 0.35; // per frame (in dist units)
+  const maxKDelta = 0.06;    // per frame (unitless)
+
+  if(!st){
+    const init = { dist: distTarget, k: kTarget, t: now };
+    _guardSmoothState.set(zoneId, init);
+    return { distEff: distTarget, kEff: kTarget };
+  }
+
+  const dt = Math.max(0.0, Math.min(100.0, now - st.t)); // cap dt to avoid big jumps
+  const a = 1.0 - Math.exp(-dt / tauMs);
+
+  // Exponential smoothing
+  let dist = st.dist + (distTarget - st.dist) * a;
+  let k = st.k + (kTarget - st.k) * a;
+
+  // Clamp per-frame changes (safety against jitter)
+  const dd = dist - st.dist;
+  if(Math.abs(dd) > maxDistDelta) dist = st.dist + Math.sign(dd) * maxDistDelta;
+
+  const dk = k - st.k;
+  if(Math.abs(dk) > maxKDelta) k = st.k + Math.sign(dk) * maxKDelta;
+
+  st.dist = dist;
+  st.k = k;
+  st.t = now;
+
+  return { distEff: dist, kEff: k };
+}
+
+  let canvas = null;
+  let gl = null;
+  let extAniso = null;
+  let maxTexSize = 2048;
+  let maxRbSize = 2048;
+
+  // GL resources
+  let quadVao = null;
+  let progCopy = null;
+  let progZone = null;
+
+  let photoTex = null;
+  let photoW = 0, photoH = 0;
+
+  let ping = null;
+  let pong = null;
+
+  const tileCache = new Map(); // url -> {tex,w,h,ts}
+  const maskCache = new Map(); // key -> {maskTex, blurTex, w,h, ts}
+
+  // PBR map textures (infrastructure only; Patch 2.2.102)
+  // Patch 2.2.103 wires the normal map into lighting (Ultra mode only).
+  const pbrMapCache = new Map(); // url -> {tex, ts}
+  let _pbrFallback = null; // {normal, roughness, ao, height}
+
+  function _isPowerOf2(v){ return (v & (v-1)) === 0; }
+
+  function _makeSolidTextureRGBA(r,g,b,a){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const data = new Uint8Array([r|0,g|0,b|0,a|0]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+  }
+
+  function _ensurePbrFallback(){
+    if(_pbrFallback) return _pbrFallback;
+    // normal: (0.5,0.5,1.0)
+    const normal = _makeSolidTextureRGBA(128,128,255,255);
+    // roughness: 0.7
+    const roughness = _makeSolidTextureRGBA(179,179,179,255);
+    // ao: 1.0
+    const ao = _makeSolidTextureRGBA(255,255,255,255);
+    // height: 0.0 (reserved for Parallax later)
+    const height = _makeSolidTextureRGBA(0,0,0,255);
+    _pbrFallback = {normal, roughness, ao, height};
+    return _pbrFallback;
+  }
+
+  function _makePbrMapTexture(img, {repeat=true}={}){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    // Preserve global pixelStore state (do not affect existing albedo pipeline)
+    let prevFlip=false, prevCs=null;
+    try{ prevFlip = !!gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL); }catch(_){ prevFlip=false; }
+    try{ prevCs = gl.getParameter(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL); }catch(_){ prevCs=null; }
+    try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); }catch(_){/*noop*/}
+    try{ if(prevCs!=null) gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE); }catch(_){/*noop*/}
+
+    const pot = img && _isPowerOf2(img.width|0) && _isPowerOf2(img.height|0);
+
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if(repeat && pot){
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    }else{
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
+
+    try{
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      if(repeat && pot) gl.generateMipmap(gl.TEXTURE_2D);
+      if(repeat && pot && extAniso){
+        const maxA = gl.getParameter(extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 4;
+        gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, maxA));
+      }
+    }finally{
+      // restore pixelStore state
+      try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, prevFlip); }catch(_){/*noop*/}
+      try{ if(prevCs!=null) gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, prevCs); }catch(_){/*noop*/}
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    return tex;
+  }
+
+  // Async loader (not used yet): prepares WebGL textures for maps.normal/roughness/ao/height.
+  async function _getPbrMapTexture(url, kind){
+    const fb = _ensurePbrFallback();
+    if(!url || typeof url !== "string") return fb[kind] || null;
+
+    if(pbrMapCache.has(url)){
+      const e = pbrMapCache.get(url); e.ts = Date.now(); return e.tex;
+    }
+
+    // CORS-only load for WebGL safety (do not taint exports / avoid WebGL security errors)
+    let img = null;
+    try{ img = await API.loadImageStrict(url); }
+    catch(_){
+      // silent fallback (do not spam console)
+      return fb[kind] || null;
+    }
+    let tex = null;
+    try{
+      tex = _makePbrMapTexture(img, {repeat:true});
+    }catch(_){
+      return fb[kind] || null;
+    }
+    pbrMapCache.set(url, {tex, ts: Date.now()});
+    if(pbrMapCache.size > 24){
+      const entries = [...pbrMapCache.entries()].sort((a,b)=>a[1].ts-b[1].ts);
+      for(let i=0;i<Math.max(1, pbrMapCache.size-24);i++){
+        try{ gl.deleteTexture(entries[i][1].tex); }catch(_){ }
+        pbrMapCache.delete(entries[i][0]);
+      }
+    }
+    return tex;
+  }
+
+  // Prepare zone PBR map set. In Patch 2.2.103 we enable normal-mapped lighting
+  // only when Ultra is enabled AND the palette provides a normal map.
+  async function _preparePbrMaps(zone, ai){
+    const maps = zone && zone.material ? zone.material.maps : null;
+
+    const ultraEnabled = !!(ai && ai.enabled !== false);
+    if(!ultraEnabled || !maps) return {usePBR:false};
+
+    const hasNormal = !!(typeof maps.normal === 'string' && maps.normal);
+    if(!hasNormal) return {usePBR:false};
+
+    // Normal is the gate: if present, enable PBR lighting.
+    const normalTex = await _getPbrMapTexture(maps.normal, 'normal');
+
+    // Roughness/AO are optional; if missing we fall back to neutral maps.
+    const roughnessTex = (typeof maps.roughness === 'string' && maps.roughness)
+      ? await _getPbrMapTexture(maps.roughness, 'roughness')
+      : null;
+    const aoTex = (typeof maps.ao === 'string' && maps.ao)
+      ? await _getPbrMapTexture(maps.ao, 'ao')
+      : null;
+
+    // Height reserved for Parallax later (kept loaded infra-only)
+    const heightTex = (typeof maps.height === 'string' && maps.height)
+      ? await _getPbrMapTexture(maps.height, 'height')
+      : null;
+
+    return {usePBR:true, normalTex, roughnessTex, aoTex, heightTex};
+  }
+  const lastGoodInvH = new Map(); // zoneId -> invH row-major array9
+  // Drag-stabilization: while the user drags contour points, keep the inferred "near/far" scanlines
+  // anchored to the pre-drag extrema to avoid sudden quad jumps when a different point becomes yMin/yMax.
+  // This removes visible "teleport" artifacts without freezing the contour itself.
+  const dragLockExtrema = new Map(); // zoneId -> {yMin:number,yMax:number}
+  let _lastDragZoneId = null;
+
+  // Track AI mode signature to avoid reusing a homography computed under a different
+  // Ultra configuration (can manifest as a sudden vertical inversion when toggling).
+  let _lastAIModeKey = null;
+
+  // Ultra AI resources (Patch 2)
+  let aiDepthTex = null;
+  let aiDepthKey = null;
+  let aiDepthW = 0, aiDepthH = 0;
+
+  // Ultra AI resources (Patch 4) - occlusion mask (tile under objects)
+  let aiOccTex = null;
+  let aiOccKey = null;
+  let aiOccW = 0, aiOccH = 0;
+
+  function _destroyTex(t){
+    try{ if(t) gl.deleteTexture(t); }catch(_){/*noop*/}
+  }
+
+  function _ensureAIDepthTexture(ai){
+    // We only "deliver" depth map to GL here (upload as texture) without using it in shaders yet.
+    const dm = ai && ai.depthMap ? ai.depthMap : null;
+    const key = dm && (dm.photoHash || (ai && ai.photoHash) || '');
+    if(!dm || !dm.canvas){
+      if(aiDepthTex){ _destroyTex(aiDepthTex); aiDepthTex=null; aiDepthKey=null; }
+      return;
+    }
+    if(aiDepthTex && aiDepthKey === key && aiDepthW === dm.width && aiDepthH === dm.height) return;
+
+    // Recreate texture if changed
+    if(aiDepthTex){ _destroyTex(aiDepthTex); aiDepthTex=null; }
+    aiDepthKey = key;
+    aiDepthW = dm.width|0;
+    aiDepthH = dm.height|0;
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Upload RGBA canvas (depth packed as grayscale RGBA)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, dm.canvas);
+
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    aiDepthTex = tex;
+  }
+
+  function _ensureAIOcclusionTexture(ai){
+    const om = ai && ai.occlusionMask ? ai.occlusionMask : null;
+    const enabled = !(ai && ai.occlusionEnabled === false);
+    const key = (om && (om.photoHash || (ai && ai.photoHash) || "")) + "|" + (om && om.updatedAt ? om.updatedAt : 0);
+    if(!enabled || !om || !om.canvas){
+      if(aiOccTex){ _destroyTex(aiOccTex); aiOccTex=null; aiOccKey=null; }
+      return;
+    }
+    if(aiOccTex && aiOccKey === key && aiOccW === (om.width|0) && aiOccH === (om.height|0)) return;
+    if(aiOccTex){ _destroyTex(aiOccTex); aiOccTex=null; }
+    aiOccKey = key;
+    aiOccW = om.width|0;
+    aiOccH = om.height|0;
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    // Upload RGBA canvas (mask stored in RGB/alpha)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, om.canvas);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    aiOccTex = tex;
+  }
+
+
+
+  // Small reusable 2D canvases for mask raster
+  const _maskCanvas = document.createElement('canvas');
+  const _maskCtx = _maskCanvas.getContext('2d');
+  const _blurCanvas = document.createElement('canvas');
+  const _blurCtx = _blurCanvas.getContext('2d');
+
+  function _isWebGL2Supported(){
+    try{ return !!document.createElement('canvas').getContext('webgl2'); }catch(_){ return false; }
+  }
+
+  function _createShader(type, src){
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+      const log = gl.getShaderInfoLog(sh) || 'shader compile failed';
+      gl.deleteShader(sh);
+      throw new Error(log);
+    }
+    return sh;
+  }
+
+  function _createProgram(vsSrc, fsSrc){
+    const vs = _createShader(gl.VERTEX_SHADER, vsSrc);
+    const fs = _createShader(gl.FRAGMENT_SHADER, fsSrc);
+    const p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+      const log = gl.getProgramInfoLog(p) || 'program link failed';
+      gl.deleteProgram(p);
+      throw new Error(log);
+    }
+    return p;
+  }
+
+  function _createEmptyTexture(w,h, opts={}){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    const ifmt = opts.internalFormat || gl.RGBA8;
+    const fmt = opts.format || gl.RGBA;
+    const type = opts.type || gl.UNSIGNED_BYTE;
+    gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, opts.minFilter || gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, opts.magFilter || gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, opts.wrapS || gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, opts.wrapT || gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+  }
+
+  function _createFBO(w,h){
+    const tex = _createEmptyTexture(w,h,{minFilter:gl.LINEAR,magFilter:gl.LINEAR,wrapS:gl.CLAMP_TO_EDGE,wrapT:gl.CLAMP_TO_EDGE});
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if(st !== gl.FRAMEBUFFER_COMPLETE){
+      gl.deleteFramebuffer(fbo);
+      gl.deleteTexture(tex);
+      throw new Error('Framebuffer incomplete: 0x' + st.toString(16));
+    }
+    return {tex,fbo,w,h};
+  }
+
+  function _destroyFBO(rt){
+    if(!rt) return;
+    try{ if(rt.fbo) gl.deleteFramebuffer(rt.fbo); }catch(_){ }
+    try{ if(rt.tex) gl.deleteTexture(rt.tex); }catch(_){ }
+  }
+
+  function _ensureTargets(w,h){
+    if(ping && ping.w===w && ping.h===h && pong && pong.w===w && pong.h===h) return;
+    _destroyFBO(ping);
+    _destroyFBO(pong);
+    ping = _createFBO(w,h);
+    pong = _createFBO(w,h);
+  }
+
+  function _setupQuad(){
+    // Fullscreen triangle strip
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    const data = new Float32Array([
+      -1,-1,
+      1,-1,
+      -1,1,
+      1,1
+    ]);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    const loc = 0;
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    return {vao,vbo};
+  }
+
+  const VS = `#version 300 es
+  layout(location=0) in vec2 aPos;
+  out vec2 vUv;
+  void main(){
+    vUv = aPos*0.5 + 0.5;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+  }`;
+
+  // Copy shader.
+  // IMPORTANT: the compositor uses this both for DOM-backed textures (photo, masks)
+  // and for FBO-backed textures (previous composite passes). These two sources have
+  // different Y origins in practice.
+  //
+  // To avoid the "photo upside-down" bug, we do NOT hardcode a flip here.
+  // Instead we pass uFlipY at draw time:
+  //  - uFlipY = 1 when copying from DOM-backed textures (photo/mask/tile)
+  //  - uFlipY = 0 when copying from FBO textures (ping/pong)
+  const FS_COPY = `#version 300 es
+  precision highp float;
+  in vec2 vUv;
+  uniform sampler2D uTex;
+  uniform int uFlipY;
+  out vec4 outColor;
+  void main(){
+    vec2 uv = vUv;
+    if(uFlipY==1){ uv.y = 1.0 - uv.y; }
+    outColor = texture(uTex, uv);
+  }`;
+
+  const FS_ZONE = `#version 300 es
+  precision highp float;
+  in vec2 vUv;
+
+  uniform sampler2D uPrev;
+  uniform sampler2D uPhoto;
+  uniform sampler2D uTile;
+  // PBR maps: loaded from palette maps (albedo/normal/roughness/ao).
+  // Patch 2.2.103 enabled normal-mapped lighting; Patch 2.2.104 adds roughness + AO response.
+  uniform sampler2D uNormalMap;
+  uniform sampler2D uRoughnessMap;
+  uniform sampler2D uAOMap;
+  uniform sampler2D uHeightMap;
+  // Palette parameters (from bucket JSON). Defaults are 1/1/1/1.
+  // x=exposureMult, y=normalScale, z=specStrength, w=roughnessMult
+  uniform vec4 uPbrParams0;
+  // Height/parallax strength in UV units (bumpScale). Keep conservative.
+  uniform float uBumpScale;
+  // Contact shadow (in-mask) to improve integration with the photo (inward-only).
+  uniform float uContactShadowStrength; // 0..1
+  uniform float uContactShadowWidth;    // in mask-blur units above 0.5 (0..0.5)
+  uniform float uContactShadowPower;    // curve shaping
+  uniform int uUsePBR;      // 0/1
+  uniform int uUseGGX;      // 0=legacy spec, 1=GGX (Ultra)
+
+  // Stochastic tiling (Ultra-only): breaks visible repetition by applying a random transform per large super-tile.
+  // Mode 0=off, 1=Level A (single-sample random super-tile), 2=Level B (3-tap blend).
+  uniform int uStochMode;
+  uniform float uStochSuperTile;
+  uniform float uStochShiftAmp;
+  uniform int uStochRot;
+  // Micro-variation (Ultra-only): subtle per-tile variations (brightness/roughness/spec)
+  uniform int uMicroVar;
+  uniform vec3 uMicroParams; // x=albedoAmp, y=roughAmp, z=specAmp
+  // PhotoFit mode: 0=legacy per-pixel, 1=global exposure
+  uniform int uPhotoFitMode;
+  uniform float uPhotoExposure;
+  uniform vec3 uLightDirW;  // world-space directional light (normalized)
+  uniform float uLightStrength;
+  uniform float uAmbientStrength;
+  uniform sampler2D uMask;
+  uniform sampler2D uMaskBlur;
+  uniform sampler2D uDepth;
+  uniform int uHasDepth;
+  uniform int uDepthFarHigh;
+  uniform sampler2D uOcc;
+  uniform int uHasOcc;
+
+  uniform vec2 uResolution; // render target size in pixels
+  uniform mat3 uInvH;       // image(px)->plane(uv)
+  // Variant B (3D camera): ray-plane intersection renderer (uses manual calibration lines).
+  uniform int uUseCam3D;    // 0/1
+  uniform mat3 uKinv;       // pixel -> camera ray (y-down)
+  uniform mat3 uRwc;        // world->camera rotation
+  uniform vec3 uTwc;        // world->camera translation
+  uniform float uScale;     // tile scale
+  uniform vec2  uPhase;     // texture phase lock (0..1)
+  uniform float uRotation;  // degrees
+  uniform float uOpacity;   // 0..1
+  uniform int uBlendMode;   // 0=normal, 1=multiply
+  uniform float uFeather;   // 0..1
+  uniform float uAO;        // 0..1
+  uniform float uPhotoFit;  // 0..1
+  uniform float uFarFade;   // 0..1
+  uniform int uVFlip;       // 0/1: flip plane V (depth)
+  uniform int uOpaqueFill; // 0/1: force dense fill (reduce "transparency")
+  uniform float uPlaneD;   // plane depth in UV units (for normalization)
+
+  out vec4 outColor;
+
+  vec3 toLinear(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
+  vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
+
+  // --- Stochastic tiling helpers (Ultra-only, safe default OFF) ---
+  float hash12(vec2 p){
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+  vec2 hash22(vec2 p){
+    float n = hash12(p);
+    return vec2(n, hash12(p + n + 19.19));
+  }
+  vec2 stochApply(vec2 tuv){
+    float st = max(1.0, uStochSuperTile);
+    vec2 cell = floor(tuv / st);
+    vec2 rnd = hash22(cell);
+    vec2 shift = (rnd - 0.5) * clamp(uStochShiftAmp, 0.0, st * 0.45);
+
+    // Optional 90deg rotation around the super-tile center (default off).
+    if(uStochRot == 1){
+      vec2 f = fract(tuv / st) - 0.5;
+      float r = floor(rnd.x * 4.0 + 1e-4);
+      vec2 fr = f;
+      if(r < 1.0){ fr = vec2( f.x,  f.y); }
+      else if(r < 2.0){ fr = vec2(-f.y,  f.x); }
+      else if(r < 3.0){ fr = vec2(-f.x, -f.y); }
+      else { fr = vec2( f.y, -f.x); }
+      tuv = (cell + (fr + 0.5)) * st;
+    }
+
+    return tuv + shift;
+  }
+
+  // Same transform as stochApply, but using an explicit cell id.
+  vec2 stochApplyCell(vec2 tuv, vec2 cell){
+    float st = max(1.0, uStochSuperTile);
+    vec2 rnd = hash22(cell);
+    vec2 shift = (rnd - 0.5) * clamp(uStochShiftAmp, 0.0, st * 0.45);
+    if(uStochRot == 1){
+      vec2 f = fract(tuv / st) - 0.5;
+      float r = floor(rnd.x * 4.0 + 1e-4);
+      vec2 fr = f;
+      if(r < 1.0){ fr = vec2( f.x,  f.y); }
+      else if(r < 2.0){ fr = vec2(-f.y,  f.x); }
+      else if(r < 3.0){ fr = vec2(-f.x, -f.y); }
+      else { fr = vec2( f.y, -f.x); }
+      tuv = (cell + (fr + 0.5)) * st;
+    }else{
+      // Keep the same coordinate system as Level A to preserve continuity.
+      tuv = tuv + (cell - floor(tuv / st)) * st;
+    }
+    return tuv + shift;
+  }
+
+  // Level B: 3-tap stochastic blending (triangle barycentric weights inside a super-tile).
+  // Produces 3 transformed tile-uvs (t0/t1/t2) and weights w (sum=1).
+  void stochGet3(vec2 tuv, out vec2 t0, out vec2 t1, out vec2 t2, out vec3 w){
+    float st = max(1.0, uStochSuperTile);
+    vec2 cell = floor(tuv / st);
+    vec2 f = fract(tuv / st);
+    if(f.x + f.y < 1.0){
+      // Lower triangle: (0,0), (1,0), (0,1)
+      w = vec3(1.0 - f.x - f.y, f.x, f.y);
+      t0 = stochApplyCell(tuv, cell + vec2(0.0, 0.0));
+      t1 = stochApplyCell(tuv, cell + vec2(1.0, 0.0));
+      t2 = stochApplyCell(tuv, cell + vec2(0.0, 1.0));
+    }else{
+      // Upper triangle: (1,1), (0,1), (1,0)
+      w = vec3(f.x + f.y - 1.0, 1.0 - f.x, 1.0 - f.y);
+      t0 = stochApplyCell(tuv, cell + vec2(1.0, 1.0));
+      t1 = stochApplyCell(tuv, cell + vec2(0.0, 1.0));
+      t2 = stochApplyCell(tuv, cell + vec2(1.0, 0.0));
+    }
+  }
+
+  // --- Micro-variation helpers (Ultra-only, no extra texture fetch) ---
+  vec3 hash33(vec2 p){
+    float n1 = hash12(p + vec2(0.0, 0.0));
+    float n2 = hash12(p + vec2(13.7, 9.2));
+    float n3 = hash12(p + vec2(42.3, 17.1));
+    return vec3(n1, n2, n3);
+  }
+  void microFactors(vec2 tileId, out float albMul, out float roughMul, out float specMul){
+    albMul = 1.0; roughMul = 1.0; specMul = 1.0;
+    if(uMicroVar == 0) return;
+    vec3 r = hash33(tileId);
+    float a = clamp(uMicroParams.x, 0.0, 0.12);
+    float rr = clamp(uMicroParams.y, 0.0, 0.25);
+    float ss = clamp(uMicroParams.z, 0.0, 0.25);
+    albMul  = 1.0 + (r.x - 0.5) * 2.0 * a;
+    roughMul= 1.0 + (r.y - 0.5) * 2.0 * rr;
+    specMul = 1.0 + (r.z - 0.5) * 2.0 * ss;
+  }
+
+  // --- Grayscale sampling helper ---
+  // Some grayscale maps (AO/roughness/height) may be encoded in alpha (RGB zeros),
+  // depending on the encoder/pipeline. For robustness we fall back to alpha.
+  float texGray(sampler2D s, vec2 uv){
+    vec4 t = texture(s, uv);
+    float g = t.r;
+    if(g < 0.001 && (t.g + t.b) < 0.002 && t.a > 0.001) g = t.a;
+    return g;
+  }
+
+  // Simple normal-mapped lambert + subtle spec. World-space is the plane space (x,y) with z=0.
+  vec3 applyPBRLighting(vec3 baseLin, vec2 suv, float rotRad, vec3 viewDirW, vec2 tileId){
+    // Tangent basis aligned to the texture axes.
+    float c = cos(rotRad);
+    float s = sin(rotRad);
+    // Texture V is flipped (suv.y = 1 - suv.y), so flip the bitangent to keep a right-handed basis.
+    vec3 T = normalize(vec3(c, s, 0.0));
+    vec3 B = normalize(vec3(s, -c, 0.0));
+    vec3 N0 = vec3(0.0, 0.0, 1.0);
+
+    // Normal map (tangent space)
+    vec3 n = texture(uNormalMap, suv).rgb;
+    vec3 nTS = normalize(n * 2.0 - 1.0);
+    // Palette normal scale
+    nTS.xy *= max(uPbrParams0.y, 0.0);
+    nTS = normalize(nTS);
+    vec3 Nw = normalize(T * nTS.x + B * nTS.y + N0 * nTS.z);
+
+    // Material maps (linear)
+    float rough = clamp(texGray(uRoughnessMap, suv), 0.0, 1.0);
+    rough = clamp(rough * max(uPbrParams0.w, 0.0), 0.0, 1.0);
+
+    // Micro-variation (Ultra-only): subtle per-tile variation (kept tiny).
+    float microAlb=1.0, microR=1.0, microS=1.0;
+    microFactors(tileId, microAlb, microR, microS);
+    rough = clamp(rough * microR, 0.0, 1.0);
+
+    float aoTex = clamp(texGray(uAOMap, suv), 0.0, 1.0);
+
+    // AO strength (0..1) – reuse existing UI/logic knob (kept at 1.0 by default).
+    float aoStr = clamp(uAO, 0.0, 1.0);
+    // Prevent full blackout if AO map is missing/invalid (e.g., encoded in alpha or near-zero everywhere).
+    float aoF = mix(1.0, max(aoTex, 0.25), aoStr);
+
+    vec3 L = normalize(uLightDirW);
+    float ndl = max(dot(Nw, L), 0.0);
+
+    // Base terms (kept conservative to avoid a sudden "look change")
+    float amb = clamp(uAmbientStrength, 0.0, 1.2);
+    float diff = clamp(uLightStrength, 0.0, 2.5) * ndl;
+
+    // Apply AO to diffuse/ambient (not to the albedo itself, so color remains stable)
+    float lit = (amb + diff) * aoF;
+
+    // Apply micro brightness variation in linear space (kept subtle).
+    baseLin *= microAlb;
+
+
+    // Specular: legacy Blinn-Phong (stable) or GGX+Fresnel (Ultra)
+    vec3 V = normalize(viewDirW);
+    vec3 H = normalize(L + V);
+    float ndv = max(dot(Nw, V), 0.0);
+    float ndh = max(dot(Nw, H), 0.0);
+    float vdh = max(dot(V, H), 0.0);
+
+    vec3 specCol = vec3(0.0);
+
+    if(uUseGGX == 1){
+      // GGX microfacet BRDF (dielectric). Designed to be a drop-in replacement
+      // for the legacy spec without changing the diffuse/ambient balance.
+      // Roughness remap: alpha = rough^2, clamped to avoid fireflies.
+      float a = max(0.045, rough * rough);
+      float a2 = a * a;
+
+      // NDF: Trowbridge-Reitz GGX
+      float denom = (ndh * ndh * (a2 - 1.0) + 1.0);
+      float D = a2 / max(3.14159265 * denom * denom, 1e-6);
+
+      // Smith geometry (Schlick-GGX)
+      float k = (a + 1.0);
+      k = (k * k) / 8.0;
+      float Gv = ndv / max(ndv * (1.0 - k) + k, 1e-6);
+      float Gl = ndl / max(ndl * (1.0 - k) + k, 1e-6);
+      float G = Gv * Gl;
+
+      // Fresnel (Schlick)
+      vec3 F0 = vec3(0.04) * clamp(uPbrParams0.z * microS, 0.0, 3.0);
+      vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
+
+      vec3 specBRDF = (D * G) * F / max(4.0 * ndl * ndv, 1e-4);
+
+      // Calibrate to match the previous spec energy range (keeps look stable).
+      specCol = specBRDF * (ndl * (0.35 * clamp(uLightStrength, 0.0, 2.5)));
+
+    }else{
+      // Legacy: roughness-driven subtle specular
+      float gloss = 1.0 - rough;
+      float shin = mix(14.0, 220.0, gloss * gloss);
+      float specStr = mix(0.012, 0.060, gloss);
+      float spec = pow(max(dot(Nw, H), 0.0), shin) * specStr;
+      spec *= max(uPbrParams0.z * microS, 0.0);
+      specCol = vec3(spec);
+    }
+    // Slightly occlude specular in crevices
+    specCol *= mix(1.0, aoTex, aoStr * 0.5);
+
+    return baseLin * lit + specCol;
+  }
+
+  // Variant for stochastic Level B: lighting using pre-sampled / blended maps.
+  // Inputs:
+  //  - nTS_raw: tangent-space normal (decoded to [-1..1])
+  //  - rough_raw: roughness [0..1] prior to palette multiplier
+  //  - ao_raw: AO [0..1]
+  vec3 applyPBRLightingFromMaps(vec3 baseLin, vec3 nTS_raw, float rough_raw, float ao_raw, float rotRad, vec3 viewDirW, float microSpecMul){
+    float c = cos(rotRad);
+    float s = sin(rotRad);
+    vec3 T = normalize(vec3(c, s, 0.0));
+    vec3 B = normalize(vec3(s, -c, 0.0));
+    vec3 N0 = vec3(0.0, 0.0, 1.0);
+
+    vec3 nTS = normalize(nTS_raw);
+    nTS.xy *= max(uPbrParams0.y, 0.0);
+    nTS = normalize(nTS);
+    vec3 Nw = normalize(T * nTS.x + B * nTS.y + N0 * nTS.z);
+
+    float rough = clamp(rough_raw, 0.0, 1.0);
+    rough = clamp(rough * max(uPbrParams0.w, 0.0), 0.0, 1.0);
+    float aoTex = clamp(ao_raw, 0.0, 1.0);
+
+    float aoStr = clamp(uAO, 0.0, 1.0);
+    float aoF = mix(1.0, max(aoTex, 0.25), aoStr);
+
+    vec3 L = normalize(uLightDirW);
+    float ndl = max(dot(Nw, L), 0.0);
+
+    float amb = clamp(uAmbientStrength, 0.0, 1.2);
+    float diff = clamp(uLightStrength, 0.0, 2.5) * ndl;
+    float lit = (amb + diff) * aoF;
+
+    vec3 V = normalize(viewDirW);
+    vec3 H = normalize(L + V);
+    float ndv = max(dot(Nw, V), 0.0);
+    float ndh = max(dot(Nw, H), 0.0);
+    float vdh = max(dot(V, H), 0.0);
+
+    vec3 specCol = vec3(0.0);
+
+    if(uUseGGX == 1){
+      float a = max(0.045, rough * rough);
+      float a2 = a * a;
+      float denom = (ndh * ndh * (a2 - 1.0) + 1.0);
+      float D = a2 / (3.14159265 * denom * denom);
+      float k = (a + 1.0);
+      k = (k * k) / 8.0;
+      float Gv = ndv / (ndv * (1.0 - k) + k);
+      float Gl = ndl / (ndl * (1.0 - k) + k);
+      float G = Gv * Gl;
+      float F0 = 0.04;
+      float F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
+      float spec = (D * G * F) / max(4.0 * ndv * ndl, 1e-4);
+      float specStr = max(uPbrParams0.z * microSpecMul, 0.0);
+      specCol = vec3(spec * specStr);
+    }else{
+      float shin = mix(8.0, 200.0, pow(1.0 - rough, 2.0));
+      float specPow = pow(ndh, shin);
+      float specStr = max(uPbrParams0.z * microSpecMul, 0.0);
+      specCol = vec3(specPow * specStr) * ndl;
+    }
+
+    specCol *= mix(1.0, aoTex, aoStr * 0.5);
+    return baseLin * lit + specCol;
+  }
+
+  // Parallax mapping (safe) for repeating textures.
+  // NOTE: We must compute derivatives from UNWRAPPED UV (tile-space) to avoid
+  // underestimating the true footprint near fract() wrap boundaries.
+  // If we take dFdx/dFdy after fract(), parallax may remain enabled at strong
+  // perspective / far distance and introduce a subtle "wavy / glass" distortion.
+  //
+  // Input: uvU = unwrapped tile UV (no fract(), no Y-flip)
+  // Output: unwrapped UV shifted by parallax. Caller then does fract() and Y-flip.
+  vec2 parallaxUvUnwrapped(vec2 uvU, float rotRad, vec3 viewDirW){
+    float hStr = uBumpScale;
+    if(hStr <= 0.00001) return uvU;
+
+    // Gate parallax by screen-space UV footprint (in unwrapped UV units).
+    vec2 ddxUv = dFdx(uvU);
+    vec2 ddyUv = dFdy(uvU);
+    float du = max(length(ddxUv), length(ddyUv));
+    if(du > 0.012) return uvU;
+    float parallaxFade = clamp((0.012 - du) / 0.008, 0.0, 1.0);
+    hStr *= parallaxFade;
+    if(hStr <= 0.00001) return uvU;
+
+    // Tangent basis aligned to the texture axes (same as in applyPBRLighting)
+    float c = cos(rotRad);
+    float s = sin(rotRad);
+    vec3 T = normalize(vec3(c, s, 0.0));
+    vec3 B = normalize(vec3(s, -c, 0.0));
+    vec3 N0 = vec3(0.0, 0.0, 1.0);
+
+    vec3 V = normalize(viewDirW);
+    vec3 Vts = vec3(dot(V, T), dot(V, B), dot(V, N0));
+    float vz = abs(Vts.z);
+    if(vz < 0.35) return uvU;
+
+    float stepsF = mix(12.0, 6.0, clamp((vz - 0.35) / (1.0 - 0.35), 0.0, 1.0));
+    int steps = int(clamp(floor(stepsF + 0.5), 6.0, 12.0));
+
+    float layerDepth = 1.0 / float(steps);
+    vec2 delta = (Vts.xy / max(Vts.z, 0.12)) * (hStr / float(steps));
+    float maxShift = max(du * 0.65, 0.0005);
+    delta = clamp(delta, vec2(-maxShift), vec2(maxShift));
+
+    vec2 cuvU = uvU;
+    float curDepth = 0.0;
+
+    // Sample height from wrapped UV, with Y-flip applied consistently.
+    vec2 suv = fract(cuvU);
+    suv.y = 1.0 - suv.y;
+    float height = texGray(uHeightMap, suv);
+
+    for(int i=0;i<12;i++){
+      if(i >= steps) break;
+      if(curDepth >= height) break;
+      cuvU -= delta;
+      curDepth += layerDepth;
+      suv = fract(cuvU);
+      suv.y = 1.0 - suv.y;
+      height = texGray(uHeightMap, suv);
+    }
+    return cuvU;
+  }
+
+  void main(){
+    // Coordinate conventions:
+    // - vUv: bottom-left origin (standard fullscreen quad)
+    // - uploaded HTML images/canvases: top-left origin
+    // - render targets (FBO textures): bottom-left origin
+    vec2 uvSrc = vec2(vUv.x, 1.0 - vUv.y);
+    vec2 fragPx = uvSrc * uResolution;
+
+    vec4 prev = texture(uPrev, vUv);
+    vec3 prevLin = toLinear(prev.rgb);
+
+    vec3 photo = texture(uPhoto, uvSrc).rgb;
+    vec3 photoLin = toLinear(photo);
+    float lum = dot(photoLin, vec3(0.2126, 0.7152, 0.0722));
+
+    float m = texture(uMask, uvSrc).r;
+    float mb = texture(uMaskBlur, uvSrc).r;
+
+    // HARD CLIP CONTRACT:
+    // Never render the tile outside of the user-defined contour.
+    // We use the non-blurred mask as the authoritative inside/outside test.
+    // This prevents any bleed / rounding caused by blur sampling or linear filtering.
+    if(m < 0.5){
+      outColor = prev;
+      return;
+    }
+
+    // Edge alpha:
+    // - HARD CLIP (m) prevents any drawing outside contour.
+    // - For a high-quality edge without bleed, we apply *inward-only* anti-aliasing:
+    //   outside pixels stay untouched (handled above), while inside pixels near the boundary
+    //   fade from 0..1 based on the blurred mask value around the 0.5 isocontour.
+    //
+    // mb is a softened (blurred) version of the mask in [0..1].
+    float mb01 = clamp(mb, 0.0, 1.0);
+
+    // Inward-only AA (default): 0 at boundary (mb~0.5), 1 deeper inside.
+    // Use a derivative-based width, but keep a small minimum so the edge is still smooth
+    // even on high-DPI displays.
+    float aaW = max(0.02, fwidth(mb01) * 2.0);
+    float alphaAA = smoothstep(0.5, 0.5 + aaW, mb01);
+
+    // Optional legacy feather (if ever enabled): softer edge based on wider mb range.
+    float alphaFeather = smoothstep(0.18, 0.82, mb01);
+
+    // uFeather blends between crisp inward-AA (0) and soft feather (1).
+    float alphaEdge = mix(alphaAA, alphaFeather, clamp(uFeather, 0.0, 1.0));
+    // Bound strictly by hard mask (already ensured by early return, but keep explicit).
+    alphaEdge = min(alphaEdge, m);
+
+    float op = clamp(uOpacity, 0.0, 1.0);
+    float alpha = alphaEdge * op;
+
+    // Optional "dense fill" mode: make the interior visually solid at high opacity
+    // while keeping the feathered edge.
+    if(uOpaqueFill == 1){
+      // interiorMask ~= 0 on edge, ~= 1 inside
+      float interiorMask = smoothstep(0.90, 0.995, mb);
+      float targetAlpha = mix(alphaEdge, 1.0, interiorMask);
+      alpha = targetAlpha * op;
+    }
+
+    // Premium occlusion: if a mask exists, clip the tile under selected objects.
+    // The mask is in photo space, so we sample with uvSrc.
+    if(uHasOcc == 1){
+      float occ = texture(uOcc, uvSrc).r; // 0..1
+      float o = smoothstep(0.15, 0.60, occ);
+      alpha *= (1.0 - o);
+    }
+
+    if(alpha <= 0.0005){
+      outColor = vec4(toSRGB(prevLin), 1.0);
+      return;
+    }
+
+    // Mapping from screen pixel to plane coordinates:
+    // - Default: inverse homography (fast)
+    // - 3D camera (Variant B): cast a ray through the pixel and intersect with the plane z=0
+    vec2 uv;
+    vec3 viewDirW = vec3(0.0, 0.0, 1.0);
+    if(uUseCam3D == 1){
+      // Camera ray in camera coordinates (y-down convention)
+      vec3 rayCam = uKinv * vec3(fragPx, 1.0);
+      rayCam = normalize(rayCam);
+
+      // Transform ray + camera center to world. Rwc maps world->camera, so Rcw = transpose(Rwc).
+      mat3 Rcw = transpose(uRwc);
+      vec3 camPosW = -(Rcw * uTwc);
+      vec3 rayW = normalize(Rcw * rayCam);
+      viewDirW = normalize(-rayW);
+
+      // Intersect with plane z=0 in world space
+      float denom = rayW.z;
+      if(abs(denom) < 1e-6){
+        outColor = prev;
+        return;
+      }
+      float s = -camPosW.z / denom;
+      if(s <= 0.0){
+        outColor = prev;
+        return;
+      }
+      vec3 Pw = camPosW + rayW * s;
+      uv = Pw.xy;
+    }else{
+      // Projective mapping: image(px) -> plane(uv)
+      vec3 q = uInvH * vec3(fragPx, 1.0);
+      float z = q.z;
+      if(z <= 1e-5){
+        outColor = prev;
+        return;
+      }
+      float zFade = smoothstep(0.0008, 0.006, z);
+      alpha *= zFade;
+      if(alpha <= 0.0005){ outColor = prev; return; }
+      uv = q.xy / z;
+    }
+
+    // Optional plane depth inversion (user control via negative perspective slider).
+    if(uVFlip == 1){
+      uv.y = uPlaneD - uv.y;
+    }
+
+    // Tile transform
+    float rot = radians(uRotation);
+    mat2 R = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
+    vec2 tuv = R * (uv * max(uScale, 0.0001));
+
+    // Phase lock: keep texture anchored so it does not "swim" when horizon/perspective are adjusted.
+    // Stochastic Level A/B is applied in tile-space so it affects all maps consistently.
+    vec2 suv = vec2(0.0);
+    vec3 tileLin = vec3(0.0);
+
+    if(uUsePBR == 1 && uStochMode == 2){
+      // Level B (3-tap) — blend three randomly transformed samples using triangle barycentric weights.
+      vec2 t0, t1, t2;
+      vec3 w;
+      stochGet3(tuv, t0, t1, t2, w);
+
+      // Use unwrapped UV for derivatives/parallax, then wrap for sampling.
+      vec2 uvU0 = t0 + uPhase;
+      vec2 uvU1 = t1 + uPhase;
+      vec2 uvU2 = t2 + uPhase;
+
+      // Micro-variation tile ids (stable in tile-space, consistent across maps)
+      vec2 tileId0 = floor(t0 + uPhase);
+      vec2 tileId1 = floor(t1 + uPhase);
+      vec2 tileId2 = floor(t2 + uPhase);
+
+
+      if(uBumpScale > 0.00001){
+        uvU0 = parallaxUvUnwrapped(uvU0, rot, viewDirW);
+        uvU1 = parallaxUvUnwrapped(uvU1, rot, viewDirW);
+        uvU2 = parallaxUvUnwrapped(uvU2, rot, viewDirW);
+      }
+
+      vec2 suv0 = fract(uvU0);
+      vec2 suv1 = fract(uvU1);
+      vec2 suv2 = fract(uvU2);
+      suv0.y = 1.0 - suv0.y;
+      suv1.y = 1.0 - suv1.y;
+      suv2.y = 1.0 - suv2.y;
+
+      vec3 c0 = texture(uTile, suv0).rgb;
+      vec3 c1 = texture(uTile, suv1).rgb;
+      vec3 c2 = texture(uTile, suv2).rgb;
+
+      float mAlb0=1.0,mR0=1.0,mS0=1.0;
+      float mAlb1=1.0,mR1=1.0,mS1=1.0;
+      float mAlb2=1.0,mR2=1.0,mS2=1.0;
+      microFactors(tileId0, mAlb0, mR0, mS0);
+      microFactors(tileId1, mAlb1, mR1, mS1);
+      microFactors(tileId2, mAlb2, mR2, mS2);
+
+      tileLin = toLinear(c0) * (w.x * mAlb0) + toLinear(c1) * (w.y * mAlb1) + toLinear(c2) * (w.z * mAlb2);
+
+      // Blend material maps in their native linear space.
+      vec3 n0 = texture(uNormalMap, suv0).rgb * 2.0 - 1.0;
+      vec3 n1 = texture(uNormalMap, suv1).rgb * 2.0 - 1.0;
+      vec3 n2 = texture(uNormalMap, suv2).rgb * 2.0 - 1.0;
+      vec3 nTS = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
+
+      float r0 = texGray(uRoughnessMap, suv0);
+      float r1 = texGray(uRoughnessMap, suv1);
+      float r2 = texGray(uRoughnessMap, suv2);
+      r0 = clamp(r0 * mR0, 0.0, 1.0);
+      r1 = clamp(r1 * mR1, 0.0, 1.0);
+      r2 = clamp(r2 * mR2, 0.0, 1.0);
+
+      float roughRaw = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
+
+      float a0 = texGray(uAOMap, suv0);
+      float a1 = texGray(uAOMap, suv1);
+      float a2 = texGray(uAOMap, suv2);
+      float aoRaw = clamp(a0 * w.x + a1 * w.y + a2 * w.z, 0.0, 1.0);
+
+      // Global exposure multiplier from palette JSON (applied in linear space)
+      tileLin *= max(uPbrParams0.x, 0.0);
+            float microSpecBlend = clamp(mS0 * w.x + mS1 * w.y + mS2 * w.z, 0.0, 2.0);
+      tileLin = applyPBRLightingFromMaps(tileLin, nTS, roughRaw, aoRaw, rot, viewDirW, microSpecBlend);
+
+      // Keep a representative UV for any downstream debug/aux ops.
+      suv = suv0;
+    }else{
+      // Legacy (no stochastic / Level A single sample)
+      if(uStochMode == 1){
+        tuv = stochApply(tuv);
+      }
+      // Use unwrapped UV for derivatives/parallax, then wrap for sampling.
+      vec2 uvU = tuv + uPhase;
+      if(uUsePBR == 1 && uBumpScale > 0.00001){
+        uvU = parallaxUvUnwrapped(uvU, rot, viewDirW);
+      }
+      suv = fract(uvU);
+      suv.y = 1.0 - suv.y;
+
+      vec3 tile = texture(uTile, suv).rgb;
+      tileLin = toLinear(tile);
+
+      if(uUsePBR == 1){
+        tileLin *= max(uPbrParams0.x, 0.0);
+        vec2 tileId = floor(tuv + uPhase);
+        tileLin = applyPBRLighting(tileLin, suv, rot, viewDirW, tileId);
+      }
+    }
+
+    // PBR safety fallback: prevent NaN/Inf/black output on some map encodings or GPU drivers.
+    // If PBR produced invalid values, fall back to unlit tile (still with exposureMult).
+    if(uUsePBR==1){
+      bool bad = any(isnan(tileLin)) || any(isinf(tileLin)) || (dot(tileLin, tileLin) < 1e-10);
+      if(bad){
+        vec3 t0 = texture(uTile, suv).rgb;
+        tileLin = toLinear(t0) * max(uPbrParams0.x, 0.0);
+      }
+    }
+
+    // Photo-aware fit:
+    // PhotoFit modes:
+    //  - legacy (per-pixel): modulate by local photo luminance (can cause 'puddles' / instability under horizon changes)
+    //  - global: apply a single exposure multiplier derived from the photo (stable, PBR-friendly)
+    float fit = clamp(uPhotoFit, 0.0, 1.0);
+    if(uUsePBR==1 && uPhotoFitMode==1){
+      float expo = clamp(uPhotoExposure, 0.5, 1.8);
+      tileLin *= mix(1.0, expo, fit);
+    }else{
+      float shade = mix(1.0, clamp(0.65 + lum * 0.75, 0.55, 1.35), fit);
+      tileLin *= shade;
+    }
+
+    // Contact shadow (in-mask only): subtle darkening near the contour boundary to 'seat' the paving into the photo.
+    // Uses the blurred mask gradient (mb01) but is strictly limited to inside by the hard mask and alphaEdge.
+    // Enabled only in PBR/Ultra path to avoid changing legacy look.
+    if(uUsePBR==1 && uContactShadowStrength > 0.00001){
+      float wMb = clamp(uContactShadowWidth, 0.02, 0.45);
+      // mb01 is ~0.5 at the edge and ->1.0 inside. Map [0.5 .. 0.5+wMb] to [1..0]
+      float tEdge = clamp((0.5 + wMb - mb01) / wMb, 0.0, 1.0);
+      float cs = pow(tEdge, clamp(uContactShadowPower, 0.6, 4.0)) * clamp(uContactShadowStrength, 0.0, 1.0);
+      // Fade contact shadow with edge alpha so very soft feather doesn't create a dark halo.
+      cs *= alphaEdge;
+      tileLin *= (1.0 - cs);
+    }
+
+// Far fade to reduce moire + add subtle atmospheric integration.
+    // If depth is available, prefer it over uv.y, because the real "far" direction may be diagonal.
+    float farBase = clamp(uv.y / max(uPlaneD, 1e-6), 0.0, 1.0);
+    if(uHasDepth==1){
+      float d = texture(uDepth, uvSrc).r; // 0..1 (normalized in AI pipeline)
+      float farD = (uDepthFarHigh==1) ? d : (1.0 - d);
+      // Stabilize extremes and reduce sensitivity to noisy depth.
+      farBase = smoothstep(0.10, 0.95, clamp(farD, 0.0, 1.0));
+    }
+    float farK = farBase * clamp(uFarFade, 0.0, 1.0);
+    float gray = dot(tileLin, vec3(0.2126,0.7152,0.0722));
+    tileLin = mix(tileLin, vec3(gray), farK*0.15);
+    tileLin = mix(tileLin, vec3(0.5) + (tileLin-vec3(0.5))*0.85, farK*0.35);
+
+    // Depth haze: gently blend towards the photo to reduce "cutout" feeling in the distance.
+    // Keep it subtle to avoid visible color shifts.
+    float haze = farK * 0.14;
+    tileLin = mix(tileLin, photoLin, haze);
+
+    // Contact AO along the edge: use blurred mask halo
+    float ao = clamp((mb - m) * 1.8, 0.0, 1.0);
+    float aoStr = clamp(uAO, 0.0, 1.0);
+    tileLin *= (1.0 - ao * (0.18 * aoStr));
+
+    vec3 outLin;
+    if(uBlendMode==1){
+      // Multiply against existing content
+      outLin = mix(prevLin, prevLin * tileLin, alpha);
+    }else{
+      // Normal
+      outLin = mix(prevLin, tileLin, alpha);
+    }
+
+    outColor = vec4(toSRGB(outLin), 1.0);
+  }`;
+
+  function init(glCanvas){
+    canvas = glCanvas;
+    if(!_isWebGL2Supported()){
+      throw new Error('WebGL2 is not supported in this browser/environment.');
+    }
+    // If we are re-initializing after a context restore, previously created GL
+    // objects are invalid. Reset caches aggressively.
+    for(const e of tileCache.values()){
+      try{ if(gl && e && e.tex) gl.deleteTexture(e.tex); }catch(_){ }
+    }
+    tileCache.clear();
+    for(const e of pbrMapCache.values()){
+      try{ if(gl && e && e.tex) gl.deleteTexture(e.tex); }catch(_){ }
+    }
+    pbrMapCache.clear();
+    if(_pbrFallback){
+      try{ if(gl) gl.deleteTexture(_pbrFallback.normal); }catch(_){ }
+      try{ if(gl) gl.deleteTexture(_pbrFallback.roughness); }catch(_){ }
+      try{ if(gl) gl.deleteTexture(_pbrFallback.ao); }catch(_){ }
+      try{ if(gl) gl.deleteTexture(_pbrFallback.height); }catch(_){ }
+      _pbrFallback = null;
+    }
+    for(const e of maskCache.values()){
+      try{ if(gl && e && e.maskTex) gl.deleteTexture(e.maskTex); }catch(_){ }
+      try{ if(gl && e && e.blurTex) gl.deleteTexture(e.blurTex); }catch(_){ }
+    }
+    maskCache.clear();
+
+    gl = canvas.getContext('webgl2', {
+      alpha: false,
+      premultipliedAlpha: false,
+      antialias: false,
+      preserveDrawingBuffer: false,
+      depth: false,
+      stencil: false,
+      powerPreference: 'high-performance'
+    });
+    if(!gl){
+      throw new Error('Failed to create WebGL2 context.');
+    }
+
+    // Extensions / limits
+    extAniso = gl.getExtension('EXT_texture_filter_anisotropic') || gl.getExtension('MOZ_EXT_texture_filter_anisotropic') || gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
+    maxTexSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 2048;
+    maxRbSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 2048;
+
+    quadVao = _setupQuad();
+    progCopy = _createProgram(VS, FS_COPY);
+    progZone = _createProgram(VS, FS_ZONE);
+
+    // Global state
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    // Keep upload orientation as-is (top-left). We handle Y conversion in shaders
+    // to avoid double-flip issues across browsers and ImageBitmap sources.
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.clearColor(0,0,0,1);
+  }
+
+  function _uploadPhoto(bitmap, w, h){
+    if(!bitmap) return;
+    if(photoTex){
+      gl.deleteTexture(photoTex);
+      photoTex = null;
+    }
+    photoTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, photoTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    try{
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    }catch(e){
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      throw new Error('Failed to upload photo texture to WebGL.');
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    photoW = w;
+    photoH = h;
+  }
+
+  function setPhoto(bitmap, w, h){
+    if(!gl) return;
+    if(!bitmap || !w || !h) return;
+    _uploadPhoto(bitmap, w, h);
+  }
+
+  function getLimits(){
+    return {maxTexSize, maxRbSize};
+  }
+
+  function resize(renderW, renderH){
+    if(!gl) return;
+    // Clamp to limits to avoid black outputs on mobile GPUs.
+    // IMPORTANT: preserve aspect ratio to avoid visual stretching.
+    const lim = Math.max(256, Math.min(maxTexSize, maxRbSize));
+    let w = Math.max(1, renderW|0);
+    let h = Math.max(1, renderH|0);
+    if(w > lim || h > lim){
+      const sc = Math.min(lim / w, lim / h);
+      w = Math.max(1, Math.floor(w * sc));
+      h = Math.max(1, Math.floor(h * sc));
+    }
+    canvas.width = w;
+    canvas.height = h;
+    _ensureTargets(w,h);
+    gl.viewport(0,0,w,h);
+  }
+
+  function _makeTileTexture(img){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // Do not rely on global pixelStore state: Ultra stages may upload other canvases.
+    // Force a consistent orientation for tile uploads to avoid sporadic flips.
+    try{ gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); }catch(_){/*noop*/}
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    // mipmaps for distance stability
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    try{
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      if(extAniso){
+        const maxA = gl.getParameter(extAniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 4;
+        gl.texParameterf(gl.TEXTURE_2D, extAniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, maxA));
+      }
+    }catch(e){
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.deleteTexture(tex);
+      throw new Error('Failed to upload tile texture to WebGL (likely CORS). Ensure Object Storage has CORS headers for this domain.');
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+  }
+
+  function _getTileTex(url, img){
+    if(tileCache.has(url)){
+      const e = tileCache.get(url);
+      e.ts = Date.now();
+      return e.tex;
+    }
+    const tex = _makeTileTexture(img);
+    tileCache.set(url, {tex, w: img.width||0, h: img.height||0, ts: Date.now()});
+    // LRU cap
+    if(tileCache.size > 18){
+      const entries = [...tileCache.entries()].sort((a,b)=>a[1].ts-b[1].ts);
+      for(let i=0;i<Math.max(1, tileCache.size-18);i++){
+        try{ gl.deleteTexture(entries[i][1].tex); }catch(_){ }
+        tileCache.delete(entries[i][0]);
+      }
+    }
+    return tex;
+  }
+
+  function _drawPolyToCtx(tctx, poly, scaleX, scaleY){
+    if(!poly || poly.length<3) return;
+    tctx.moveTo(poly[0].x * scaleX, poly[0].y * scaleY);
+    for(let i=1;i<poly.length;i++) tctx.lineTo(poly[i].x * scaleX, poly[i].y * scaleY);
+    tctx.closePath();
+  }
+
+  function _buildMaskCanvases(zone, w, h, scaleX, scaleY){
+    _maskCanvas.width = w; _maskCanvas.height = h;
+    _blurCanvas.width = w; _blurCanvas.height = h;
+
+    _maskCtx.setTransform(1,0,0,1,0,0);
+    _maskCtx.clearRect(0,0,w,h);
+    _maskCtx.fillStyle = '#fff';
+    _maskCtx.beginPath();
+    _drawPolyToCtx(_maskCtx, zone.contour, scaleX, scaleY);
+    for(const c of (zone.cutouts||[])){
+      if(c && c.closed && c.polygon && c.polygon.length>=3) _drawPolyToCtx(_maskCtx, c.polygon, scaleX, scaleY);
+    }
+    // even-odd fill to support holes
+    _maskCtx.fill('evenodd');
+
+    // Blurred mask for feather/AO.
+    _blurCtx.setTransform(1,0,0,1,0,0);
+    _blurCtx.clearRect(0,0,w,h);
+    try{
+      _blurCtx.filter = 'blur(6px)';
+    }catch(_){
+      // ignore
+    }
+    _blurCtx.drawImage(_maskCanvas, 0, 0);
+    try{ _blurCtx.filter = 'none'; }catch(_){ }
+  }
+
+  function _uploadMaskTextureFromCanvas(srcCanvas, existingTex, opts={}){
+    let tex = existingTex;
+    if(!tex){ tex = gl.createTexture(); }
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    const minF = opts.minFilter || gl.LINEAR;
+    const magF = opts.magFilter || gl.LINEAR;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minF);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magF);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    try{
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcCanvas);
+    }catch(e){
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      if(!existingTex) gl.deleteTexture(tex);
+      throw new Error('Failed to upload mask texture to WebGL.');
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+  }
+
+  function _getMaskTextures(key, zone, w, h, scaleX, scaleY){
+    const now = Date.now();
+    if(maskCache.has(key)){
+      const e = maskCache.get(key);
+      if(e.w===w && e.h===h){
+        e.ts = now;
+        return e;
+      }
+      // size changed => recreate
+      try{ gl.deleteTexture(e.maskTex); }catch(_){ }
+      try{ gl.deleteTexture(e.blurTex); }catch(_){ }
+      maskCache.delete(key);
+    }
+
+    _buildMaskCanvases(zone, w, h, scaleX, scaleY);
+    // IMPORTANT: the hard mask must not be linearly filtered, otherwise it can leak
+    // outside the contour by interpolation. Use NEAREST for strict clipping.
+    const maskTex = _uploadMaskTextureFromCanvas(_maskCanvas, null, {minFilter:gl.NEAREST, magFilter:gl.NEAREST});
+    const blurTex = _uploadMaskTextureFromCanvas(_blurCanvas, null, {minFilter:gl.LINEAR, magFilter:gl.LINEAR});
+    const entry = {maskTex, blurTex, w, h, ts: now};
+    maskCache.set(key, entry);
+    // LRU cap
+    if(maskCache.size > 24){
+      const entries = [...maskCache.entries()].sort((a,b)=>a[1].ts-b[1].ts);
+      for(let i=0;i<Math.max(1, maskCache.size-24);i++){
+        try{ gl.deleteTexture(entries[i][1].maskTex); }catch(_){ }
+        try{ gl.deleteTexture(entries[i][1].blurTex); }catch(_){ }
+        maskCache.delete(entries[i][0]);
+      }
+    }
+    return entry;
+  }
+
+  function _mat3FromArray9(a){
+    // GLSL expects column-major. Our editor homography is row-major.
+    // Convert row-major [r0 r1 r2 r3 r4 r5 r6 r7 r8] -> column-major float[9]
+    return new Float32Array([
+      a[0], a[3], a[6],
+      a[1], a[4], a[7],
+      a[2], a[5], a[8]
+    ]);
+  }
+
+  function _invert3x3(m){
+    const a=m[0], b=m[1], c=m[2],
+          d=m[3], e=m[4], f=m[5],
+          g=m[6], h=m[7], i=m[8];
+    const A=e*i-f*h, B=-(d*i-f*g), C=d*h-e*g;
+    const D=-(b*i-c*h), E=a*i-c*g, F=-(a*h-b*g);
+    const G=b*f-c*e, H=-(a*f-c*d), I=a*e-b*d;
+    const det=a*A + b*B + c*C;
+    if(!isFinite(det) || Math.abs(det) < 1e-12) return null;
+    const invDet=1/det;
+    return [A*invDet, D*invDet, G*invDet,
+            B*invDet, E*invDet, H*invDet,
+            C*invDet, F*invDet, I*invDet];
+  }
+
+
+function _mul3x3(a,b){
+  // row-major 3x3 multiplication: a*b
+  return [
+    a[0]*b[0]+a[1]*b[3]+a[2]*b[6], a[0]*b[1]+a[1]*b[4]+a[2]*b[7], a[0]*b[2]+a[1]*b[5]+a[2]*b[8],
+    a[3]*b[0]+a[4]*b[3]+a[5]*b[6], a[3]*b[1]+a[4]*b[4]+a[5]*b[7], a[3]*b[2]+a[4]*b[5]+a[5]*b[8],
+    a[6]*b[0]+a[7]*b[3]+a[8]*b[6], a[6]*b[1]+a[7]*b[4]+a[8]*b[7], a[6]*b[2]+a[7]*b[5]+a[8]*b[8]
+  ];
+}
+
+function _decomposeHomographyToRT(H, K){
+  // Decompose planar homography into world->camera rotation + translation.
+  // H: row-major array9 mapping plane (X,Y,1) -> pixel (x,y,w)
+  // K: {f,cx,cy} in the SAME pixel space as H (render buffer coords, y-down)
+  if(!H || !K) return null;
+  const f = +K.f, cx = +K.cx, cy = +K.cy;
+  if(!isFinite(f) || f <= 2) return null;
+
+  // K^{-1} for canonical K = [[f,0,cx],[0,f,cy],[0,0,1]]
+  const Kinv = [
+    1/f, 0, -cx/f,
+    0, 1/f, -cy/f,
+    0, 0, 1
+  ];
+
+  const B = _mul3x3(Kinv, H);
+  const b1 = [B[0],B[3],B[6]];
+  const b2 = [B[1],B[4],B[7]];
+  const b3 = [B[2],B[5],B[8]];
+  const n1 = Math.hypot(b1[0],b1[1],b1[2]);
+  const n2 = Math.hypot(b2[0],b2[1],b2[2]);
+  if(!isFinite(n1) || !isFinite(n2) || n1 < 1e-9 || n2 < 1e-9) return null;
+
+  // Homography decomposition scale: use average column norm for translation,
+// but keep r1/r2 unit-length before Gram-Schmidt (avoids implicit shear).
+  const s = 2 / (n1 + n2); // lambda = 1 / ((n1+n2)/2)
+
+  // Start from individually-normalized directions
+  let r1 = [b1[0]/n1, b1[1]/n1, b1[2]/n1];
+  let r2 = [b2[0]/n2, b2[1]/n2, b2[2]/n2];
+
+  // Orthonormalize r2 against r1 (Gram-Schmidt), with r1 assumed unit
+  const d12 = r1[0]*r2[0] + r1[1]*r2[1] + r1[2]*r2[2];
+  r2 = [r2[0]-d12*r1[0], r2[1]-d12*r1[1], r2[2]-d12*r1[2]];
+  const nr2 = Math.hypot(r2[0],r2[1],r2[2]);
+  if(!isFinite(nr2) || nr2 < 1e-9) return null;
+  r2 = [r2[0]/nr2, r2[1]/nr2, r2[2]/nr2];
+
+  // r3 = r1 x r2 (right-handed)
+  let r3 = [
+    r1[1]*r2[2] - r1[2]*r2[1],
+    r1[2]*r2[0] - r1[0]*r2[2],
+    r1[0]*r2[1] - r1[1]*r2[0]
+  ];
+  const nr3 = Math.hypot(r3[0],r3[1],r3[2]);
+  if(!isFinite(nr3) || nr3 < 1e-9) return null;
+  r3 = [r3[0]/nr3, r3[1]/nr3, r3[2]/nr3];
+
+  // Translation uses the shared scale (keeps consistency with H)
+  let t = [b3[0]*s, b3[1]*s, b3[2]*s];
+
+  // Ensure the plane is in front of the camera (positive z in camera space).
+  // If not, flip the solution.
+  if(t[2] < 0){
+    // Keep the plane in front of the camera without changing handedness.
+    r1 = [-r1[0],-r1[1],-r1[2]];
+    r2 = [-r2[0],-r2[1],-r2[2]];
+    t  = [-t[0], -t[1], -t[2]];
+
+    // Recompute r3 to preserve a proper right-handed rotation (det(R)≈+1)
+    r3 = [
+      r1[1]*r2[2] - r1[2]*r2[1],
+      r1[2]*r2[0] - r1[0]*r2[2],
+      r1[0]*r2[1] - r1[1]*r2[0]
+    ];
+    const nr3b = Math.hypot(r3[0],r3[1],r3[2]);
+    if(!isFinite(nr3b) || nr3b < 1e-9) return null;
+    r3 = [r3[0]/nr3b, r3[1]/nr3b, r3[2]/nr3b];
+  }
+
+  const R = [
+    r1[0], r2[0], r3[0],
+    r1[1], r2[1], r3[1],
+    r1[2], r2[2], r3[2]
+  ]; // row-major (rows are camera axes in world coords?) consistent with Xc = R*Xw + t
+
+  return {Kinv, R, t};
+}
+
+  // ---------------------------------------------------------------------------
+  // Camera-first geometry model (Global Anti-Rubber):
+  // - Plane coordinates are metric (from contour-derived quad W,D).
+  // - User "horizon" and "perspective" control ONLY camera (pitch + focal length).
+  // - UV metric never depends on horizon/perspective (prevents rubber stretching).
+  // ---------------------------------------------------------------------------
+
+  function _estimateFocalFromHomography(H, cx, cy, w, h){
+    if(!H) return null;
+    const maxDim = Math.max(1, w|0, h|0);
+    const fMin = 0.40 * maxDim;
+    const fMax = 3.50 * maxDim;
+
+    function score(f){
+      if(!isFinite(f) || f <= 2) return 1e30;
+      const invF = 1.0 / f;
+      const Kinv = [
+        invF, 0, -cx*invF,
+        0, invF, -cy*invF,
+        0, 0, 1
+      ];
+      const B = _mul3x3(Kinv, H);
+      const b1 = [B[0], B[3], B[6]];
+      const b2 = [B[1], B[4], B[7]];
+      const n1 = Math.hypot(b1[0], b1[1], b1[2]);
+      const n2 = Math.hypot(b2[0], b2[1], b2[2]);
+      if(!isFinite(n1) || !isFinite(n2) || n1 < 1e-9 || n2 < 1e-9) return 1e30;
+      const dot = b1[0]*b2[0] + b1[1]*b2[1] + b1[2]*b2[2];
+      const dn = (n1 - n2);
+      return dot*dot + dn*dn;
+    }
+
+    // Coarse log-space scan
+    let bestF = null;
+    let bestS = Infinity;
+    const n = 34;
+    const logMin = Math.log(fMin);
+    const logMax = Math.log(fMax);
+    for(let i=0;i<n;i++){
+      const t = i/(n-1);
+      const f = Math.exp(logMin + (logMax-logMin)*t);
+      const s = score(f);
+      if(s < bestS){
+        bestS = s;
+        bestF = f;
+      }
+    }
+    if(!bestF || !isFinite(bestF)) return null;
+
+    // Local refine in log-space (ternary)
+    let lo = Math.max(fMin, bestF/1.6);
+    let hi = Math.min(fMax, bestF*1.6);
+    for(let it=0; it<18; it++){
+      const f1 = Math.exp((2*Math.log(lo) + Math.log(hi))/3);
+      const f2 = Math.exp((Math.log(lo) + 2*Math.log(hi))/3);
+      const s1 = score(f1);
+      const s2 = score(f2);
+      if(s1 < s2) hi = f2;
+      else lo = f1;
+    }
+    const fFinal = Math.sqrt(lo*hi);
+    return isFinite(fFinal) ? fFinal : bestF;
+  }
+
+  function _rotX(rad){
+    const c = Math.cos(rad), s = Math.sin(rad);
+    return [
+      1,0,0,
+      0,c,-s,
+      0,s,c
+    ];
+  }
+
+  function _applyPitchToCam(cam, pitchRad){
+    if(!cam || !cam.R || !cam.t) return cam;
+    const Rx = _rotX(pitchRad);
+    const Rn = _mul3x3(Rx, cam.R);
+    const t = cam.t;
+    const tn = [
+      Rx[0]*t[0] + Rx[1]*t[1] + Rx[2]*t[2],
+      Rx[3]*t[0] + Rx[4]*t[1] + Rx[5]*t[2],
+      Rx[6]*t[0] + Rx[7]*t[1] + Rx[8]*t[2],
+    ];
+    return {Kinv: cam.Kinv, R: Rn, t: tn};
+  }
+
+  function _planePointFromCamPixel(cam, x, y){
+    if(!cam || !cam.Kinv || !cam.R || !cam.t) return {x:0,y:0,ok:false};
+    const KinvA = cam.Kinv;
+    let rx = KinvA[0]*x + KinvA[1]*y + KinvA[2];
+    let ry = KinvA[3]*x + KinvA[4]*y + KinvA[5];
+    let rz = KinvA[6]*x + KinvA[7]*y + KinvA[8];
+    const rlen = Math.hypot(rx, ry, rz) || 1.0;
+    rx/=rlen; ry/=rlen; rz/=rlen;
+
+    const RwcA = cam.R;
+    const Rcw00 = RwcA[0], Rcw01 = RwcA[3], Rcw02 = RwcA[6];
+    const Rcw10 = RwcA[1], Rcw11 = RwcA[4], Rcw12 = RwcA[7];
+    const Rcw20 = RwcA[2], Rcw21 = RwcA[5], Rcw22 = RwcA[8];
+
+    const tA = cam.t;
+    const cwx = -(Rcw00*tA[0] + Rcw01*tA[1] + Rcw02*tA[2]);
+    const cwy = -(Rcw10*tA[0] + Rcw11*tA[1] + Rcw12*tA[2]);
+    const cwz = -(Rcw20*tA[0] + Rcw21*tA[1] + Rcw22*tA[2]);
+
+    let rwx = (Rcw00*rx + Rcw01*ry + Rcw02*rz);
+    let rwy = (Rcw10*rx + Rcw11*ry + Rcw12*rz);
+    let rwz = (Rcw20*rx + Rcw21*ry + Rcw22*rz);
+    const rwlen = Math.hypot(rwx, rwy, rwz) || 1.0;
+    rwx/=rwlen; rwy/=rwlen; rwz/=rwlen;
+
+    const denom = rwz;
+    if(Math.abs(denom) < 1e-6) return {x:0,y:0,ok:false};
+    const sRay = -cwz / denom;
+    if(!(sRay > 0.0)) return {x:0,y:0,ok:false};
+    return {x: cwx + rwx*sRay, y: cwy + rwy*sRay, ok:true};
+  }
+
+  function _localMetersPerPixel(cam, ax, ay){
+    const p0 = _planePointFromCamPixel(cam, ax, ay);
+    if(!p0.ok) return null;
+    const px = _planePointFromCamPixel(cam, ax+1.0, ay);
+    const py = _planePointFromCamPixel(cam, ax, ay+1.0);
+    if(!px.ok || !py.ok) return null;
+    const dx = Math.hypot(px.x - p0.x, px.y - p0.y);
+    const dy = Math.hypot(py.x - p0.x, py.y - p0.y);
+    if(!isFinite(dx) || !isFinite(dy) || dx < 1e-9 || dy < 1e-9) return null;
+    return 0.5*(dx + dy);
+  }
+
+
+  // Horizon safety: keep the rendered plane visible inside the user contour.
+  // When the "horizon" is moved too far, some rays inside the contour can miss the plane (s<=0),
+  // causing empty/unfilled regions near the top of the contour. We clamp the effective horizon
+  // so that representative pixels in the upper part of the contour still intersect the plane.
+  function _computeContourBounds(contour){
+    let xMin=Infinity,xMax=-Infinity,yMin=Infinity,yMax=-Infinity;
+    for(const p of (contour||[])){
+      const x = +p.x, y = +p.y;
+      if(!isFinite(x) || !isFinite(y)) continue;
+      if(x < xMin) xMin = x;
+      if(x > xMax) xMax = x;
+      if(y < yMin) yMin = y;
+      if(y > yMax) yMax = y;
+    }
+    if(!isFinite(xMin) || !isFinite(yMin)) return null;
+    return {xMin,xMax,yMin,yMax};
+  }
+
+  function _horizonKeepsZoneFilled(camBase, hTest, cfg){
+    if(!camBase || !cfg || !cfg.bounds) return true;
+    const {cx,cy,f,w,h,distScale,pitchMax,cyShiftMax,bounds} = cfg;
+    const hPitchStart = (cfg && typeof cfg.hPitchStart === 'number') ? cfg.hPitchStart : 0.65;
+    const a = Math.min(1.0, Math.abs(hTest||0));
+    const sgn = (hTest >= 0) ? 1 : -1;
+    // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+    let pitchW = smoothstep(hPitchStart, 1.0, a);
+    pitchW = pitchW * pitchW; // gentler ramp reduces perceived 'kink'
+    const pitchCur = sgn * pitchMax * pitchW;
+	    let cyCur = clamp(cy + (hTest * cyShiftMax), 0.02*(h||1), 0.98*(h||1));
+    const camPose = _applyPitchToCam(camBase, pitchCur);
+    if(!camPose || !camPose.R || !camPose.t) return false;
+
+    // Optional: use the same camera-only flattening as the near-guard (if active).
+    // This makes the "keep-filled" boundary test consistent with the actual render camera
+    // and reduces visible snapping when the constraint engages.
+    let Rfill = camPose.R;
+    try{
+      const kFill = (cfg && isFinite(cfg.flattenK)) ? Math.max(0.10, Math.min(1.0, cfg.flattenK)) : 1.0;
+      if(kFill < 0.999){
+        const r1 = [Rfill[0], Rfill[3], Rfill[6]];
+        const r2 = [Rfill[1], Rfill[4], Rfill[7]];
+        const r1k = [r1[0], r1[1], r1[2]*kFill];
+        const r2k = [r2[0], r2[1], r2[2]*kFill];
+        const Rk = orthoFromR12(r1k, r2k);
+        if(Rk) Rfill = Rk;
+      }
+    }catch(_){/*noop*/}
+
+    const cam = {
+      R: Rfill,
+      // Distance affects camera height (tz) only.
+      // This matches the main render pipeline (near-guard) and improves stability
+      // of the "keep-filled" boundary test.
+      t: [camPose.t[0], camPose.t[1], camPose.t[2]*distScale],
+      Kinv: [
+        1/f, 0, -cx/f,
+        0, 1/f, -cyCur/f,
+        0, 0, 1
+      ]
+    };
+
+    // Sample representative pixels near the upper part of the contour.
+    // If any of them fail to intersect the plane, the user would see an "empty" area.
+    const yTop = clamp(bounds.yMin + 1.0, 0.0, (h||1)-1.0);
+    const yMid = clamp(bounds.yMin + (bounds.yMax - bounds.yMin)*0.12, 0.0, (h||1)-1.0);
+    const xL = clamp(bounds.xMin + 1.0, 0.0, (w||1)-1.0);
+    const xM = clamp((bounds.xMin + bounds.xMax)*0.5, 0.0, (w||1)-1.0);
+    const xR = clamp(bounds.xMax - 1.0, 0.0, (w||1)-1.0);
+
+    const xQ1 = clamp(bounds.xMin + (bounds.xMax - bounds.xMin)*0.25, 0.0, (w||1)-1.0);
+    const xQ3 = clamp(bounds.xMin + (bounds.xMax - bounds.xMin)*0.75, 0.0, (w||1)-1.0);
+    const yTop2 = clamp(bounds.yMin + (bounds.yMax - bounds.yMin)*0.06, 0.0, (h||1)-1.0);
+    const yMid2 = clamp(bounds.yMin + (bounds.yMax - bounds.yMin)*0.18, 0.0, (h||1)-1.0);
+    // More samples => more stable monotonic boundary (less jitter at the constraint edge)
+    const pts = [
+      [xL,yTop],[xQ1,yTop],[xM,yTop],[xQ3,yTop],[xR,yTop],
+      [xL,yTop2],[xM,yTop2],[xR,yTop2],
+      [xM,yMid],[xM,yMid2]
+    ];
+    for(const pt of pts){
+      const pp = _planePointFromCamPixel(cam, pt[0], pt[1]);
+      if(!pp.ok) return false;
+    }
+    return true;
+  }
+
+  
+  // Unified intrinsics computation for both on-screen and export rendering.
+  // Ensures K/cx/cy are consistent with the homography pixel space (render-buffer coords).
+  function _computeIntrinsicsUnified(Hm, w, h, sx, sy, ai){
+    let cx = 0.5 * (w||1);
+    let cy = 0.5 * (h||1);
+    const maxDim = Math.max(1, (w||1), (h||1));
+    let fGuess = _estimateFocalFromHomography(Hm, cx, cy, w, h);
+    if(!fGuess || !isFinite(fGuess) || fGuess < 2){
+      fGuess = 0.95 * maxDim;
+    }
+
+    // If manual 3D calibration lines are ready, prefer their intrinsics (scaled to this render buffer).
+    try{
+      const c3 = ai && ai.calib3d;
+      const res = c3 && c3.result;
+      if(c3 && c3.enabled === true && res && res.ok && res.K){
+        const _sx = isFinite(sx) ? sx : 1.0;
+        const _sy = isFinite(sy) ? sy : 1.0;
+        const sAvg = (_sx + _sy) * 0.5;
+        const fFrom = (+res.K.f||0) * sAvg;
+        const cxFrom = (+res.K.cx||0) * _sx;
+        const cyFrom = (+res.K.cy||0) * _sy;
+        if(isFinite(fFrom) && fFrom > 2) fGuess = fFrom;
+        if(isFinite(cxFrom)) cx = cxFrom;
+        if(isFinite(cyFrom)) cy = cyFrom;
+      }
+    }catch(_){ /* no-op */ }
+
+    return {f: fGuess, cx, cy};
+  }
+
+	  // Per-zone horizon clamp smoothing: the hard "keep-filled" bound can move slightly
+	  // between frames due to numeric noise, causing a visible "twitch" while dragging.
+	  // We smooth ONLY the relaxation of the bound (making it less restrictive). Tightening
+	  // remains immediate to guarantee no empty regions appear.
+	  const _hClampState = new Map();
+	  function _hClampKey(cfg, sign){
+	    const zid = cfg && (cfg.zoneId || cfg.zid || cfg.zoneID || cfg.id);
+	    return `${zid || 'global'}:${sign < 0 ? 'n' : 'p'}`;
+	  }
+	  function _smoothClampBound(cfg, sign, boundMag){
+	    const key = _hClampKey(cfg, sign);
+	    const prev = _hClampState.get(key);
+	    let out = boundMag;
+	    if(prev && isFinite(prev.bound)){
+	      // Immediate tighten.
+	      if(boundMag < prev.bound) out = boundMag;
+	      else{
+	        // Smooth relax (less restrictive) to avoid visible snaps.
+	        const a = (cfg && isFinite(cfg.hRelaxAlpha)) ? clamp(cfg.hRelaxAlpha, 0.02, 0.50) : 0.18;
+	        out = prev.bound + (boundMag - prev.bound) * a;
+	      }
+	    }
+	    const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+	    _hClampState.set(key, {bound: out, t: now});
+	    return out;
+	  }
+
+// C1/C2: stabilize the "keep-filled" horizon bound to avoid visible snapping.
+// We already smooth relaxation (less restrictive). For tightening (more restrictive), we try to
+// limit the step per update IF it remains safe; otherwise we fall back to the true safe bound.
+// This preserves the guarantee (no empty regions) while greatly reducing sudden jumps.
+function _stabilizeFillBound(camBase, cfg, sign, boundMagRaw){
+  const key = _hClampKey(cfg, sign);
+  const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+  const prev = _hClampState.get(key);
+  let out = boundMagRaw;
+
+  if(prev && isFinite(prev.bound)){
+    if(boundMagRaw >= prev.bound){
+      // Relax: smooth.
+      const a = (cfg && isFinite(cfg.hRelaxAlpha)) ? clamp(cfg.hRelaxAlpha, 0.02, 0.50) : 0.18;
+      out = prev.bound + (boundMagRaw - prev.bound) * a;
+    }else{
+      // Tighten: try to tighten gradually if still safe.
+      const step = (cfg && isFinite(cfg.hTightenStep)) ? clamp(cfg.hTightenStep, 0.005, 0.12) : 0.030;
+      let cand = Math.max(boundMagRaw, prev.bound - step);
+      if(cand > boundMagRaw){
+        // Verify candidate is still safe; otherwise use the true bound.
+        if(_horizonKeepsZoneFilled(camBase, sign*cand, cfg)) out = cand;
+        else out = boundMagRaw;
+      }else{
+        out = boundMagRaw;
+      }
+    }
+  }
+
+  // Small conservative margin reduces flicker near the boundary due to numerical noise.
+  const margin = (cfg && isFinite(cfg.hBoundMargin)) ? clamp(cfg.hBoundMargin, 0.0, 0.02) : 0.004;
+  out = Math.max(0.0, out - margin);
+
+  _hClampState.set(key, {bound: out, t: now});
+  return out;
+}
+
+function _clampHorizonToFillContour(camBase, hVal, cfg){
+    if(!camBase || !cfg || !cfg.bounds) return hVal;
+    const sign = (hVal >= 0) ? 1 : -1;
+    const target = Math.min(1.0, Math.abs(hVal));
+    if(target < 1e-6) return 0.0;
+
+	    // If already safe, keep it.
+	    if(_horizonKeepsZoneFilled(camBase, sign*target, cfg)) return sign*target;
+
+	    // Binary search the maximum safe magnitude (monotonic in practice).
+    let lo = 0.0, hi = target;
+    for(let it=0; it<20; it++){
+      const mid = 0.5*(lo + hi);
+      if(_horizonKeepsZoneFilled(camBase, sign*mid, cfg)) lo = mid;
+      else hi = mid;
+    }
+
+	    // Smooth relaxation of the hard bound per-zone to avoid twitch.
+	    lo = _stabilizeFillBound(camBase, cfg, sign, lo);
+
+    // Soft-clamp (C1 polish): avoid a visible "twitch" when the fill-constraint
+    // engages/disengages near the boundary by using a smooth-min between the user
+    // request (target) and the hard safety bound (lo).
+    // Guarantees: result <= lo (so still safe), continuous near the boundary.
+    const kSoft = (cfg && isFinite(cfg.hSoftK)) ? Math.max(2.0, cfg.hSoftK) : 28.0;
+    // smoothMin(a,b) = -ln(exp(-k a) + exp(-k b))/k  (approx min)
+    const aMag = target;
+	    const bMag = lo;
+    let sm = bMag;
+    try{
+      const ea = Math.exp(-kSoft * aMag);
+      const eb = Math.exp(-kSoft * bMag);
+      sm = -Math.log(ea + eb) / kSoft;
+    }catch(_){ sm = bMag; }
+    // Ensure within [0, lo]
+    if(!isFinite(sm)) sm = bMag;
+    sm = Math.max(0.0, Math.min(bMag, sm));
+    return sign * sm;
+  }
+
+
+  function _homographyRectToQuad(q, srcW, srcH){
+    // q: 4 points in render-pixel coords in order: nearL, nearR, farR, farL
+    // srcW/srcH: plane rectangle size in UV units
+    const W = Math.max(1e-6, +srcW || 1.0);
+    const H = Math.max(1e-6, +srcH || 1.0);
+    const src = [[0,0],[W,0],[W,H],[0,H]];
+    const A = []; const B = [];
+    for(let k=0;k<4;k++){
+      const u=src[k][0], v=src[k][1];
+      const x=q[k].x, y=q[k].y;
+      A.push([u,v,1, 0,0,0, -u*x, -v*x]); B.push(x);
+      A.push([0,0,0, u,v,1, -u*y, -v*y]); B.push(y);
+    }
+    const n=8;
+    for(let col=0; col<n; col++){
+      let pivot=col;
+      for(let r=col+1;r<n;r++) if(Math.abs(A[r][col])>Math.abs(A[pivot][col])) pivot=r;
+      if(Math.abs(A[pivot][col])<1e-12) return null;
+      if(pivot!==col){
+        const tmp=A[col];A[col]=A[pivot];A[pivot]=tmp;
+        const tb=B[col];B[col]=B[pivot];B[pivot]=tb;
+      }
+      const div=A[col][col];
+      for(let c2=col;c2<n;c2++) A[col][c2]/=div;
+      B[col]/=div;
+      for(let r=0;r<n;r++){
+        if(r===col) continue;
+        const factor=A[r][col];
+        if(Math.abs(factor)<1e-12) continue;
+        for(let c2=col;c2<n;c2++) A[r][c2]-=factor*A[col][c2];
+        B[r]-=factor*B[col];
+      }
+    }
+    const h=B;
+    return [h[0],h[1],h[2], h[3],h[4],h[5], h[6],h[7],1];
+  }
+
+  function _homographyUnitSquareToQuad(q){
+    return _homographyRectToQuad(q, 1.0, 1.0);
+  }
+
+  function _quadSignedArea(q){
+    let a=0;
+    for(let i=0;i<4;i++){
+      const p=q[i], n=q[(i+1)%4];
+      a += (p.x*n.y - n.x*p.y);
+    }
+    return a/2;
+  }
+
+  function _normalizeQuad(q){
+    if(!q || q.length!==4) return null;
+    // q semantic order must stay: nearL, nearR, farR, farL (for homography mapping).
+    // Normalize only by enforcing near/far and left/right consistency; DO NOT reorder by winding sign,
+    // otherwise we can accidentally mirror textures on degenerate / narrow shapes.
+    const area=_quadSignedArea(q);
+    if(!isFinite(area) || Math.abs(area) < 1e-3) return null;
+
+    let nL = q[0], nR = q[1], fR = q[2], fL = q[3];
+
+    // Ensure "near" is below "far" in image space (y grows downward).
+    const yNear = (nL.y + nR.y) * 0.5;
+    const yFar  = (fL.y + fR.y) * 0.5;
+    if(yNear < yFar){
+      // swap near<->far pairs while keeping left/right
+      const _nL = fL, _nR = fR, _fR = nR, _fL = nL;
+      nL=_nL; nR=_nR; fR=_fR; fL=_fL;
+    }
+
+    // Ensure left/right ordering
+    if(nR.x < nL.x){
+      const tn=nL; nL=nR; nR=tn;
+      const tf=fL; fL=fR; fR=tf;
+    }
+
+    return [nL, nR, fR, fL];
+  }
+
+  
+function _inferQuadFromContour(contour, params, w, h, lockExtrema){
+  // Robust quad inference for "floor plane" from an arbitrary closed contour.
+  // Goal: produce a stable quad even while the user drags points.
+  // Strategy:
+  // 1) Build convex hull.
+  // 2) Intersect hull with two horizontal scanlines (yNear/yFar) to obtain left/right points.
+  // 3) Apply gentle user controls (perspective + horizon) without changing topology.
+  // Output order: nearL, nearR, farR, farL in render-pixel coords.
+
+  if(!contour || contour.length < 3) return null;
+
+  // Convex hull (monotonic chain)
+  const pts = contour.map(p=>({x:+p.x, y:+p.y})).filter(p=>isFinite(p.x)&&isFinite(p.y));
+  if(pts.length < 3) return null;
+  pts.sort((a,b)=> (a.x===b.x ? a.y-b.y : a.x-b.x));
+  const cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
+  const lower=[];
+  for(const p of pts){
+    while(lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper=[];
+  for(let i=pts.length-1;i>=0;i--){
+    const p=pts[i];
+    while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  const hull = lower.concat(upper);
+  if(hull.length < 3) return null;
+
+  // Close hull for edge iteration
+  const poly = hull.concat([hull[0]]);
+
+  const ys = hull.map(p=>p.y);
+  let yMin = Math.min(...ys);
+  let yMax = Math.max(...ys);
+  // Optional drag-stabilization: keep extrema fixed during a drag gesture.
+  if(lockExtrema && isFinite(lockExtrema.yMin) && isFinite(lockExtrema.yMax)){
+    const dyLock = lockExtrema.yMax - lockExtrema.yMin;
+    if(isFinite(dyLock) && dyLock > 2){
+      yMin = lockExtrema.yMin;
+      yMax = lockExtrema.yMax;
+    }
+  }
+  const dy = yMax - yMin;
+  if(!isFinite(dy) || dy < 2) return null;
+
+  // Patch 3.1: AI-guided quad inference with confidence mixing.
+  // We always compute a stable default quad (horizontal scanlines),
+  // then (optionally) compute an AI-oriented quad and blend between them.
+  // This makes the effect observable while remaining safe: low confidence => near-zero influence.
+
+  let nearL = null, nearR = null, farL = null, farR = null;
+  let usedAi = false;
+
+  // Default: scanlines slightly inside the hull to avoid vertex-only intersections.
+  const inset = Math.max(4, dy * 0.12);
+  let yNear = yMax - inset;
+  let yFar  = yMin + inset;
+  if(yNear <= yFar + 1) {
+    yNear = yMax - Math.max(2, dy*0.25);
+    yFar  = yMin + Math.max(2, dy*0.25);
+    if(yNear <= yFar + 1) return null;
+  }
+
+  function xRangeAtY(y){
+    const xs = [];
+    for(let i=0;i<poly.length-1;i++){
+      const a=poly[i], b=poly[i+1];
+      // Skip horizontal edges
+      if(Math.abs(b.y - a.y) < 1e-9) continue;
+      const y0=a.y, y1=b.y;
+      const ymin=Math.min(y0,y1), ymax=Math.max(y0,y1);
+      // Strict-ish containment to reduce double-hits at vertices
+      if(y < ymin || y > ymax) continue;
+      const t = (y - a.y) / (b.y - a.y);
+      if(t < 0 || t > 1) continue;
+      const x = a.x + t*(b.x - a.x);
+      if(isFinite(x)) xs.push(x);
+    }
+    if(xs.length < 2) return null;
+    xs.sort((p,q)=>p-q);
+    return {min: xs[0], max: xs[xs.length-1]};
+  }
+
+  let rNear = xRangeAtY(yNear);
+  let rFar  = xRangeAtY(yFar);
+
+  // If we miss due to numeric edge cases, relax inset
+  if(!rNear || !rFar){
+    const inset2 = Math.max(2, dy * 0.06);
+    yNear = yMax - inset2;
+    yFar  = yMin + inset2;
+    rNear = xRangeAtY(yNear);
+    rFar  = xRangeAtY(yFar);
+    if(!rNear || !rFar) return null;
+  }
+
+  // Baseline (default) endpoints
+  const baseNearL = {x: rNear.min, y: yNear};
+  const baseNearR = {x: rNear.max, y: yNear};
+  const baseFarL  = {x: rFar.min,  y: yFar};
+  const baseFarR  = {x: rFar.max,  y: yFar};
+
+  // Optional AI quad (near/far cuts along dominant plane direction).
+  let aiNearL=null, aiNearR=null, aiFarL=null, aiFarR=null;
+  let aiMix = 0;
+
+  try{
+    const aiDirN = params && params._aiPlaneDir ? params._aiPlaneDir : null;
+    const aiConf = params && isFinite(params._aiConfidence) ? params._aiConfidence : 0;
+    aiMix = params && isFinite(params._aiMix) ? params._aiMix : smoothstep(0.18, 0.55, aiConf);
+
+    if(aiDirN && aiMix > 0.001 && isFinite(aiDirN.x) && isFinite(aiDirN.y)){
+      // aiDirN is already normalized in image space with aspect compensation applied
+      // by the AI pipeline; do not rescale by photoW/photoH (avoids accidental 90°/flip artifacts).
+      const dxp = aiDirN.x;
+      const dyp = aiDirN.y;
+      let dm = Math.hypot(dxp, dyp);
+      if(isFinite(dm) && dm > 1e-6){
+        const d = { x: dxp/dm, y: dyp/dm };
+        const nrm = { x: -d.y, y: d.x }; // perpendicular (across)
+
+        // Project hull to find near/far extents along d.
+        let tMin = Infinity, tMax = -Infinity;
+        for(const p of hull){
+          const t = p.x*d.x + p.y*d.y;
+          if(t < tMin) tMin = t;
+          if(t > tMax) tMax = t;
+        }
+        const dt = tMax - tMin;
+        if(isFinite(dt) && dt > 6){
+          const insetT = Math.max(4, dt * 0.12);
+          let tNear = tMax - insetT;
+          let tFar  = tMin + insetT;
+          if(tNear <= tFar + 1){
+            tNear = tMax - Math.max(2, dt*0.25);
+            tFar  = tMin + Math.max(2, dt*0.25);
+          }
+
+          function segAtT(t){
+            const ips = [];
+            for(let i=0;i<poly.length-1;i++){
+              const a=poly[i], b=poly[i+1];
+              const da = (a.x*d.x + a.y*d.y) - t;
+              const db = (b.x*d.x + b.y*d.y) - t;
+              if((da > 0 && db > 0) || (da < 0 && db < 0)) continue;
+              const denom = (da - db);
+              if(Math.abs(denom) < 1e-9) continue;
+              const u = da / denom;
+              if(u < 0 || u > 1) continue;
+              const x = a.x + u*(b.x - a.x);
+              const y = a.y + u*(b.y - a.y);
+              if(isFinite(x) && isFinite(y)) ips.push({x,y});
+            }
+            if(ips.length < 2) return null;
+            ips.sort((p,q)=> (p.x*nrm.x + p.y*nrm.y) - (q.x*nrm.x + q.y*nrm.y));
+            return { min: ips[0], max: ips[ips.length-1] };
+          }
+
+          let sNear = segAtT(tNear);
+          let sFar  = segAtT(tFar);
+
+          // Relax inset if needed
+          if(!sNear || !sFar){
+            const inset2 = Math.max(2, dt * 0.06);
+            tNear = tMax - inset2;
+            tFar  = tMin + inset2;
+            sNear = segAtT(tNear);
+            sFar  = segAtT(tFar);
+          }
+
+          if(sNear && sFar){
+            // Stabilize near/far assignment to avoid vertical inversion.
+            // In image coordinates (y grows downward), the near edge of the ground plane
+            // is typically lower than the far edge. When the direction sign is ambiguous,
+            // the two cuts can swap and the homography flips V (texture appears upside-down).
+            const midYN = (sNear.min.y + sNear.max.y) * 0.5;
+            const midYF = (sFar.min.y + sFar.max.y) * 0.5;
+            if(isFinite(midYN) && isFinite(midYF) && midYN < midYF){
+              const tmp = sNear; sNear = sFar; sFar = tmp;
+            }
+
+            aiNearL = {x: sNear.min.x, y: sNear.min.y};
+            aiNearR = {x: sNear.max.x, y: sNear.max.y};
+            aiFarL  = {x: sFar.min.x,  y: sFar.min.y};
+            aiFarR  = {x: sFar.max.x,  y: sFar.max.y};
+          }
+        }
+      }
+    }
+  }catch(_){ /* no-op */ }
+
+
+  // Patch A: Quad Alignment Guard (deterministic, prevents premium inversion/rotation)
+  // AI-derived cuts can be ambiguous in sign (near/far) and across-order (left/right) depending on cues.
+  // We enumerate consistent permutations and pick the one that best matches the baseline quad topology.
+  let _quadGuard = null;
+  if(aiNearL && aiNearR && aiFarL && aiFarR){
+    const baseQuad = [baseNearL, baseNearR, baseFarR, baseFarL]; // nearL, nearR, farR, farL
+
+    const signedArea = (q)=>{
+      let a = 0;
+      for(let i=0;i<4;i++){
+        const p0=q[i], p1=q[(i+1)%4];
+        a += (p0.x*p1.y - p1.x*p0.y);
+      }
+      return a * 0.5;
+    };
+
+    const isConvex = (q)=>{
+      let sign = 0;
+      for(let i=0;i<4;i++){
+        const a=q[i], b=q[(i+1)%4], c=q[(i+2)%4];
+        const cross = (b.x-a.x)*(c.y-b.y) - (b.y-a.y)*(c.x-b.x);
+        if(!isFinite(cross) || Math.abs(cross) < 1e-6) continue;
+        const s = cross > 0 ? 1 : -1;
+        if(sign===0) sign = s;
+        else if(s !== sign) return false;
+      }
+      return true;
+    };
+
+    const dist2 = (q0,q1)=>{
+      let d=0;
+      for(let i=0;i<4;i++){
+        const dx = (q0[i].x - q1[i].x);
+        const dy = (q0[i].y - q1[i].y);
+        d += dx*dx + dy*dy;
+      }
+      return d;
+    };
+
+    const baseSign = Math.sign(signedArea(baseQuad)) || 1;
+
+    let best = null;
+    let bestScore = Infinity;
+
+    // Enumerate 8 permutations: swap near L/R, swap far L/R, swap near<->far pairs.
+    for(let ns=0; ns<2; ns++){
+      for(let fs=0; fs<2; fs++){
+        for(let nfs=0; nfs<2; nfs++){
+          let nL = ns ? aiNearR : aiNearL;
+          let nR = ns ? aiNearL : aiNearR;
+          let fL = fs ? aiFarR  : aiFarL;
+          let fR = fs ? aiFarL  : aiFarR;
+          if(nfs){
+            const tnL=nL, tnR=nR;
+            nL=fL; nR=fR;
+            fL=tnL; fR=tnR;
+          }
+
+          const q = [nL, nR, fR, fL];
+
+          // Hard constraints + penalties
+          let penalty = 0;
+
+          // Non-degenerate widths
+          if(Math.hypot(nR.x-nL.x, nR.y-nL.y) < 2 || Math.hypot(fR.x-fL.x, fR.y-fL.y) < 2) penalty += 1e8;
+
+          // Near should be below far in image coords (y grows downward)
+          const ny = (nL.y+nR.y)*0.5;
+          const fy = (fL.y+fR.y)*0.5;
+          if(!(isFinite(ny)&&isFinite(fy))) penalty += 1e8;
+          else if(ny < fy) penalty += 1e7;
+
+          // Convexity
+          if(!isConvex(q)) penalty += 1e6;
+
+          // Winding consistency with baseline
+          const sgn = Math.sign(signedArea(q)) || 1;
+          if(sgn !== baseSign) penalty += 1e5;
+
+          const score = dist2(q, baseQuad) + penalty;
+          if(score < bestScore){
+            bestScore = score;
+            best = {q, ns, fs, nfs, score, penalty};
+          }
+        }
+      }
+    }
+
+        if(best && isFinite(bestScore) && bestScore < Infinity){
+      // best.q is [nearL, nearR, farR, farL]
+      aiNearL = {x: best.q[0].x, y: best.q[0].y};
+      aiNearR = {x: best.q[1].x, y: best.q[1].y};
+      aiFarR  = {x: best.q[2].x, y: best.q[2].y};
+      aiFarL  = {x: best.q[3].x, y: best.q[3].y};
+      _quadGuard = { ns: best.ns, fs: best.fs, nfs: best.nfs, score: best.score, penalty: best.penalty };
+    }
+  }
+
+  // Blend baseline and AI quad (if available)
+  if(aiNearL && aiNearR && aiFarL && aiFarR && aiMix > 0.001){
+    nearL = {x: lerp(baseNearL.x, aiNearL.x, aiMix), y: lerp(baseNearL.y, aiNearL.y, aiMix)};
+    nearR = {x: lerp(baseNearR.x, aiNearR.x, aiMix), y: lerp(baseNearR.y, aiNearR.y, aiMix)};
+    farL  = {x: lerp(baseFarL.x,  aiFarL.x,  aiMix), y: lerp(baseFarL.y,  aiFarL.y,  aiMix)};
+    farR  = {x: lerp(baseFarR.x,  aiFarR.x,  aiMix), y: lerp(baseFarR.y,  aiFarR.y,  aiMix)};
+    usedAi = true;
+
+    // Expose quad-guard decision for the AI debug overlay (only when enabled).
+    try{
+      const st = window.PhotoPaveState && window.PhotoPaveState.state;
+      if(st && st.ai && st.ai.debugOverlay){
+        if(_quadGuard){
+          st.ai._quadGuard = `ns=${_quadGuard.ns} fs=${_quadGuard.fs} nf=${_quadGuard.nfs}`;
+        }else{
+          st.ai._quadGuard = null;
+        }
+      }
+    }catch(_){/*noop*/}
+  }else{
+    nearL = baseNearL; nearR = baseNearR; farL = baseFarL; farR = baseFarR;
+    usedAi = false;
+  }
+
+
+  // Final safety: ensure near edge is below far edge in image coordinates (y grows downward).
+  // This blocks rare vertical homography flips that manifest as an upside-down tile projection.
+  const _ny = (nearL.y + nearR.y) * 0.5;
+  const _fy = (farL.y + farR.y) * 0.5;
+  if(isFinite(_ny) && isFinite(_fy) && _ny < _fy){
+    const _tL = nearL; nearL = farL; farL = _tL;
+    const _tR = nearR; nearR = farR; farR = _tR;
+  }
+
+// Guard against super-thin quads
+  if(Math.abs(nearR.x - nearL.x) < 2 || Math.abs(farR.x - farL.x) < 2) return null;
+
+  
+  // Metric-lock snapshot BEFORE applying user horizon/perspective controls.
+  // We will keep the UV-plane size stable (W,D) regardless of horizon/perspective,
+  // so the tile geometry does not "rubber-stretch" when the user tunes the camera feel.
+  const _mNearL = {x: nearL.x, y: nearL.y};
+  const _mNearR = {x: nearR.x, y: nearR.y};
+  const _mFarL  = {x: farL.x,  y: farL.y};
+  const _mFarR  = {x: farR.x,  y: farR.y};
+// User controls (Global CamPlane contract):
+  // IMPORTANT: To eliminate "rubber" texture deformation, we must NOT deform the inferred quad
+  // with horizon/perspective here. These sliders are applied later as camera parameters only
+  // (pitch / focal). The quad remains purely contour-derived and bottom->up stable.
+  const persp = Math.abs(clamp(params?.perspective ?? 0.75, -1, 1)); // kept for downstream camera mapping only
+  const horizon = clamp(params?.horizon ?? 0.0, -1, 1);
+
+  // v2.2.167: Horizon must move "into depth" (along the inferred depth axis),
+  // not drift left/right in screen X.
+  // On ambiguous contours (squares/rectangles/triangles), moving far edge only in Y can feel
+  // like "left-right" because the inferred axis may be unstable. We therefore apply horizon
+  // as a translation along an explicit depth direction d, and apply convergence symmetrically
+  // along the perpendicular axis u (never raw X).
+  const Href = (photoH||h||1);
+
+  // Infer a stable depth direction in image space.
+  // Prefer AI plane dir when available; otherwise use near->far mid vector.
+  let d = null;
+  if(usedAi && params && params._aiPlaneDir && isFinite(params._aiPlaneDir.x) && isFinite(params._aiPlaneDir.y)){
+    const dm = Math.hypot(params._aiPlaneDir.x, params._aiPlaneDir.y);
+    if(isFinite(dm) && dm > 1e-6) d = { x: params._aiPlaneDir.x/dm, y: params._aiPlaneDir.y/dm };
+  }
+  if(!d){
+    const midNear = { x:(nearL.x+nearR.x)*0.5, y:(nearL.y+nearR.y)*0.5 };
+    const midFar  = { x:(farL.x+farR.x)*0.5,   y:(farL.y+farR.y)*0.5 };
+    let dx = midFar.x - midNear.x;
+    let dy = midFar.y - midNear.y;
+    const dm = Math.hypot(dx,dy);
+    if(isFinite(dm) && dm > 1e-6) d = { x: dx/dm, y: dy/dm };
+  }
+  // Ensure d points "up" in image-space (towards far; y grows downward).
+  if(d && d.y > 0){ d = {x:-d.x, y:-d.y}; }
+  const u = d ? { x:-d.y, y:d.x } : { x:1, y:0 };
+
+  // Apply horizon as a shift along depth axis.
+  // Negative horizon => push far edge further "up" (more depth).
+  const shift = (-horizon) * 0.22 * Href;
+  if(d){
+    farL.x += d.x*shift; farL.y += d.y*shift;
+    farR.x += d.x*shift; farR.y += d.y*shift;
+  }else{
+    // Fallback: legacy Y shift
+    farL.y += (-horizon) * 0.22 * Href;
+    farR.y += (-horizon) * 0.22 * Href;
+  }
+
+  // Convergence: when horizon pushes far away (horizon<0), slightly narrow the far edge
+  // towards its midpoint along u (perpendicular to depth), never along raw X.
+  const convK = Math.max(0, Math.min(0.35, (-horizon)*0.25));
+  if(convK > 1e-6 && d){
+    const midFar = { x:(farL.x+farR.x)*0.5, y:(farL.y+farR.y)*0.5 };
+    const proj = (p)=>((p.x-midFar.x)*u.x + (p.y-midFar.y)*u.y);
+    const setFromProj = (p, t)=>({ x: midFar.x + u.x*t, y: midFar.y + u.y*t });
+    const tL = proj(farL);
+    const tR = proj(farR);
+    farL = setFromProj(farL, tL*(1.0-convK));
+    farR = setFromProj(farR, tR*(1.0-convK));
+  }
+
+  // Ensure far remains "in front" of near along the inferred depth direction.
+  // Default behavior uses image-space Y (y grows downward). For AI-guided quads, use projection on ai direction.
+  if(usedAi && params && params._aiPlaneDir && isFinite(params._aiPlaneDir.x) && isFinite(params._aiPlaneDir.y)){
+    // _aiPlaneDir is already in image space; keep it unit-length in the same metric as contour points.
+    const dxp = params._aiPlaneDir.x;
+    const dyp = params._aiPlaneDir.y;
+    let dm = Math.hypot(dxp, dyp);
+    if(isFinite(dm) && dm > 1e-6){
+      const d = { x: dxp/dm, y: dyp/dm };
+      const tNear = ((nearL.x*d.x + nearL.y*d.y) + (nearR.x*d.x + nearR.y*d.y)) * 0.5;
+      const tFar  = ((farL.x*d.x  + farL.y*d.y)  + (farR.x*d.x  + farR.y*d.y)) * 0.5;
+      if(tFar >= tNear - 1){
+        const push = (tFar - (tNear - 1)) + 1;
+        farL.x -= d.x * push; farL.y -= d.y * push;
+        farR.x -= d.x * push; farR.y -= d.y * push;
+      }
+    }
+  }else{
+    // Ensure far stays above near in image-space (y grows downward)
+    if(farL.y >= nearL.y - 1 || farR.y >= nearR.y - 1) {
+      // clamp far y just above near to keep valid ordering
+      const fy = Math.min(nearL.y, nearR.y) - 1;
+      farL.y = Math.min(farL.y, fy);
+      farR.y = Math.min(farR.y, fy);
+    }
+  }
+
+
+  // Horizon safety: avoid near-singular / folded quads when horizon is pushed far (causes a visible seam and mirrored texture).
+  // We clamp effective horizon influence so that the quad remains convex and sufficiently well-conditioned.
+  function _quadIsWellConditioned(nL,nR,fR,fL){
+    const nearW = Math.hypot(nR.x-nL.x, nR.y-nL.y);
+    const farW  = Math.hypot(fR.x-fL.x, fR.y-fL.y);
+    if(!isFinite(nearW) || !isFinite(farW)) return false;
+    if(nearW < 4 || farW < 4) return false;
+    if(farW/nearW < 0.10) return false;
+    const p=[nL,nR,fR,fL];
+    let sign=0;
+    for(let i=0;i<4;i++){
+      const a=p[i], b=p[(i+1)%4], c=p[(i+2)%4];
+      const cross = (b.x-a.x)*(c.y-b.y) - (b.y-a.y)*(c.x-b.x);
+      if(Math.abs(cross) < 1e-6) continue;
+      const s = cross>0 ? 1 : -1;
+      if(sign===0) sign=s;
+      else if(s!==sign) return false;
+    }
+    return true;
+  }
+
+  if(!_quadIsWellConditioned(nearL, nearR, farR, farL)){
+    const h0 = horizon;
+    // baseline far points with "mild" applied but without horizon shift/convergence
+    const baseFarL = { x: nearL.x + (rFar.min - rNear.min)*mild, y: nearL.y + (yFar - nearL.y)*mild };
+    const baseFarR = { x: nearR.x + (rFar.max - rNear.max)*mild, y: nearR.y + (yFar - nearR.y)*mild };
+
+    let lo = 0.0, hi = 1.0;
+    for(let it=0; it<14; it++){
+      const t = (lo+hi)*0.5;
+
+      let fL = {x: baseFarL.x, y: baseFarL.y};
+      let fR = {x: baseFarR.x, y: baseFarR.y};
+
+      // Apply horizon along depth axis (never raw Y), and convergence along u.
+      const shift = (-(h0*t)) * 0.22 * (photoH||h||1);
+      if(d){
+        fL.x += d.x*shift; fL.y += d.y*shift;
+        fR.x += d.x*shift; fR.y += d.y*shift;
+      }else{
+        fL.y += shift; fR.y += shift;
+      }
+
+      const cconv = Math.max(0, Math.min(0.35, (-(h0*t))*0.25));
+      if(cconv > 1e-6 && d){
+        const mid = { x:(fL.x+fR.x)*0.5, y:(fL.y+fR.y)*0.5 };
+        const proj = (p)=>((p.x-mid.x)*u.x + (p.y-mid.y)*u.y);
+        const setFrom = (tt)=>({ x: mid.x + u.x*tt, y: mid.y + u.y*tt });
+        const tL = proj(fL);
+        const tR = proj(fR);
+        fL = setFrom(tL*(1.0-cconv));
+        fR = setFrom(tR*(1.0-cconv));
+      }
+
+      if(fL.y >= nearL.y - 1 || fR.y >= nearR.y - 1){
+        const fy = Math.min(nearL.y, nearR.y) - 1;
+        fL.y = Math.min(fL.y, fy);
+        fR.y = Math.min(fR.y, fy);
+      }
+
+      if(_quadIsWellConditioned(nearL, nearR, fR, fL)){
+        lo = t; farL = fL; farR = fR;
+      }else{
+        hi = t;
+      }
+    }
+  }
+  // Map to render pixels (scale from photo px to render px)
+  const sx = w / Math.max(1, photoW);
+  const sy = h / Math.max(1, photoH);
+
+  const quad = [
+    {x: nearL.x*sx, y: nearL.y*sy},
+    {x: nearR.x*sx, y: nearR.y*sy},
+    {x: farR.x*sx,  y: farR.y*sy},
+    {x: farL.x*sx,  y: farL.y*sy}
+  ];
+
+  // Stable plane metric in UV units (render-pixel derived):
+  // W = near edge length, D = depth from near-mid to far-mid (both in render coords).
+  const _mw = Math.hypot((_mNearR.x-_mNearL.x)*sx, (_mNearR.y-_mNearL.y)*sy);
+  const _mnx = (_mNearL.x + _mNearR.x) * 0.5;
+  const _mny = (_mNearL.y + _mNearR.y) * 0.5;
+  const _mfx = (_mFarL.x  + _mFarR.x)  * 0.5;
+  const _mfy = (_mFarL.y  + _mFarR.y)  * 0.5;
+  const _md = Math.hypot((_mfx-_mnx)*sx, (_mfy-_mny)*sy);
+
+  const metric = { W: Math.max(1.0, _mw), D: Math.max(1.0, _md) };
+  return { quad, metric };
+}
+
+function _blendModeId(blend){
+    const s = String(blend||'').toLowerCase();
+    if(s==='multiply') return 1;
+    return 0;
+  }
+
+  function _bindTex(unit, tex){
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+  }
+
+  function _renderCopy(srcTex, dstRT, flipY){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT ? dstRT.fbo : null);
+    gl.viewport(0,0, (dstRT?dstRT.w:canvas.width), (dstRT?dstRT.h:canvas.height));
+    gl.useProgram(progCopy);
+    gl.bindVertexArray(quadVao.vao);
+    _bindTex(0, srcTex);
+    gl.uniform1i(gl.getUniformLocation(progCopy, 'uTex'), 0);
+    gl.uniform1i(gl.getUniformLocation(progCopy, 'uFlipY'), flipY ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindVertexArray(null);
+  }
+
+  function _renderZonePass(prevTex, dstRT, zone, tileTex, pbrMaps, maskEntry, invHArr9, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);
+    gl.viewport(0,0,dstRT.w,dstRT.h);
+    gl.useProgram(progZone);
+    gl.bindVertexArray(quadVao.vao);
+
+    const locRes = gl.getUniformLocation(progZone, 'uResolution');
+    gl.uniform2f(locRes, dstRT.w, dstRT.h);
+
+    // Textures
+    _bindTex(0, prevTex);
+    _bindTex(1, photoTex);
+    _bindTex(2, tileTex);
+    // PBR maps: normal/roughness/AO are supported (Ultra mode only, when palette provides maps).
+    const fb = _ensurePbrFallback();
+    const usePbr = !!(pbrMaps && pbrMaps.usePBR);
+    const nTex = (pbrMaps && pbrMaps.normalTex) ? pbrMaps.normalTex : fb.normal;
+    const rTex = (pbrMaps && pbrMaps.roughnessTex) ? pbrMaps.roughnessTex : fb.roughness;
+    const aTex = (pbrMaps && pbrMaps.aoTex) ? pbrMaps.aoTex : fb.ao;
+    const hTex = (pbrMaps && pbrMaps.heightTex) ? pbrMaps.heightTex : fb.height;
+    _bindTex(7, nTex);
+    _bindTex(8, rTex);
+    _bindTex(9, aTex);
+    _bindTex(10, hTex);
+    _bindTex(3, maskEntry.maskTex);
+    _bindTex(4, maskEntry.blurTex);
+    // Optional AI depth texture (Patch 4): used for far fade/haze only.
+    const hasDepth = !!aiDepthTex && !!(ai && ai.depthMap && ai.depthMap.canvas);
+    _bindTex(5, hasDepth ? aiDepthTex : photoTex);
+
+    // Optional occlusion mask (Patch 4): clip tile under objects.
+    const hasOcc = !!aiOccTex && !!(ai && ai.occlusionMask && ai.occlusionMask.canvas) && !(ai && ai.occlusionEnabled === false);
+    _bindTex(6, hasOcc ? aiOccTex : photoTex);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uPrev'), 0);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uPhoto'), 1);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uTile'), 2);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uNormalMap'), 7);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uRoughnessMap'), 8);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uAOMap'), 9);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uHeightMap'), 10);
+
+    // Palette parameters (from bucket JSON) — apply only in PBR mode.
+    const pp = (zone && zone.material && (zone.material.pbrParams || zone.material.params)) ? (zone.material.pbrParams || zone.material.params) : null;
+    const exposureMult  = (pp && isFinite(pp.exposureMult))  ? pp.exposureMult  : 1.0;
+    const normalScale   = (pp && isFinite(pp.normalScale))   ? pp.normalScale   : 1.0;
+    const specStrength  = (pp && isFinite(pp.specStrength))  ? pp.specStrength  : 1.0;
+    const roughnessMult = (pp && isFinite(pp.roughnessMult)) ? pp.roughnessMult : 1.0;
+    const bumpScale     = (pp && isFinite(pp.bumpScale))     ? pp.bumpScale     : 0.0;
+
+    gl.uniform4f(gl.getUniformLocation(progZone,'uPbrParams0'), exposureMult, normalScale, specStrength, roughnessMult);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uBumpScale'), bumpScale);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowStrength'), (pp && isFinite(pp.contactShadowStrength)) ? pp.contactShadowStrength : ((pp && isFinite(pp.edgeShadowStrength)) ? pp.edgeShadowStrength : 0.12));
+    gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowWidth'), (pp && isFinite(pp.contactShadowWidth)) ? pp.contactShadowWidth : 0.22);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uContactShadowPower'), (pp && isFinite(pp.contactShadowPower)) ? pp.contactShadowPower : 1.6);
+
+    gl.uniform1i(gl.getUniformLocation(progZone,'uUsePBR'), usePbr ? 1 : 0);
+    // GGX specular (Ultra): enabled by default. Can be disabled via ?ggx=0 or per-material params.
+    let ggxOn = 1;
+    try{
+      if(typeof window !== 'undefined' && window.__PP_GGX === 0) ggxOn = 0;
+    }catch(_){}
+    if(pp && (pp.ggx === 0 || pp.useGGX === 0)) ggxOn = 0;
+    if(pp && (pp.ggx === 1 || pp.useGGX === 1)) ggxOn = 1;
+    const useGGX = (usePbr && ggxOn) ? 1 : 0;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uUseGGX'), useGGX);
+    // Stochastic tiling (Ultra-only, opt-in via URL): ?stoch=1
+    //  - Mode 1: Level A (single-sample random super-tile)
+    //  - Mode 2: Level B (3-tap blend, desktop/high tier only)
+    let stochMode = 0;
+    let stochSuper = 16.0;
+    let stochShift = 2.25;
+    let stochRot = 0;
+    try{
+      if(typeof window !== 'undefined' && window.__PP_STOCH === 1){ stochMode = 1; }
+      if(typeof window !== 'undefined' && window.__PP_STOCH_ROT === 1){ stochRot = 1; }
+      if(typeof window !== 'undefined' && window.__PP_STOCH_ROT === 0){ stochRot = 0; }
+    }catch(_){}
+    // Gate to Ultra/PBR only to avoid any regression risk in the classic mode.
+    if(!(usePbr && ai && ai.enabled)){ stochMode = 0; }
+    if(stochMode){
+      let tier = null;
+      try{ if(typeof window !== 'undefined' && window.__PP_STOCH_TIER) tier = window.__PP_STOCH_TIER; }catch(_){}
+      if(!tier && ai && ai.device && ai.device.tier) tier = ai.device.tier;
+      // Tier tuning: bigger super-tiles on weaker devices to reduce potential boundary visibility.
+      if(tier === 'high'){ stochSuper = 12.0; stochShift = 2.0; }
+      else if(tier === 'low'){ stochSuper = 22.0; stochShift = 2.5; }
+      else { stochSuper = 16.0; stochShift = 2.25; }
+
+      // Level B (3-tap blend) — only for desktop/high tier.
+      // Default: AUTO on desktop+high. Can be forced off via ?stoch3=0.
+      let want3 = null;
+      try{
+        if(typeof window !== 'undefined' && (window.__PP_STOCH_3TAP === 0 || window.__PP_STOCH_3TAP === 1)){
+          want3 = window.__PP_STOCH_3TAP;
+        }
+      }catch(_){ }
+      const ua = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent : '';
+      const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(ua);
+      if(tier === 'high' && !isMobile){
+        if(want3 !== 0){ stochMode = 2; }
+      }
+    }
+    gl.uniform1i(gl.getUniformLocation(progZone,'uStochMode'), stochMode);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uStochSuperTile'), stochSuper);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uStochShiftAmp'), stochShift);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uStochRot'), stochRot);
+    // Micro-variation (Ultra-only): enabled when stochastic tiling is active (can be overridden via ?micro=0/1).
+    let microOn = (stochMode > 0) ? 1 : 0;
+    let microA = 0.035, microR = 0.06, microS = 0.04;
+    try{
+      if(typeof window !== 'undefined' && (window.__PP_MICRO === 0 || window.__PP_MICRO === 1)) microOn = window.__PP_MICRO;
+      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_A)) microA = window.__PP_MICRO_A;
+      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_R)) microR = window.__PP_MICRO_R;
+      if(typeof window !== 'undefined' && isFinite(window.__PP_MICRO_S)) microS = window.__PP_MICRO_S;
+    }catch(_){ }
+    // Per-material overrides (optional)
+    if(pp && isFinite(pp.microAlbedo)) microA = pp.microAlbedo;
+    if(pp && isFinite(pp.microRough)) microR = pp.microRough;
+    if(pp && isFinite(pp.microSpec)) microS = pp.microSpec;
+    microA = clamp(+microA||0.0, 0.0, 0.12);
+    microR = clamp(+microR||0.0, 0.0, 0.25);
+    microS = clamp(+microS||0.0, 0.0, 0.25);
+    if(!(usePbr && ai && ai.enabled)) microOn = 0;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uMicroVar'), microOn ? 1 : 0);
+    gl.uniform3f(gl.getUniformLocation(progZone,'uMicroParams'), microA, microR, microS);
+
+    // Light controls:
+    // - per-material overrides come from palette JSON: params.lightAzimuth/lightElevation/lightStrength/ambientStrength
+    // - otherwise we use a photo-derived preset (state.assets.photoLight)
+    // - fallback: neutral stable light
+    const lAz = (pp && isFinite(pp.lightAzimuth)) ? pp.lightAzimuth : (photoLight && isFinite(photoLight.azimuth) ? photoLight.azimuth : 120);
+    const lEl = (pp && isFinite(pp.lightElevation)) ? pp.lightElevation : (photoLight && isFinite(photoLight.elevation) ? photoLight.elevation : 35);
+    const lStr = (pp && isFinite(pp.lightStrength)) ? pp.lightStrength : (photoLight && isFinite(photoLight.lightStrength) ? photoLight.lightStrength : 1.0);
+    const aStr = (pp && isFinite(pp.ambientStrength)) ? pp.ambientStrength : (photoLight && isFinite(photoLight.ambientStrength) ? photoLight.ambientStrength : 0.32);
+
+    const ar = (lAz * Math.PI) / 180.0;
+    const er = (lEl * Math.PI) / 180.0;
+    // Direction from surface towards light (z-up)
+    let lx = Math.cos(ar) * Math.cos(er);
+    let ly = Math.sin(ar) * Math.cos(er);
+    let lz = Math.sin(er);
+    const llen = Math.hypot(lx,ly,lz) || 1.0;
+    lx/=llen; ly/=llen; lz/=llen;
+    gl.uniform3f(gl.getUniformLocation(progZone,'uLightDirW'), lx, ly, lz);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uLightStrength'), clamp(+lStr||0.0, 0.0, 2.5));
+    gl.uniform1f(gl.getUniformLocation(progZone,'uAmbientStrength'), clamp(+aStr||0.0, 0.0, 1.2));
+    gl.uniform1i(gl.getUniformLocation(progZone,'uMask'), 3);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uMaskBlur'), 4);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uDepth'), 5);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uHasDepth'), hasDepth ? 1 : 0);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uDepthFarHigh'), (hasDepth && ai && ai.depthFarHigh === false) ? 0 : 1);
+
+    gl.uniform1i(gl.getUniformLocation(progZone,'uOcc'), 6);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uHasOcc'), hasOcc ? 1 : 0);
+
+    // Params
+    const params = zone.material?.params || {};
+    const opaqueFill = !!params.opaqueFill;
+    // Bottom->Up invariant (all modes): depth inversion is disabled.
+    const vflip = 0;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uVFlip'), 0);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uOpaqueFill'), (opaqueFill ? 1 : 0));
+    // Metric-lock: map plane UV in stable world units (derived from contour) to avoid tile deformation
+    const planeW = Math.max(1e-6, (planeMetric && isFinite(planeMetric.W)) ? planeMetric.W : 1.0);
+    const planeD = Math.max(1e-6, (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPlaneD'), planeD);
+    // Keep the "scale" slider semantics: approximately number of repeats across the near edge.
+// Global Anti-Rubber: additionally apply an anchor-scale lock so adjusting camera
+// (horizon/perspective) does not change tile *geometry* near the bottom.
+// This is a uniform correction (no anisotropic scale).
+    const baseScaleAcross = (params.scale ?? 1.0);
+    let scaleEff = Math.max(0.0001, baseScaleAcross / planeW);
+
+    // Anchor-scale lock (optional but enabled by default when camera model is available)
+    let scaleComp = 1.0;
+    try{
+      const ax = (anchorPx && isFinite(anchorPx.x)) ? anchorPx.x : null;
+      const ay = (anchorPx && isFinite(anchorPx.y)) ? anchorPx.y : null;
+      if(ax !== null && ay !== null && cam3d && cam3dRef){
+        const mppRef = _localMetersPerPixel(cam3dRef, ax, ay);
+        const mppCur = _localMetersPerPixel(cam3d, ax, ay);
+        if(isFinite(mppRef) && isFinite(mppCur) && mppRef > 1e-9 && mppCur > 1e-9){
+          scaleComp = clamp(mppRef / mppCur, 0.25, 4.0);
+        }
+      }
+    }catch(_){ scaleComp = 1.0; }
+
+    scaleEff = Math.max(0.0001, scaleEff * scaleComp);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uScale'), scaleEff);
+
+    // Phase lock (anti-swim): keep texture grid anchored to a stable point on the near edge.
+    // This prevents the "rubber" feeling where the pattern slides when horizon/perspective changes.
+    let phaseX = 0.0, phaseY = 0.0;
+    try{
+      const ax = (anchorPx && isFinite(anchorPx.x)) ? anchorPx.x : null;
+      const ay = (anchorPx && isFinite(anchorPx.y)) ? anchorPx.y : null;
+      if(ax !== null && ay !== null){
+        // Compute plane coords at anchor pixel.
+        let pu = null, pv = null;
+        const want3dLocal = !!(cam3d && cam3d.Kinv && cam3d.R && cam3d.t);
+        if(want3dLocal){
+          const KinvA = cam3d.Kinv;
+          const RwcA = cam3d.R;
+          const tA = cam3d.t;
+
+          // rayCam = normalize(Kinv * [x,y,1])
+          let rx = KinvA[0]*ax + KinvA[1]*ay + KinvA[2];
+          let ry = KinvA[3]*ax + KinvA[4]*ay + KinvA[5];
+          let rz = KinvA[6]*ax + KinvA[7]*ay + KinvA[8];
+          const rlen = Math.hypot(rx, ry, rz) || 1.0;
+          rx/=rlen; ry/=rlen; rz/=rlen;
+
+          // Rcw = transpose(Rwc)
+          const Rcw00 = RwcA[0], Rcw01 = RwcA[3], Rcw02 = RwcA[6];
+          const Rcw10 = RwcA[1], Rcw11 = RwcA[4], Rcw12 = RwcA[7];
+          const Rcw20 = RwcA[2], Rcw21 = RwcA[5], Rcw22 = RwcA[8];
+
+          // camPosW = -(Rcw * t)
+          const cwx = -(Rcw00*tA[0] + Rcw01*tA[1] + Rcw02*tA[2]);
+          const cwy = -(Rcw10*tA[0] + Rcw11*tA[1] + Rcw12*tA[2]);
+          const cwz = -(Rcw20*tA[0] + Rcw21*tA[1] + Rcw22*tA[2]);
+
+          // rayW = normalize(Rcw * rayCam)
+          let rwx = (Rcw00*rx + Rcw01*ry + Rcw02*rz);
+          let rwy = (Rcw10*rx + Rcw11*ry + Rcw12*rz);
+          let rwz = (Rcw20*rx + Rcw21*ry + Rcw22*rz);
+          const rwlen = Math.hypot(rwx, rwy, rwz) || 1.0;
+          rwx/=rwlen; rwy/=rwlen; rwz/=rwlen;
+
+          const denom = rwz;
+          if(Math.abs(denom) > 1e-6){
+            const sRay = -cwz / denom;
+            if(sRay > 0.0){
+              const pxw = cwx + rwx * sRay;
+              const pyw = cwy + rwy * sRay;
+              pu = pxw; pv = pyw;
+            }
+          }
+        }
+        if(pu === null || pv === null){
+          // Fallback: invH mapping
+          const x = ax, y = ay;
+          const u = invHArr9[0]*x + invHArr9[1]*y + invHArr9[2];
+          const v = invHArr9[3]*x + invHArr9[4]*y + invHArr9[5];
+          const wq = invHArr9[6]*x + invHArr9[7]*y + invHArr9[8];
+          if(isFinite(wq) && Math.abs(wq) > 1e-9){
+            pu = u / wq;
+            pv = v / wq;
+          }
+        }
+
+        if(pu !== null && pv !== null){
+          // Apply the same v-flip rule as the shader (only relevant for non-3D legacy and when forceBottomUp is off)
+          if(vflip === 1){ pv = planeD - pv; }
+
+          // Compute tuv(anchor) = R * (uv * scale)
+          const rotRad = ((params.rotation ?? 0.0) * Math.PI) / 180.0;
+          const c = Math.cos(rotRad), s = Math.sin(rotRad);
+          const su = pu * scaleEff;
+          const sv = pv * scaleEff;
+          const tx = c*su - s*sv;
+          const ty = s*su + c*sv;
+          const fract = (q)=>{
+            if(!isFinite(q)) return 0.0;
+            const f = q - Math.floor(q);
+            return (f < 0) ? (f + 1) : f;
+          };
+          phaseX = fract(-tx);
+          phaseY = fract(-ty);
+        }
+      }
+    }catch(_){ phaseX = 0.0; phaseY = 0.0; }
+
+    // Z-E: user seam alignment offsets (tile-space phase shifts). Keep deterministic and safe.
+    // Offsets are applied after phase-lock, in tile units (1.0 = 1 tile).
+    try{
+      const ou = (params.offsetU ?? 0.0);
+      const ov = (params.offsetV ?? 0.0);
+      if(isFinite(ou)) phaseX += Math.max(-50.0, Math.min(50.0, ou));
+      if(isFinite(ov)) phaseY += Math.max(-50.0, Math.min(50.0, ov));
+    }catch(_){ }
+    gl.uniform2f(gl.getUniformLocation(progZone,'uPhase'), phaseX, phaseY);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uRotation'), (params.rotation ?? 0.0));
+    gl.uniform1f(gl.getUniformLocation(progZone,'uOpacity'), clamp(params.opacity ?? 1.0, 0, 1));
+    gl.uniform1i(gl.getUniformLocation(progZone,'uBlendMode'), (opaqueFill ? 0 : _blendModeId(params.blendMode)));
+
+    // Precision contract: do not soften the clip edge by default.
+    // Soft feathering makes the border look "rounded" and can mask fine details.
+    // AO still uses the blurred mask, but the hard mask strictly bounds visibility.
+    gl.uniform1f(gl.getUniformLocation(progZone,'uFeather'), 0.0);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uAO'), 1.0);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoFit'), (opaqueFill ? 0.0 : 1.0));
+    // PhotoFit: global exposure by default (stable under horizon changes). Use ?photofit=legacy to revert.
+    const pfMode = (typeof window!=='undefined' && window.__PP_PHOTOFIT_MODE==='legacy') ? 0 : 1;
+    gl.uniform1i(gl.getUniformLocation(progZone,'uPhotoFitMode'), pfMode);
+    gl.uniform1f(gl.getUniformLocation(progZone,'uPhotoExposure'), clamp((+photoExposure||1.0), 0.85, 1.15));
+    // Ultra AI: while the depth model is still loading/running, the fallback "far fade" based on plane-V
+    // can produce a visible left/right dimming on some perspectives. Once AI depth is ready we switch to
+    // depth-driven farBase. Disable the far-fade until depth is ready to avoid transient dull/transparent
+    // patches during long model loads.
+    let farFade = 1.0;
+    try{
+      if(ai && ai.enabled !== false){
+        if(!(ai.depthReady && ai.depthMap)){
+          farFade = 0.0;
+        }
+      }
+    }catch(_){ farFade = 1.0; }
+    gl.uniform1f(gl.getUniformLocation(progZone,'uFarFade'), farFade);
+
+    const invH = _mat3FromArray9(invHArr9);
+    gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uInvH'), false, invH);
+
+    // Variant B (3D camera renderer): uniforms for ray-plane mapping
+    const use3d = !!(cam3d && cam3d.Kinv && cam3d.R && cam3d.t);
+    gl.uniform1i(gl.getUniformLocation(progZone,'uUseCam3D'), use3d ? 1 : 0);
+    if(use3d){
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uKinv'), false, _mat3FromArray9(cam3d.Kinv));
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uRwc'), false, _mat3FromArray9(cam3d.R));
+      gl.uniform3f(gl.getUniformLocation(progZone,'uTwc'), cam3d.t[0], cam3d.t[1], cam3d.t[2]);
+    }else{
+      // Safe defaults (won't be used when uUseCam3D==0)
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uKinv'), false, _mat3FromArray9([1,0,0, 0,1,0, 0,0,1]));
+      gl.uniformMatrix3fv(gl.getUniformLocation(progZone,'uRwc'), false, _mat3FromArray9([1,0,0, 0,1,0, 0,0,1]));
+      gl.uniform3f(gl.getUniformLocation(progZone,'uTwc'), 0,0,1);
+    }
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindVertexArray(null);
+  }
+
+  async function render(state){
+    const photoExposure = clamp(((state && state.assets && +state.assets.photoExposure) || 1.0), 0.85, 1.15);
+    const ai = state && state.ai ? state.ai : null; // reserved for Ultra AI (Patch 1), no-op for now
+
+    if(!gl) return;
+    const API = window.PhotoPaveAPI;
+    if(!state?.assets?.photoBitmap || !photoTex){
+      // Clear output
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0,0,canvas.width,canvas.height);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      return;
+    }
+    const w = canvas.width, h = canvas.height;
+    _ensureTargets(w,h);
+
+    // Drag-stabilization lifecycle: keep extrema lock only for the active dragged zone.
+    try{
+      const ui = state && state.ui ? state.ui : null;
+      let dragZoneId = null;
+      if(ui && ui.isPointerDown && ui.draggingPoint && (ui.draggingPoint.kind === 'contour' || ui.draggingPoint.kind === 'cutout')){
+        dragZoneId = ui.activeZoneId || null;
+      }
+      if(_lastDragZoneId && _lastDragZoneId !== dragZoneId){
+        dragLockExtrema.delete(_lastDragZoneId);
+      }
+      if(!dragZoneId && _lastDragZoneId){
+        dragLockExtrema.delete(_lastDragZoneId);
+      }
+      _lastDragZoneId = dragZoneId;
+    }catch(_){ /* no-op */ }
+
+
+    // Ultra AI resources: upload depth + occlusion (if available). Safe no-ops on errors.
+    if(ai){
+      try{ _ensureAIDepthTexture(ai); }catch(_){ /* no-op */ }
+      try{ _ensureAIOcclusionTexture(ai); }catch(_){ /* no-op */ }
+
+      // If Ultra configuration changes (toggle on/off, new dir sign, etc.) do not reuse
+      // a cached inverse homography computed for a different mode.
+      const d = ai.planeDir;
+      const k = [
+        (ai.enabled === false) ? 0 : 1,
+        ai.depthReady ? 1 : 0,
+        ai.depthFarHigh ? 1 : 0,
+        d ? (Math.round((d.x||0)*100)/100) : 0,
+        d ? (Math.round((d.y||0)*100)/100) : 0
+      ].join('|');
+      if(_lastAIModeKey !== k){
+        _lastAIModeKey = k;
+        try{ lastGoodInvH.clear(); }catch(_){/*noop*/}
+      }
+    }
+
+    // Start composite with the photo.
+    // photoTex is a DOM-backed upload (top-left origin) -> needs flipY during copy
+    _renderCopy(photoTex, ping, true);
+    let src = ping;
+    let dst = pong;
+
+    const sx = w / Math.max(1, photoW);
+    const sy = h / Math.max(1, photoH);
+
+    for(const zone of (state.zones||[])){
+      if(!zone || !zone.enabled) continue;
+      if(!zone.closed || !zone.contour || zone.contour.length < 3) continue;
+      const url = zone.material?.textureUrl;
+      if(!url) continue;
+
+      // Tile texture: avoid re-loading the same image every frame.
+      // If the WebGL texture is already cached, reuse it immediately.
+      let tileTex = null;
+      if(tileCache.has(url)){
+        tileTex = _getTileTex(url, null);
+      }else{
+        // Load image (may throw). We rely on proper CORS for WebGL.
+        const img = await API.loadImage(url);
+        tileTex = _getTileTex(url, img);
+      }
+
+      // PBR maps (Patch 2.2.103): prepare GPU normal map texture (Ultra only).
+      const pbrMaps = await _preparePbrMaps(zone, ai);
+
+      // Build mask textures (cache by geometry + render size)
+      const key = [
+        'm', w, h,
+        zone.id,
+        zone.contour.length,
+        zone.contour.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+        (zone.cutouts||[]).filter(c=>c.closed&&c.polygon&&c.polygon.length>=3).map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';')).join('|')
+      ].join('|');
+      const maskEntry = _getMaskTextures(key, zone, w, h, sx, sy);
+
+      
+// Infer floor quad and homography (stable while dragging)
+// We keep the last good inverse-homography per zone and reuse it if the current contour becomes temporarily degenerate.
+let invH = null;
+// Patch 3: if AI inferred a dominant plane direction with decent confidence, pass it to quad inference.
+const baseParams = zone.material?.params||{};
+
+// Patch D: auto-calibration overlay (vanish/horizon) for Ultra.
+// We only apply it while the user hasn't manually tuned those sliders in Ultra.
+let quadParams = baseParams;
+// Premium stability rule: when geomLockBottomUp is enabled, we intentionally DO NOT
+// inject AI direction into quad inference. The quad is inferred deterministically
+// from the contour using bottom->top scanlines (same as base mode). AI is still used
+// for depth-based fade/occlusion, but never for horizon/quad orientation.
+if(ai && ai.enabled !== false && !(ai.geomLockBottomUp)){
+  const tuned = zone.material?._ultraTuned || {horizon:false,perspective:false};
+  const calib = ai.calib;
+
+  // Outdoor paving profile: prefer plane directions that are consistent with the zone contour.
+  // We do this cheaply (no CV/ML) every frame, but the math is O(n) and very small.
+  // If the alignment is weak, we confidence-gate AI influence instead of forcing a wrong orientation.
+  function _contourDominantDir(contour){
+    if(!contour || contour.length < 2) return null;
+    let best=null; let bestL=0;
+    const n = contour.length;
+    const closed = !!zone.closed;
+    const m = closed ? n : (n-1);
+    for(let i=0;i<m;i++){
+      const a = contour[i];
+      const b = contour[(i+1)%n];
+      const dx = (b.x - a.x);
+      const dy = (b.y - a.y);
+      const L = Math.hypot(dx, dy);
+      if(L > bestL && isFinite(L)){
+        bestL = L;
+        best = {x: dx/L, y: dy/L};
+      }
+    }
+    if(!best) return null;
+    // We want "forward" to roughly point upward in image space (towards negative y).
+    if(best.y > 0) best = {x:-best.x, y:-best.y};
+    return best;
+  }
+
+  function _contourPCADir(contour){
+    if(!contour || contour.length < 3) return null;
+    let sx=0, sy=0;
+    const n = contour.length;
+    for(let i=0;i<n;i++){
+      const p = contour[i];
+      sx += (p.x||0); sy += (p.y||0);
+    }
+    const mx = sx / n, my = sy / n;
+    let a=0, b=0, c=0;
+    for(let i=0;i<n;i++){
+      const p = contour[i];
+      const dx = (p.x||0) - mx;
+      const dy = (p.y||0) - my;
+      a += dx*dx;
+      b += dx*dy;
+      c += dy*dy;
+    }
+    a/=n; b/=n; c/=n;
+    if(!isFinite(a) || !isFinite(b) || !isFinite(c)) return null;
+
+    let vx=0, vy=0;
+    if(Math.abs(b) < 1e-9){
+      if(a >= c){ vx=1; vy=0; } else { vx=0; vy=1; }
+    }else{
+      const tr = a + c;
+      const det = a*c - b*b;
+      const disc = Math.max(0, (tr*tr)/4 - det);
+      const l1 = tr/2 + Math.sqrt(disc); // largest eigenvalue
+      vx = b;
+      vy = l1 - a;
+      let m = Math.hypot(vx, vy);
+      if(m < 1e-9){
+        vx = l1 - c;
+        vy = b;
+        m = Math.hypot(vx, vy);
+        if(m < 1e-9) return null;
+      }
+      vx/=m; vy/=m;
+    }
+    const m2 = Math.hypot(vx, vy);
+    if(m2 < 1e-9 || !isFinite(m2)) return null;
+    vx/=m2; vy/=m2;
+
+    // Ensure "forward" roughly points upward in image space.
+    if(vy > 0){ vx = -vx; vy = -vy; }
+    return {x:vx, y:vy};
+  }
+
+  function _absDot(a,b){
+    if(!a||!b) return 0;
+    const d = a.x*b.x + a.y*b.y;
+    return isFinite(d) ? Math.abs(d) : 0;
+  }
+
+  // Candidate plane directions:
+  const dirDepth = (ai.planeDir && isFinite(ai.planeDir.x) && isFinite(ai.planeDir.y)) ? ai.planeDir : null;
+  const dirCalib = (calib && calib.status==="ready" && calib.planeDir && isFinite(calib.planeDir.x) && isFinite(calib.planeDir.y) && (calib.confidence||0) >= 0.18)
+    ? calib.planeDir
+    : null;
+
+  // Blend directions if both exist, otherwise pick the available one.
+  let chosenDir = dirDepth || dirCalib || null;
+  if(dirDepth && dirCalib){
+    const cd = Math.max(0, Math.min(1, (ai.confidence||0)));
+    const cc = Math.max(0, Math.min(1, (calib.confidence||0)));
+    // Prefer the more confident source, but keep some influence from both to reduce flicker.
+    const t = (cc / (cc + cd + 1e-6));
+    const bx = dirDepth.x*(1-t) + dirCalib.x*t;
+    const by = dirDepth.y*(1-t) + dirCalib.y*t;
+    const bm = Math.hypot(bx, by);
+    chosenDir = (bm>1e-6 && isFinite(bm)) ? {x:bx/bm, y:by/bm} : dirDepth;
+  }
+
+
+// Safety: ensure chosenDir is finite and non-degenerate. If not, fall back to a stable default.
+if(!chosenDir || !isFinite(chosenDir.x) || !isFinite(chosenDir.y)){
+  chosenDir = {x:0, y:-1};
+} else {
+  const cm = Math.hypot(chosenDir.x, chosenDir.y);
+  if(!isFinite(cm) || cm < 1e-6){
+    chosenDir = {x:0, y:-1};
+  } else {
+    chosenDir = {x: chosenDir.x/cm, y: chosenDir.y/cm};
+    // Force "forward" to point upward in image space (y < 0) to avoid near/far flips.
+    if(chosenDir.y > -0.02){
+      chosenDir = {x:-chosenDir.x, y:-chosenDir.y};
+    }
+  }
+}
+
+  const pdir = _contourPCADir(zone.contour);
+
+  // Zone-PCA vanishing candidate: robust fallback when the photo has weak linear cues (grass/gravel).
+  // We only use it as a direction hint; it never mutates stored params.
+  if(pdir){
+    const agree = _absDot(chosenDir, pdir);
+    // If OpenCV calibration is weak OR strongly disagrees with the zone principal axis,
+    // prefer the zone-based direction to avoid inverted/vertical defaults.
+    const calibOk = (calib && calib.status==="ready" && (calib.confidence||0) >= 0.22);
+    const agreeOk = (agree >= 0.28);
+    if(!calibOk || !agreeOk){
+      chosenDir = pdir;
+    }
+  }
+  // Contour-aligned direction gating.
+  // If the inferred direction conflicts with the dominant contour direction,
+  // we flip it (sign ambiguity) or reduce confidence to avoid unstable defaults.
+  let alignGate = 1.0;
+  const cdir = _contourDominantDir(zone.contour);
+  if(chosenDir && cdir){
+    const dp = chosenDir.x*cdir.x + chosenDir.y*cdir.y;
+    if(isFinite(dp) && dp < 0){
+      chosenDir = {x:-chosenDir.x, y:-chosenDir.y};
+    }
+    const a = Math.abs(dp);
+    // Gate in [0..1] based on alignment; below ~0.15 treat as unreliable.
+    alignGate = smoothstep(0.15, 0.35, a);
+  }
+
+  // Derive effective horizon/perspective from calibration (overlay only; does not mutate stored params).
+  let effH = baseParams.horizon;
+  let effP = baseParams.perspective;
+  let usedAuto = false;
+  if(calib && calib.status==="ready" && (calib.confidence||0) >= 0.18){
+    const _agreeHP = pdir ? _absDot(calib.planeDir, pdir) : 1.0;
+    const _hpOk = (_agreeHP >= 0.28);
+    
+    if(_hpOk && !tuned.horizon && isFinite(calib.autoHorizon)){
+      effH = calib.autoHorizon;
+      usedAuto = true;
+    }
+    if(_hpOk && !tuned.perspective && isFinite(calib.autoPerspective)){
+      effP = calib.autoPerspective;
+      usedAuto = true;
+    }
+  }
+// Clamp auto-derived values to safe ranges to avoid degenerate homographies.
+if(!isFinite(effH)) effH = baseParams.horizon;
+if(!isFinite(effP)) effP = baseParams.perspective;
+effH = Math.max(-0.85, Math.min(0.85, effH));
+effP = Math.max(0.0, Math.min(1.0, effP));
+
+
+  // Build params overlay only if we actually have something to inject.
+  // Variant B rule: when calib3d.contourDefinesAxis/disableAiQuad is on, do not let AI/calib override quad direction.
+  const _disableAiQuad = !!(ai && ai.calib3d && ai.calib3d.enabled === true && (ai.calib3d.disableAiQuad || ai.calib3d.contourDefinesAxis));
+  if(!_disableAiQuad && (chosenDir || usedAuto)){
+    const conf = Math.max(0, Math.min(1, (ai.confidence||0)));
+    const confAuto = Math.max(0, Math.min(1, (calib && calib.status==="ready") ? (calib.confidence||0) : 0));
+    let confMix = Math.max(conf, confAuto);
+    // Apply contour alignment confidence-gate (outdoor paving profile).
+    confMix = Math.max(0, Math.min(1, confMix * alignGate));
+    const mix = smoothstep(0.18, 0.55, confMix);
+    quadParams = Object.assign({}, baseParams, {
+      perspective: effP,
+      horizon: effH,
+      _aiPlaneDir: chosenDir || dirDepth || dirCalib,
+      _aiConfidence: confMix,
+      _aiMix: mix
+    });
+    // Expose for debug overlay (read-only).
+    try{
+      ai._lastMix = mix;
+      ai._calibUsed = (calib && calib.status==="ready") ? `${calib.source||"?"}:${(calib.confidence||0).toFixed(2)}` : null;
+    }catch(_){/*noop*/}
+  }
+}
+// Work in render-buffer coordinates: scale contour from photo space -> render space.
+const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+
+// While dragging, lock yMin/yMax to pre-drag extrema to avoid sudden near/far scanline jumps.
+let lockExtrema = null;
+try{
+  if(_lastDragZoneId && _lastDragZoneId === zone.id){
+    lockExtrema = dragLockExtrema.get(zone.id) || null;
+    if(!lockExtrema){
+      let yMin = Infinity, yMax = -Infinity;
+      for(const p of contourR){
+        const y = +p.y;
+        if(!isFinite(y)) continue;
+        if(y < yMin) yMin = y;
+        if(y > yMax) yMax = y;
+      }
+      if(isFinite(yMin) && isFinite(yMax) && (yMax - yMin) > 2){
+        lockExtrema = {yMin, yMax};
+        dragLockExtrema.set(zone.id, lockExtrema);
+      }
+    }
+  }
+}catch(_){ lockExtrema = null; }
+
+
+let Hm = null;
+// Global Anti-Rubber: infer ONLY a base quad from the contour (no horizon/perspective warping, no AI quad).
+// Horizon + Perspective are applied strictly as camera parameters later.
+const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, w, h, lockExtrema);
+let planeMetric = {W:1.0, D:1.0};
+const quad = quadRes && quadRes.quad ? quadRes.quad : null;
+if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
+
+if(quad){
+  const qn = _normalizeQuad(quad);
+  if(qn){
+    Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+    if(Hm){
+      invH = _invert3x3(Hm);
+    }
+  }
+}
+
+if(!invH){
+  const last = lastGoodInvH.get(zone.id);
+  if(last) invH = last;
+}
+if(!invH){
+  invH = [1/Math.max(1,w),0,0, 0,1/Math.max(1,h),0, 0,0,1];
+}else{
+  lastGoodInvH.set(zone.id, invH);
+}
+
+// Cache render-space inference in PHOTO coordinates so export can reuse it verbatim.
+// This prevents subtle mismatches caused by re-inferring the quad/homography at a
+// different resolution or with different rounding/scanline behavior.
+try{
+  const geoKey = [
+    zone.id,
+    (zone.contour||[]).length,
+    (zone.contour||[]).map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+    (zone.cutouts||[])
+      .filter(c=>c.closed&&c.polygon&&c.polygon.length>=3)
+      .map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'))
+      .join('|')
+  ].join('|');
+  if(!zone._renderCache) zone._renderCache = {};
+  zone._renderCache.geoKey = geoKey;
+  zone._renderCache.metric = planeMetric;
+  zone._renderCache.quadPhoto = quad ? quad.map(pt=>({x: pt.x/Math.max(1,sx), y: pt.y/Math.max(1,sy)})) : null;
+}catch(_){/*no-op*/}
+
+// Global camera model (all modes):
+// - Estimate a plausible focal length from the base homography.
+// - Apply user horizon/perspective as camera pitch + focal scaling.
+// - Provide camCur (for rendering) and camRef (for near-anchor scale lock).
+let cam3d = null;
+let cam3dRef = null;
+try{
+  if(Hm){
+    const intr = _computeIntrinsicsUnified(Hm, w, h, sx, sy, ai);
+    let cx = intr.cx;
+    let cy = intr.cy;
+    let fGuess = intr.f;
+
+    const params = zone.material?.params || {};
+    // Effective values computed above (may be AI-derived), fall back to user params.
+    // We intentionally allow a wider UI range for horizon, but we apply it in a safe way:
+    // - Pitch is kept within a conservative bound (prevents near-field "rubber" / squash).
+    // - Additional "horizon movement" is expressed as principal point shift (cy), which
+    //   changes the horizon position without introducing strong foreshortening.
+    const hVal = clamp((typeof effH === 'number' ? effH : (params.horizon ?? 0.0)), -1.0, 1.0);
+    const pVal = clamp((typeof effP === 'number' ? effP : (params.perspective ?? 0.75)), 0.0, 1.0);
+
+    // Perspective slider -> camera distance scaling (NOT focal).
+    // Rationale: varying focal/FOV produces strong foreshortening ("squash") at extremes,
+    // which users perceive as "rubber" even if the math is correct.
+    // We instead vary camera distance while keeping focal near the estimated baseline.
+    const perspT = (pVal - 0.5) * 2.0; // [-1..1]
+    const distK = 0.70;
+    const distScale = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
+
+    // Keep focal stable to preserve tile geometry; perspective comes from distance change + anchor-scale lock.
+    const fCur = fGuess;
+
+    // Reference camera for anchor-scale lock: baseline UX (distance=1, h=0).
+    const fRef = fGuess;
+    const distScaleRef = 1.0;
+
+// Decompose ONCE to get a stable camera pose from the base homography.
+    // IMPORTANT: perspective slider must NOT change pose (R,t), only intrinsics (f).
+    // Re-solving pose for each f introduces subtle non-rigid distortions ("rubber" feel).
+    const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
+
+    // Horizon slider -> camera pitch (tilt) + principal point shift.
+    // Pitch is kept conservative to avoid near-field shape distortion.
+	    // Slightly higher cy-shift range to allow the horizon to "lay down" further,
+	    // while the fill-constraint + near-guard keep the plane fully covered.
+	    const pitchMax = 0.40; // ~23 degrees
+	    const cyShiftMax = 0.85 * (h || 1);
+
+    // B1: Pitch only starts contributing near the end of the Horizon slider travel.
+    const hPitchStart = 0.82;
+
+    // Keep the plane visible inside the contour: if the horizon is moved too far,
+    // rays near the top of the contour can miss the plane (s<=0) and the user sees an empty area.
+    const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(w||1)-1, yMin:0, yMax:(h||1)-1};
+    let hSafe = _clampHorizonToFillContour(camBase, hVal, {
+	      zoneId: (zone && zone.id) ? zone.id : null,
+      cx, cy, f: fCur, w, h,
+      distScale,
+      pitchMax,
+      cyShiftMax,
+      hPitchStart,
+	      // Additional smoothing for relaxation of the fill-bound (prevents micro-snaps while dragging).
+	      hRelaxAlpha: 0.18,
+      // Soft boundary to avoid snapping when the fill-constraint engages.
+      hSoftK: 28.0,
+      bounds
+    });
+
+    let aH = Math.min(1.0, Math.abs(hSafe||0));
+
+    // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+    let pitchW = smoothstep(hPitchStart, 1.0, aH);
+    let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+
+    // Principal point shift: extends the effective horizon adjustment range
+    // without forcing extreme camera tilts.
+	    let cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(h||1), 0.98*(h||1));
+
+    // B3: near-field quality guard (camera-only). If the base camera is too aggressive,
+    // it can make the tile look "squashed" even at Horizon≈0. The guard reduces pitch
+    // first, then increases distance as needed. The tile scale remains stable via the
+    // existing anchor-scale lock (cam3dRef).
+    const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
+    let pitchEff = pitchDes;
+    let distEff = distScale;
+    let guardInfo = null;
+    try{
+      if(camBase){
+        guardInfo = _applyNearGuard(camBase, {
+          f: fCur,
+          cx,
+          cyCur,
+          planeMetric,
+          rotDeg,
+          pitchDes,
+          distDes: distScale,
+          // Allow the guard to increase distance beyond the user slider's max if needed.
+          // The user-facing slider still controls distDes (semantics). distMax is an internal
+          // safety lever to prevent obvious near-field "squash".
+          distMax: 12.00,
+          rhoMax: 2.00,
+          shearMax: 32.0
+        });
+
+        if(guardInfo){
+          pitchEff = guardInfo.pitchEff;
+          distEff = guardInfo.distEff;
+        }
+      }
+    }catch(_){ guardInfo = null; }
+
+// B3/B1 coupling (stability): re-evaluate the fill-constraint using the *effective* camera
+// distance/flatten from the near-guard. This reduces visible snapping near the boundary
+// and also allows more usable Horizon amplitude on difficult photos, while still guaranteeing
+// there are no empty/unfilled regions inside the contour.
+try{
+  if(camBase && guardInfo){
+    const hSafe2 = _clampHorizonToFillContour(camBase, hVal, {
+      zoneId: (zone && zone.id) ? zone.id : null,
+      cx, cy, f: fCur, w, h,
+      // Use effective distance for the keep-filled test (camera-only).
+      distScale: (isFinite(guardInfo.distEff) ? guardInfo.distEff : distScale),
+      // Use flatten (if any) for the keep-filled test (camera-only).
+      flattenK: (isFinite(guardInfo.flattenK) ? guardInfo.flattenK : 1.0),
+      pitchMax,
+      cyShiftMax,
+      hPitchStart,
+      hRelaxAlpha: 0.18,
+      hSoftK: 28.0,
+      bounds
+    });
+
+    if(isFinite(hSafe2) && Math.abs(hSafe2 - hSafe) > 1e-4){
+      hSafe = hSafe2;
+
+      // Recompute desired pitch/cy with the updated safe horizon.
+      aH = Math.min(1.0, Math.abs(hSafe||0));
+      pitchW = smoothstep(hPitchStart, 1.0, aH);
+      pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(h||1), 0.98*(h||1));
+
+      // Re-run the near-guard once with the updated pitch/cy (deterministic single iteration).
+      guardInfo = _applyNearGuard(camBase, {
+        f: fCur,
+        cx,
+        cyCur,
+        planeMetric,
+        rotDeg,
+        pitchDes,
+        distDes: distScale,
+        distMax: 12.00,
+        rhoMax: 2.00,
+        shearMax: 32.0
+      });
+
+      if(guardInfo){
+        pitchEff = guardInfo.pitchEff;
+        distEff = guardInfo.distEff;
+      }
+    }
+  }
+}catch(_){/*noop*/}
+
+// C1: smooth distEff/flattenK per-zone to avoid snapping when guard switches stage.
+// pitch remains immediate (handled above) to preserve Horizon response.
+try{
+  const zid = zone && zone.id ? zone.id : null;
+  const kTarget = (guardInfo && isFinite(guardInfo.flattenK)) ? Math.max(0.10, Math.min(1.0, guardInfo.flattenK)) : 1.0;
+  const sm = _smoothGuard(zid, distEff, kTarget);
+  distEff = sm.distEff;
+  if(guardInfo){
+    guardInfo.flattenKEff = sm.kEff;
+  }else{
+    guardInfo = { stage: 'none', flattenKEff: sm.kEff };
+  }
+}catch(_){/*noop*/}
+
+    if(camBase && camBase.R && camBase.t){
+      // Current camera: same pose (with optional pitch), different focal (fCur).
+      const camPoseCur = _applyPitchToCam(camBase, pitchEff);
+      // If near-guard requested flattening (camera-only), attenuate the Z components
+      // of r1/r2 and re-orthonormalize. This reduces excessive near-field squash
+      // caused by overly steep base plane orientation.
+      let Rcur = camPoseCur.R;
+      if(guardInfo && isFinite(guardInfo.flattenKEff) && guardInfo.flattenKEff < 0.999){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenKEff));
+        const r1 = [Rcur[0], Rcur[3], Rcur[6]];
+        const r2 = [Rcur[1], Rcur[4], Rcur[7]];
+        // scale z
+        const r1k = [r1[0], r1[1], r1[2]*k];
+        const r2k = [r2[0], r2[1], r2[2]*k];
+        // Gram-Schmidt
+        const n1 = Math.hypot(r1k[0],r1k[1],r1k[2]);
+        const rr1 = (n1>1e-9) ? [r1k[0]/n1, r1k[1]/n1, r1k[2]/n1] : r1;
+        const d12 = rr1[0]*r2k[0] + rr1[1]*r2k[1] + rr1[2]*r2k[2];
+        let vv = [r2k[0]-d12*rr1[0], r2k[1]-d12*rr1[1], r2k[2]-d12*rr1[2]];
+        const n2 = Math.hypot(vv[0],vv[1],vv[2]);
+        if(n2>1e-9){
+          vv = [vv[0]/n2, vv[1]/n2, vv[2]/n2];
+          let r3 = [
+            rr1[1]*vv[2] - rr1[2]*vv[1],
+            rr1[2]*vv[0] - rr1[0]*vv[2],
+            rr1[0]*vv[1] - rr1[1]*vv[0]
+          ];
+          const n3 = Math.hypot(r3[0],r3[1],r3[2]);
+          if(n3>1e-9){
+            r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+            Rcur = [
+              rr1[0], vv[0], r3[0],
+              rr1[1], vv[1], r3[1],
+              rr1[2], vv[2], r3[2]
+            ];
+          }
+        }
+      }
+      cam3d = {
+        R: Rcur,
+        // Distance affects camera height (tz) only; see _applyNearGuard.
+        t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
+        Kinv: [
+          1/fCur, 0, -cx/fCur,
+          0, 1/fCur, -cyCur/fCur,
+          0, 0, 1
+        ]
+      };
+
+      // Reference camera for anchor-scale lock: baseline UX (h=0, p=0.75).
+      // Reference camera for anchor-scale lock uses the same pose (incl. pitch) and cy shift,
+      // so horizon adjustments don't fight the scale lock.
+      cam3dRef = {
+        R: Rcur,
+        t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
+        Kinv: [
+          1/fRef, 0, -cx/fRef,
+          0, 1/fRef, -cyCur/fRef,
+          0, 0, 1
+        ]
+      };
+
+      // Cache the *effective* camera that was actually used for on-screen rendering.
+      // Export uses this snapshot (scaled to export resolution) to guarantee
+      // "screen == PNG" even when the quad inference or guard is resolution-sensitive.
+      try{
+        if(!zone._renderCache) zone._renderCache = {};
+        const md = Math.max(1, Math.max(w||1, h||1));
+        zone._renderCache.cam = {
+          fN: (fCur || 1) / md,
+          cxN: (cx || 0) / Math.max(1, w||1),
+          cyN: (cyCur || 0) / Math.max(1, h||1),
+          R: (cam3d && cam3d.R) ? cam3d.R.slice(0) : null,
+          t: (cam3d && cam3d.t) ? cam3d.t.slice(0) : null,
+          tRef: (cam3dRef && cam3dRef.t) ? cam3dRef.t.slice(0) : null
+        };
+      }catch(_){/*no-op*/}
+
+      // Dev-only metrics (B2): report near anisotropy/shear for the ACTUAL camera mapping.
+      // Enabled by app.js via window.__PP_DEBUG_METRICS=1.
+      try{
+        const dbgEnabled = (typeof window !== 'undefined') && !!window.__PP_DEBUG_METRICS;
+        const activeZoneId = state && state.ui ? state.ui.activeZoneId : null;
+        if(dbgEnabled && activeZoneId && zone && zone.id === activeZoneId){
+          const mCam = _computeNearMetricsFromCam(cam3d, planeMetric, rotDeg);
+          _lastDebugMetrics = {
+            zoneId: zone.id,
+            horizon: { hVal, hSafe, pitchMax, pitchW, pitchDes, pitchEff, cyCur, cyBase: cy, cyShiftMax },
+            perspective: { pVal, distDes: distScale, distEff },
+            guard: guardInfo,
+            planeMetric: { W: planeMetric.W, D: planeMetric.D },
+            metrics: mCam
+          };
+        }
+      }catch(_){/*noop*/}
+    }
+  }
+}catch(_){ cam3d = null; cam3dRef = null; }
+    const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
+    const photoLight = (state && state.assets && state.assets.photoLight) ? state.assets.photoLight : null;
+    _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight);
+const tmp = src; src = dst; dst = tmp;
+    }
+
+    // Present to screen
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0,0,w,h);
+    // src.tex is an FBO texture -> no flip at display
+    _renderCopy(src.tex, null, false);
+  }
+
+  function _readPixelsToDataURL(rt){
+    const w = rt.w, h = rt.h;
+    const buf = new Uint8Array(w*h*4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fbo);
+    gl.readPixels(0,0,w,h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Flip Y for canvas
+    const flipped = new Uint8ClampedArray(w*h*4);
+    for(let y=0;y<h;y++){
+      const srcOff = (h-1-y)*w*4;
+      const dstOff = y*w*4;
+      flipped.set(buf.subarray(srcOff, srcOff+w*4), dstOff);
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cctx = c.getContext('2d');
+    const imgData = new ImageData(flipped, w, h);
+    cctx.putImageData(imgData, 0, 0);
+    return c.toDataURL('image/png');
+  }
+
+  async function _readPixelsToBlob(rt){
+    const w = rt.w, h = rt.h;
+    const buf = new Uint8Array(w*h*4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fbo);
+    gl.readPixels(0,0,w,h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Flip Y for canvas
+    const flipped = new Uint8ClampedArray(w*h*4);
+    for(let y=0;y<h;y++){
+      const srcOff = (h-1-y)*w*4;
+      const dstOff = y*w*4;
+      flipped.set(buf.subarray(srcOff, srcOff+w*4), dstOff);
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cctx = c.getContext('2d');
+    const imgData = new ImageData(flipped, w, h);
+    cctx.putImageData(imgData, 0, 0);
+    const blob = await new Promise((resolve)=>{
+      try{
+        c.toBlob((b)=>resolve(b), 'image/png');
+      }catch(_){ resolve(null); }
+    });
+    if(blob) return blob;
+    // Fallback to dataURL if toBlob is unavailable
+    const dataURL = c.toDataURL('image/png');
+    const resp = await fetch(dataURL);
+    return await resp.blob();
+  }
+
+  async function exportPNG(state, opts={}){
+    if(!gl) throw new Error('WebGL compositor not initialized');
+    if(!state?.assets?.photoBitmap || !photoTex) throw new Error('No photo loaded');
+
+    const photoExposure = clamp(((state && state.assets && +state.assets.photoExposure) || 1.0), 0.85, 1.15);
+    const ai = state && state.ai ? state.ai : null;
+    if(ai){
+      try{ _ensureAIDepthTexture(ai); }catch(_){ /*no-op*/ }
+      try{ _ensureAIOcclusionTexture(ai); }catch(_){ /*no-op*/ }
+    }
+
+    const longSide = Math.max(1, photoW, photoH);
+    const reqLong = clamp(opts.maxLongSide || longSide, 512, 4096);
+    const lim = Math.max(512, Math.min(maxTexSize, maxRbSize));
+    const outLong = Math.min(reqLong, lim);
+    const sc = outLong / longSide;
+    const outW = Math.max(1, Math.round(photoW * sc));
+    const outH = Math.max(1, Math.round(photoH * sc));
+
+    // Create temporary targets for export
+    const rtA = _createFBO(outW, outH);
+    const rtB = _createFBO(outW, outH);
+
+    // Render photo at export scale: we can reuse the same photoTex and sample it.
+    gl.viewport(0,0,outW,outH);
+    _renderCopy(photoTex, rtA, true);
+    let src = rtA;
+    let dst = rtB;
+
+    const API = window.PhotoPaveAPI;
+    const sx = outW / Math.max(1, photoW);
+    const sy = outH / Math.max(1, photoH);
+
+    for(const zone of (state.zones||[])){
+      if(!zone || !zone.enabled) continue;
+      if(!zone.closed || !zone.contour || zone.contour.length < 3) continue;
+      const url = zone.material?.textureUrl;
+      if(!url) continue;
+      const img = await API.loadImage(url);
+      const tileTex = _getTileTex(url, img);
+
+      const key = [
+        'mexp', outW, outH,
+        zone.id,
+        zone.contour.length,
+        zone.contour.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+        (zone.cutouts||[]).filter(c=>c.closed&&c.polygon&&c.polygon.length>=3).map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';')).join('|')
+      ].join('|');
+      const maskEntry = _getMaskTextures(key, zone, outW, outH, sx, sy);
+
+      
+let invH = null;
+// Global Anti-Rubber: infer ONLY a base quad from the contour (no horizon/perspective warping, no AI quad).
+// Horizon + Perspective are applied strictly as camera parameters later.
+// Work in render-buffer coordinates: scale contour from photo space -> render space.
+const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+
+let Hm = null;
+let planeMetric = {W:1.0, D:1.0};
+let quad = null;
+
+// Export parity: if we have a render-time cache (quad+camera) for this exact geometry,
+// reuse it to guarantee "screen == PNG". Re-inferring the quad at export resolution can
+// produce a different homography (scanline/rounding), which users perceive as mismatch.
+let cam3d = null;
+let cam3dRef = null;
+try{
+  const geoKey = [
+    zone.id,
+    (zone.contour||[]).length,
+    (zone.contour||[]).map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+    (zone.cutouts||[])
+      .filter(c=>c.closed&&c.polygon&&c.polygon.length>=3)
+      .map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'))
+      .join('|')
+  ].join('|');
+  const rc = zone._renderCache;
+  if(rc && rc.geoKey === geoKey && rc.quadPhoto && rc.quadPhoto.length===4){
+    planeMetric = rc.metric || planeMetric;
+    quad = rc.quadPhoto.map(pt=>({x:(+pt.x||0)*sx, y:(+pt.y||0)*sy}));
+    const qn = _normalizeQuad(quad);
+    if(qn){
+      Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+      if(Hm) invH = _invert3x3(Hm);
+    }
+
+    const cs = rc.cam;
+    if(cs && cs.R && cs.t){
+      const md = Math.max(1, Math.max(outW||1, outH||1));
+      const f = (cs.fN || 1) * md;
+      const cx = (cs.cxN || 0.5) * outW;
+      const cy = (cs.cyN || 0.5) * outH;
+      const inv = [
+        1/f, 0, -cx/f,
+        0, 1/f, -cy/f,
+        0, 0, 1
+      ];
+      cam3d = {
+        R: cs.R.slice(0),
+        t: cs.t.slice(0),
+        Kinv: inv
+      };
+      cam3dRef = {
+        R: cs.R.slice(0),
+        t: (cs.tRef ? cs.tRef.slice(0) : cs.t.slice(0)),
+        Kinv: inv
+      };
+    }
+  }
+}catch(_){/*no-op*/}
+
+// Fallback: infer quad/homography at export resolution if cache is missing.
+if(!Hm){
+  const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
+  quad = quadRes && quadRes.quad ? quadRes.quad : null;
+  if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
+  if(quad){
+    const qn = _normalizeQuad(quad);
+    if(qn){
+      Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+      if(Hm) invH = _invert3x3(Hm);
+    }
+  }
+}
+
+
+// Bottom->Up Guard (premium invariant):
+// Ensure the inferred mapping keeps near (bottom edge) at v≈0 and far (top edge) at v≈1.
+// In rare numeric edge cases this prevents an accidental vertical inversion.
+// If detected, we flip the plane V-axis consistently in both Hm and invH.
+try{
+  if(Hm && invH && quad && quad.length===4){
+    const midNear = {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5};
+    const midFar  = {x:(quad[2].x+quad[3].x)*0.5, y:(quad[2].y+quad[3].y)*0.5};
+    const _applyInv = (M, p)=>{
+      const x=p.x, y=p.y;
+      const u = M[0]*x + M[1]*y + M[2];
+      const v = M[3]*x + M[4]*y + M[5];
+      const w = M[6]*x + M[7]*y + M[8];
+      if(!isFinite(w) || Math.abs(w)<1e-9) return {u:0,v:0,ok:false};
+      return {u:u/w, v:v/w, ok:true};
+    };
+    const uNear = _applyInv(invH, midNear);
+    const uFar  = _applyInv(invH, midFar);
+    if(uNear.ok && uFar.ok && uNear.v > uFar.v){
+      // Flip V in plane coords: M = [[1,0,0],[0,-1,1],[0,0,1]] (involution)
+      const D = (planeMetric && isFinite(planeMetric.D)) ? planeMetric.D : 1.0;
+      const F = [1,0,0, 0,-1,D, 0,0,1];
+      // Hm maps plane->pixel, so Hm' = Hm * F
+      Hm = _mul3x3(Hm, F);
+      // invH maps pixel->plane, so invH' = F * invH
+      invH = _mul3x3(F, invH);
+    }
+  }
+}catch(_){ /*no-op*/ }
+
+
+if(!invH){
+  const last = lastGoodInvH.get(zone.id);
+  if(last) invH = last;
+}
+if(!invH){
+  invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1];
+}else{
+  lastGoodInvH.set(zone.id, invH);
+}
+
+      // Global camera model (export must match on-screen render):
+      // If we have a cached camera from the last on-screen render, we reuse it.
+      // Otherwise we fall back to recomputing from Hm (best-effort).
+      if(!cam3d){
+      try{
+        if(Hm){
+          let cx = 0.5 * outW;
+          let cy = 0.5 * outH;
+          let fGuess = _estimateFocalFromHomography(Hm, cx, cy, outW, outH);
+          if(!fGuess || !isFinite(fGuess) || fGuess < 2){
+            fGuess = 0.95 * Math.max(1, outW, outH);
+          }
+
+          const c3 = ai && ai.calib3d;
+          const res = c3 && c3.result;
+          if(c3 && c3.enabled === true && res && res.ok && res.K){
+            const sAvg = (sx + sy) * 0.5;
+            const fFrom = (+res.K.f||0) * sAvg;
+            const cxFrom = (+res.K.cx||0) * sx;
+            const cyFrom = (+res.K.cy||0) * sy;
+            if(isFinite(fFrom) && fFrom > 2) fGuess = fFrom;
+            if(isFinite(cxFrom)) cx = cxFrom;
+            if(isFinite(cyFrom)) cy = cyFrom;
+          }
+
+          const params = zone.material?.params || {};
+          // Same horizon handling as on-screen: allow wide UI range but apply safely
+          // via conservative pitch + principal point shift (cy).
+          const hVal = clamp((params.horizon ?? 0.0), -1.0, 1.0);
+          const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
+
+          const perspT = (pVal - 0.5) * 2.0;
+          const distK = 0.70;
+          const distScale = clamp(Math.exp(-perspT * distK), 0.45*1.0, 2.20*1.0);
+          const distScaleRef = 1.0;
+
+          const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
+	          const pitchMax = 0.40;
+	          const cyShiftMax = 0.70 * (outH || 1);
+
+          // B1: Pitch only starts contributing near the end of the Horizon slider travel.
+          const hPitchStart = 0.82;
+
+          // Keep the plane visible inside the contour at export resolution.
+          const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
+	          let hSafe = _clampHorizonToFillContour(camBase, hVal, {
+	            zoneId: (zone && zone.id) ? zone.id : null,
+	            cx, cy, f: fGuess, w: outW, h: outH,
+            distScale,
+            pitchMax,
+            cyShiftMax,
+            hPitchStart,
+	            hRelaxAlpha: 0.18,
+	            hSoftK: 28.0,
+            bounds
+          });
+
+          let aH = Math.min(1.0, Math.abs(hSafe||0));
+
+          // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+          let pitchW = smoothstep(hPitchStart, 1.0, aH);
+          let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(outH||1), 0.98*(outH||1));
+
+          // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
+          const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
+          let pitchEff = pitchDes;
+          let distEff = distScale;
+          let guardInfo = null;
+          try{
+            if(camBase){
+              guardInfo = _applyNearGuard(camBase, {
+                f: fGuess,
+                cx,
+                cyCur,
+                planeMetric,
+                rotDeg,
+                pitchDes,
+                distDes: distScale,
+                distMax: 12.00,
+                rhoMax: 2.00,
+                shearMax: 32.0
+              });
+              if(guardInfo){
+                pitchEff = guardInfo.pitchEff;
+                distEff = guardInfo.distEff;
+              }
+            }
+          
+// B3/B1 coupling (stability): re-evaluate the fill-constraint using the *effective* camera
+// distance/flatten from the near-guard. This reduces visible snapping near the boundary
+// and also allows more usable Horizon amplitude on difficult photos, while still guaranteeing
+// there are no empty/unfilled regions inside the contour.
+try{
+  if(camBase && guardInfo){
+    const hSafe2 = _clampHorizonToFillContour(camBase, hVal, {
+      zoneId: (zone && zone.id) ? zone.id : null,
+      cx, cy, f: fGuess, w: outW, h: outH,
+      // Use effective distance for the keep-filled test (camera-only).
+      distScale: (isFinite(guardInfo.distEff) ? guardInfo.distEff : distScale),
+      // Use flatten (if any) for the keep-filled test (camera-only).
+      flattenK: (isFinite(guardInfo.flattenK) ? guardInfo.flattenK : 1.0),
+      pitchMax,
+      cyShiftMax,
+      hPitchStart,
+      hRelaxAlpha: 0.18,
+      hSoftK: 28.0,
+      bounds
+    });
+
+    if(isFinite(hSafe2) && Math.abs(hSafe2 - hSafe) > 1e-4){
+      hSafe = hSafe2;
+
+      // Recompute desired pitch/cy with the updated safe horizon.
+      aH = Math.min(1.0, Math.abs(hSafe||0));
+      pitchW = smoothstep(hPitchStart, 1.0, aH);
+      pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+      cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(outH||1), 0.98*(outH||1));
+
+      // Re-run the near-guard once with the updated pitch/cy (deterministic single iteration).
+      guardInfo = _applyNearGuard(camBase, {
+        f: fGuess,
+        cx,
+        cyCur,
+        planeMetric,
+        rotDeg,
+        pitchDes,
+        distDes: distScale,
+        distMax: 12.00,
+        rhoMax: 2.00,
+        shearMax: 32.0
+      });
+
+      if(guardInfo){
+        pitchEff = guardInfo.pitchEff;
+        distEff = guardInfo.distEff;
+      }
+    }
+  }
+}catch(_){/*noop*/}
+
+
+}catch(_){/*noop*/}
+
+// C1: ensure effective flattenK is defined in export/secondary passes too.
+try{
+  const zid = zone && zone.id ? zone.id : null;
+  const kTarget = (guardInfo && isFinite(guardInfo.flattenK)) ? Math.max(0.10, Math.min(1.0, guardInfo.flattenK)) : 1.0;
+  const sm = _smoothGuard(zid, distEff, kTarget);
+  distEff = sm.distEff;
+  if(guardInfo){
+    guardInfo.flattenKEff = sm.kEff;
+  }else{
+    guardInfo = { stage: 'none', flattenKEff: sm.kEff };
+  }
+}catch(_){/*noop*/}
+
+          if(camBase && camBase.R && camBase.t){
+            const camPoseCur = _applyPitchToCam(camBase, pitchEff);
+            // Apply optional near-guard flattening (camera-only).
+            let Rcur = camPoseCur.R;
+            if(guardInfo && isFinite(guardInfo.flattenKEff) && guardInfo.flattenKEff < 0.999){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenKEff));
+              const r1 = [Rcur[0], Rcur[3], Rcur[6]];
+              const r2 = [Rcur[1], Rcur[4], Rcur[7]];
+              const r1k = [r1[0], r1[1], r1[2]*k];
+              const r2k = [r2[0], r2[1], r2[2]*k];
+              const n1 = Math.hypot(r1k[0],r1k[1],r1k[2]);
+              const rr1 = (n1>1e-9) ? [r1k[0]/n1, r1k[1]/n1, r1k[2]/n1] : r1;
+              const d12 = rr1[0]*r2k[0] + rr1[1]*r2k[1] + rr1[2]*r2k[2];
+              let vv = [r2k[0]-d12*rr1[0], r2k[1]-d12*rr1[1], r2k[2]-d12*rr1[2]];
+              const n2 = Math.hypot(vv[0],vv[1],vv[2]);
+              if(n2>1e-9){
+                vv = [vv[0]/n2, vv[1]/n2, vv[2]/n2];
+                let r3 = [
+                  rr1[1]*vv[2] - rr1[2]*vv[1],
+                  rr1[2]*vv[0] - rr1[0]*vv[2],
+                  rr1[0]*vv[1] - rr1[1]*vv[0]
+                ];
+                const n3 = Math.hypot(r3[0],r3[1],r3[2]);
+                if(n3>1e-9){
+                  r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+                  Rcur = [
+                    rr1[0], vv[0], r3[0],
+                    rr1[1], vv[1], r3[1],
+                    rr1[2], vv[2], r3[2]
+                  ];
+                }
+              }
+            }
+            cam3d = {
+              R: Rcur,
+              t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
+              Kinv: [
+                1/fGuess, 0, -cx/fGuess,
+                0, 1/fGuess, -cyCur/fGuess,
+                0, 0, 1
+              ]
+            };
+            // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
+            cam3dRef = {
+              R: Rcur,
+              t: [camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
+              Kinv: [
+                1/fGuess, 0, -cx/fGuess,
+                0, 1/fGuess, -cyCur/fGuess,
+                0, 0, 1
+              ]
+            };
+          }
+        }
+      }catch(_){ cam3d = null; cam3dRef = null; }
+      }
+
+      const pbrMaps = await _preparePbrMaps(zone, ai);
+      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
+      const photoLight = (state && state.assets && state.assets.photoLight) ? state.assets.photoLight : null;
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight);
+      const tmp = src; src = dst; dst = tmp;
+    }
+
+    const dataURL = _readPixelsToDataURL(src);
+
+    // Cleanup
+    _destroyFBO(rtA);
+    _destroyFBO(rtB);
+    return dataURL;
+  }
+
+  async function exportPNGBlob(state, opts={}){
+    if(!gl) throw new Error('WebGL compositor not initialized');
+    if(!state?.assets?.photoBitmap || !photoTex) throw new Error('No photo loaded');
+
+    // Reuse exportPNG logic by rendering to a temp RT and reading pixels as Blob.
+    const photoExposure = clamp(((state && state.assets && +state.assets.photoExposure) || 1.0), 0.85, 1.15);
+    const ai = state && state.ai ? state.ai : null;
+    if(ai){
+      try{ _ensureAIDepthTexture(ai); }catch(_){ }
+      try{ _ensureAIOcclusionTexture(ai); }catch(_){ }
+    }
+
+    const longSide = Math.max(1, photoW, photoH);
+    const reqLong = clamp(opts.maxLongSide || longSide, 512, 4096);
+    const lim = Math.max(512, Math.min(maxTexSize, maxRbSize));
+    const outLong = Math.min(reqLong, lim);
+    const sc = outLong / longSide;
+    const outW = Math.max(1, Math.round(photoW * sc));
+    const outH = Math.max(1, Math.round(photoH * sc));
+
+    const rtA = _createFBO(outW, outH);
+    const rtB = _createFBO(outW, outH);
+
+    gl.viewport(0,0,outW,outH);
+    _renderCopy(photoTex, rtA, true);
+    let src = rtA;
+    let dst = rtB;
+
+    const API = window.PhotoPaveAPI;
+    const sx = outW / Math.max(1, photoW);
+    const sy = outH / Math.max(1, photoH);
+
+    for(const zone of (state.zones||[])){
+      if(!zone || !zone.enabled) continue;
+      if(!zone.closed || !zone.contour || zone.contour.length < 3) continue;
+      const url = zone.material?.textureUrl;
+      if(!url) continue;
+      const img = await API.loadImage(url);
+      const tileTex = _getTileTex(url, img);
+
+      const key = [
+        'mexp', outW, outH,
+        zone.id,
+        zone.contour.length,
+        zone.contour.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+        (zone.cutouts||[]).filter(c=>c.closed&&c.polygon&&c.polygon.length>=3).map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';')).join('|')
+      ].join('|');
+      const maskEntry = _getMaskTextures(key, zone, outW, outH, sx, sy);
+
+      // Export parity: prefer cached quad+camera from the last on-screen render.
+      // This guarantees "screen == PNG" by avoiding resolution-dependent quad inference.
+      const contourR = (zone.contour||[]).map(p=>({x:(+p.x||0)*sx, y:(+p.y||0)*sy}));
+      let planeMetric = {W:1.0, D:1.0};
+      let quad = null;
+      let Hm = null;
+      let invH = null;
+      let cam3d = null;
+      let cam3dRef = null;
+      try{
+        const geoKey = [
+          zone.id,
+          (zone.contour||[]).length,
+          (zone.contour||[]).map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'),
+          (zone.cutouts||[])
+            .filter(c=>c.closed&&c.polygon&&c.polygon.length>=3)
+            .map(c=>'c:'+c.polygon.map(p=>((p.x*10)|0)+','+((p.y*10)|0)).join(';'))
+            .join('|')
+        ].join('|');
+        const rc = zone._renderCache;
+        if(rc && rc.geoKey === geoKey && rc.quadPhoto && rc.quadPhoto.length===4){
+          planeMetric = rc.metric || planeMetric;
+          quad = rc.quadPhoto.map(pt=>({x:(+pt.x||0)*sx, y:(+pt.y||0)*sy}));
+          const qn = _normalizeQuad(quad);
+          if(qn){
+            Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+            if(Hm) invH = _invert3x3(Hm);
+          }
+          const cs = rc.cam;
+          if(cs && cs.R && cs.t){
+            const md = Math.max(1, Math.max(outW||1, outH||1));
+            const f = (cs.fN || 1) * md;
+            const cx = (cs.cxN || 0.5) * outW;
+            const cy = (cs.cyN || 0.5) * outH;
+            const inv = [1/f,0,-cx/f, 0,1/f,-cy/f, 0,0,1];
+            cam3d = { R: cs.R.slice(0), t: cs.t.slice(0), Kinv: inv };
+            cam3dRef = { R: cs.R.slice(0), t: (cs.tRef ? cs.tRef.slice(0) : cs.t.slice(0)), Kinv: inv };
+          }
+        }
+      }catch(_){/*no-op*/}
+
+      if(!Hm){
+        const quadRes = _inferQuadFromContour(contourR, {horizon:0.0, perspective:1.0}, outW, outH, null);
+        quad = quadRes && quadRes.quad ? quadRes.quad : null;
+        if(quadRes && quadRes.metric){ planeMetric = quadRes.metric; }
+        if(quad){
+          const qn = _normalizeQuad(quad);
+          if(qn){
+            Hm = _homographyRectToQuad(qn, planeMetric.W, planeMetric.D);
+            if(Hm) invH = _invert3x3(Hm);
+          }
+        }
+      }
+      if(!invH){ invH = [1/Math.max(1,outW),0,0, 0,1/Math.max(1,outH),0, 0,0,1]; }
+
+      // Build camera model consistent with on-screen path (pose locked, perspective->distance, horizon->pitch).
+      try{
+        if(Hm && !cam3d){
+          const intr = _computeIntrinsicsUnified(Hm, outW, outH, sx, sy, ai);
+          let cx = intr.cx;
+          let cy = intr.cy;
+          let fGuess = intr.f;
+
+          const params = zone.material?.params || {};
+          // Same horizon handling as on-screen: allow a wide UI range, but apply it safely
+          // via conservative pitch + principal point shift (cy).
+          const hVal = clamp((params.horizon ?? 0.0), -1.0, 1.0);
+          const pVal = clamp((params.perspective ?? 0.75), 0.0, 1.0);
+          const perspT = (pVal - 0.5) * 2.0;
+          const distK = 0.70;
+          const distScale = clamp(Math.exp(-perspT * distK), 0.45, 2.20);
+          const distScaleRef = 1.0;
+          const camBase = _decomposeHomographyToRT(Hm, {f:fGuess, cx, cy});
+	          const pitchMax = 0.40;
+	          const cyShiftMax = 0.70 * (outH || 1);
+
+          // B1: Pitch only starts contributing near the end of the Horizon slider travel.
+          const hPitchStart = 0.82;
+
+          // Keep the plane visible inside the contour at export resolution.
+          const bounds = _computeContourBounds(contourR) || {xMin:0, xMax:(outW||1)-1, yMin:0, yMax:(outH||1)-1};
+	          let hSafe = _clampHorizonToFillContour(camBase, hVal, {
+	            zoneId: (zone && zone.id) ? zone.id : null,
+	            cx, cy, f: fGuess, w: outW, h: outH,
+            distScale,
+            pitchMax,
+            cyShiftMax,
+            hPitchStart,
+	            hRelaxAlpha: 0.18,
+	            hSoftK: 28.0,
+            bounds
+          });
+
+          let aH = Math.min(1.0, Math.abs(hSafe||0));
+
+          // B1: cy-dominant horizon. Pitch ramps in only near extremes to reduce near-field "rubber".
+          let pitchW = smoothstep(hPitchStart, 1.0, aH);
+          let pitchDes = ((hSafe >= 0) ? 1 : -1) * pitchMax * pitchW;
+	          const cyCur = clamp(cy + (hSafe * cyShiftMax), 0.02*(outH||1), 0.98*(outH||1));
+
+          // B3: near-field quality guard (camera-only). Keeps export identical to screen logic.
+          const rotDeg = (zone && zone.material && zone.material.params) ? (zone.material.params.rotation ?? 0.0) : 0.0;
+          let pitchEff = pitchDes;
+          let distEff = distScale;
+          let guardInfo = null;
+          try{
+            if(camBase){
+              guardInfo = _applyNearGuard(camBase, {
+                f: fGuess,
+                cx,
+                cyCur,
+                planeMetric,
+                rotDeg,
+                pitchDes,
+                distDes: distScale,
+                distMax: 12.00,
+                rhoMax: 2.00,
+                shearMax: 32.0
+              });
+              if(guardInfo){
+                pitchEff = guardInfo.pitchEff;
+                distEff = guardInfo.distEff;
+              }
+            }
+          }catch(_){/*noop*/}
+
+          if(camBase && camBase.R && camBase.t){
+            const camPoseCur = _applyPitchToCam(camBase, pitchEff);
+            let Rcur = camPoseCur.R;
+            if(guardInfo && isFinite(guardInfo.flattenKEff) && guardInfo.flattenKEff < 0.999){
+              const k = Math.max(0.10, Math.min(1.0, guardInfo.flattenKEff));
+              const r1 = [Rcur[0], Rcur[3], Rcur[6]];
+              const r2 = [Rcur[1], Rcur[4], Rcur[7]];
+              const r1k = [r1[0], r1[1], r1[2]*k];
+              const r2k = [r2[0], r2[1], r2[2]*k];
+              const n1 = Math.hypot(r1k[0],r1k[1],r1k[2]);
+              const rr1 = (n1>1e-9) ? [r1k[0]/n1, r1k[1]/n1, r1k[2]/n1] : r1;
+              const d12 = rr1[0]*r2k[0] + rr1[1]*r2k[1] + rr1[2]*r2k[2];
+              let vv = [r2k[0]-d12*rr1[0], r2k[1]-d12*rr1[1], r2k[2]-d12*rr1[2]];
+              const n2 = Math.hypot(vv[0],vv[1],vv[2]);
+              if(n2>1e-9){
+                vv = [vv[0]/n2, vv[1]/n2, vv[2]/n2];
+                let r3 = [
+                  rr1[1]*vv[2] - rr1[2]*vv[1],
+                  rr1[2]*vv[0] - rr1[0]*vv[2],
+                  rr1[0]*vv[1] - rr1[1]*vv[0]
+                ];
+                const n3 = Math.hypot(r3[0],r3[1],r3[2]);
+                if(n3>1e-9){
+                  r3 = [r3[0]/n3, r3[1]/n3, r3[2]/n3];
+                  Rcur = [ rr1[0], vv[0], r3[0],  rr1[1], vv[1], r3[1],  rr1[2], vv[2], r3[2] ];
+                }
+              }
+            }
+            cam3d = { R: Rcur, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distEff],
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
+            // Reference uses the same pose (incl. pitch) and cy shift so horizon doesn't fight scale lock.
+            cam3dRef = { R: Rcur, t:[camPoseCur.t[0], camPoseCur.t[1], camPoseCur.t[2]*distScaleRef],
+              Kinv:[ 1/fGuess,0,-cx/fGuess, 0,1/fGuess,-cyCur/fGuess, 0,0,1 ] };
+          }
+        }
+      }catch(_){ cam3d = null; cam3dRef = null; }
+
+      const pbrMaps = await _preparePbrMaps(zone, state.ai);
+      const anchorPx = (quad && quad.length===4) ? {x:(quad[0].x+quad[1].x)*0.5, y:(quad[0].y+quad[1].y)*0.5} : null;
+      const photoLight = (state && state.assets && state.assets.photoLight) ? state.assets.photoLight : null;
+      _renderZonePass(src.tex, dst, zone, tileTex, pbrMaps, maskEntry, invH, planeMetric, state.ai, cam3d, cam3dRef, anchorPx, photoExposure, photoLight);
+      const tmp = src; src = dst; dst = tmp;
+    }
+
+    const blob = await _readPixelsToBlob(src);
+    _destroyFBO(rtA);
+    _destroyFBO(rtB);
+    return blob;
+  }
+
+  return { init, setPhoto, resize, render, exportPNG, exportPNGBlob, getLimits, getDebugMetrics: ()=>_lastDebugMetrics };
+})();

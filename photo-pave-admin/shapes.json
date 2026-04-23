@@ -1,0 +1,64 @@
+{
+  "shapes": [
+    {
+      "id": "antika",
+      "name": "Антика",
+      "icon": "assets/forms/antika_thumb.png"
+    },
+    {
+      "id": "bruschatka",
+      "name": "Брусчатка",
+      "icon": "assets/forms/bruschatka_thumb.png"
+    },
+    {
+      "id": "klassika",
+      "name": "Классика",
+      "icon": "assets/forms/klassika_thumb.png"
+    },
+    {
+      "id": "poligonal",
+      "name": "Полигональ",
+      "icon": "assets/forms/poligonal_thumb.png"
+    },
+    {
+      "id": "promenad2",
+      "name": "Променад II",
+      "icon": "assets/forms/promenad2_thumb.png"
+    },
+    {
+      "id": "new_gorod",
+      "name": "Новый город",
+      "icon": "assets/forms/new_gorod_thumb.png"
+    },
+    {
+      "id": "old_gorod",
+      "name": "Старый город",
+      "icon": "assets/forms/old_gorod_thumb.png"
+    },
+    {
+      "id": "rigel",
+      "name": "Ригель",
+      "icon": "assets/forms/rigel_thumb.png"
+    },
+    {
+      "id": "paladio",
+      "name": "Паладио",
+      "icon": "assets/forms/paladio_thumb.png"
+    },
+    {
+      "id": "gazonnaya_reshetka",
+      "name": "Газонная решетка",
+      "icon": "assets/forms/gazonnaya_reshetka_thumb.png"
+    },
+    {
+      "id": "megapolis",
+      "name": "Мегаполис",
+      "icon": "assets/forms/megapolis_thumb.png"
+    },
+    {
+      "id": "promenad1",
+      "name": "Променад I",
+      "icon": "assets/forms/promenad1_thumb.png"
+    }
+  ]
+}
