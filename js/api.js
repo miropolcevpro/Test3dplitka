@@ -94,6 +94,10 @@ function absFromStorageMaybe(p){
   try{
     const shapes=await tryJsonCandidates(candidates);
     state.catalog.shapes=Array.isArray(shapes)?shapes:(shapes.shapes||[]);
+    const ids=(state.catalog.shapes||[]).map((sh)=>sh && (sh.id||sh.shapeId||sh.slug)).filter(Boolean);
+    if(ids.length && (!state.catalog.activeShapeId || ids.indexOf(state.catalog.activeShapeId)===-1)){
+      state.catalog.activeShapeId=ids[0];
+    }
     _clearAssetError();
     return;
   }catch(eStatic){

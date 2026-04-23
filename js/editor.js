@@ -12,10 +12,10 @@ window.PhotoPaveEditor=(function(){
   const setHint=(t)=>{const el=document.getElementById("hintText");if(el)el.textContent=t||"";};
 
   // Interaction tuning in CSS pixels (converted to canvas pixels via boundingClientRect scale)
-  const HIT_RADIUS_CSS = 14;      // point pick radius
+  const HIT_RADIUS_CSS = 18;      // point pick radius (larger for mobile-safe contour editing)
   // Slightly larger snap radius makes closure far more predictable on large photos / iframe scaling.
-  const SNAP_CLOSE_CSS = 24;      // close-to-first snap radius
-  const DRAG_AUTOCLOSE_CSS = 14;  // if dragging last point near first and release -> auto close
+  const SNAP_CLOSE_CSS = 30;      // close-to-first snap radius (more forgiving for mass-market UX)
+  const DRAG_AUTOCLOSE_CSS = 18;  // if dragging last point near first and release -> auto close
   const DRAG_THRESHOLD_CSS = 6;   // pointer movement threshold to start drag instead of closing
   const DASH_PREVIEW = true;
 
@@ -24,6 +24,26 @@ window.PhotoPaveEditor=(function(){
   let hoverCloseCandidate = false;
   // If user clicks the first point on an open polygon, we treat it as a "tap to close" unless they start dragging.
   let pendingClose = null;
+
+  function emitUiEvent(name, detail){
+    try{ window.dispatchEvent(new CustomEvent(name, { detail: detail || {} })); }
+    catch(_){ try{ window.dispatchEvent(new Event(name)); }catch(__){} }
+  }
+
+  function dispatchPolyUpdated(reason){
+    try{
+      const zone = getActiveZone ? getActiveZone() : null;
+      const cut = zone && getActiveCutout ? getActiveCutout(zone) : null;
+      emitUiEvent("pp:polyUpdated", {
+        reason: reason || null,
+        mode: state.ui && state.ui.mode ? state.ui.mode : null,
+        contourPoints: zone && Array.isArray(zone.contour) ? zone.contour.length : 0,
+        contourClosed: !!(zone && zone.closed),
+        cutoutPoints: cut && Array.isArray(cut.polygon) ? cut.polygon.length : 0,
+        cutoutClosed: !!(cut && cut.closed)
+      });
+    }catch(_){ }
+  }
 
   function init(overlayCanvas, baseGlCanvas){
     canvas=overlayCanvas;
@@ -59,7 +79,7 @@ window.PhotoPaveEditor=(function(){
       });
     }
     window.addEventListener("resize",resize);resize();
-    setHint("Загрузите фото. Затем в режиме «Контур» обведите зону мощения точками и замкните, кликнув рядом с первой точкой. При необходимости добавьте «Вырез» и также замкните его.");
+    setHint("Загрузите фото. Затем в режиме «Контур» поставьте точки по краю участка и замкните контур рядом с первой точкой. Когда основной участок будет готов, при необходимости откройте «Вырез»." );
   }
   function resize(){
     const wrap = canvas.parentElement;
@@ -1173,6 +1193,7 @@ if(state.ui.mode==="contour"&&zone){
     }
   }catch(e){}
 
+      dispatchPolyUpdated("contour_closed_tap");
       render();
       return;
     }
@@ -1188,6 +1209,7 @@ if(state.ui.mode==="contour"&&zone){
     }
     // Preserve auto-close result if it triggered.
     zone.closed = !!zone.closed;
+    dispatchPolyUpdated(zone.closed ? "contour_closed_auto" : "contour_point_added");
     render();
     return;
   }
@@ -1198,6 +1220,7 @@ if(state.ui.mode==="contour"&&zone){
       pushHistory();
       splitDraft.closed = true;
       try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
+      dispatchPolyUpdated("split_closed_tap");
       render();
       return;
     }
@@ -1210,6 +1233,7 @@ if(state.ui.mode==="contour"&&zone){
       try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ }
     }
     splitDraft.closed = !!splitDraft.closed;
+    dispatchPolyUpdated(splitDraft.closed ? "split_closed_auto" : "split_point_added");
     render();
     return;
   }
@@ -1219,6 +1243,7 @@ if(state.ui.mode==="contour"&&zone){
     if(isCloseToFirst(cut.polygon,pt)){
       pushHistory();
       cut.closed=true;
+      dispatchPolyUpdated("cutout_closed_tap");
       render();
       return;
     }
@@ -1227,6 +1252,7 @@ if(state.ui.mode==="contour"&&zone){
     cut.polygon.push(pt);
     if(cutoutWasEmpty){ try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("cutout_started", { zoneId: zone.id || null, cutoutId: cut.id || null, source:"canvas_point", stage:"drawing" }, { allowDuplicate:true }); }catch(_){ } }
     cut.closed=false;
+    dispatchPolyUpdated("cutout_point_added");
     render();
     return;
   }
@@ -1343,7 +1369,7 @@ if(state.ui.mode==="contour"&&zone){
     if(sel.kind==="contour"){
       const pts=zone.contour;
       if(!zone.closed && pts.length>=3 && sel.idx===pts.length-1){
-        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)){ const was=!!zone.closed; zone.closed=true; if(!was){ try{ window.dispatchEvent(new Event("pp:zoneClosed")); }catch(_){ } } }
+        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)){ const was=!!zone.closed; zone.closed=true; if(!was){ try{ window.dispatchEvent(new Event("pp:zoneClosed")); }catch(_){ } } dispatchPolyUpdated("contour_closed_drag"); }
       }
       return;
     }
@@ -1352,7 +1378,7 @@ if(state.ui.mode==="contour"&&zone){
       if(!cut) return;
       const pts=cut.polygon;
       if(!cut.closed && pts.length>=3 && sel.idx===pts.length-1){
-        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)) cut.closed=true;
+        if(isCloseToFirst(pts, pts[sel.idx], DRAG_AUTOCLOSE_CSS)){ cut.closed=true; dispatchPolyUpdated("cutout_closed_drag"); }
       }
     }
   }
@@ -1366,12 +1392,14 @@ if(state.ui.mode==="contour"&&zone){
       else if(pendingClose.kind==="cutout"){ const z=getActiveZone(); if(z){ const c=getActiveCutout(z); if(c) c.closed=true; } }
       else if(pendingClose.kind==="split"){ if(state.ui && state.ui.splitDraft){ state.ui.splitDraft.closed=true; try{ window.dispatchEvent(new Event("pp:splitClosed")); }catch(_){ } } }
       pendingClose=null;
+      dispatchPolyUpdated("pointer_tap_close");
     }
     // If user dragged the last point near the first point, auto-close.
     if(state.ui.draggingPoint){
       maybeAutoCloseOnDragRelease();
     }
     state.ui.draggingPoint=null;
+    dispatchPolyUpdated("pointer_up");
     try{canvas.releasePointerCapture(ev && ev.pointerId);}catch(_){ }
     state.ui.pointerCaptureId = null;
     render();
@@ -1402,7 +1430,7 @@ if(state.ui.mode==="contour"&&zone){
       else if(sel.kind==="cutout"){const cut=getActiveCutout(zone);if(!cut)return false;cut.polygon.splice(sel.idx,1); if(cut.polygon.length<3) cut.closed=false;}
       else if(sel.kind==="split"){ if(state.ui && state.ui.splitDraft && state.ui.splitDraft.points){ state.ui.splitDraft.points.splice(sel.idx,1); if(state.ui.splitDraft.points.length<3) state.ui.splitDraft.closed=false; } }
     }
-    state.ui.selectedPoint=null;render();return true;
+    state.ui.selectedPoint=null;dispatchPolyUpdated("delete_point");render();return true;
   }
   function bindInput(){
     canvas.addEventListener("pointerdown",onPointerDown);
@@ -1416,19 +1444,37 @@ if(state.ui.mode==="contour"&&zone){
     try{
       if(state.ui && state.ui.singleZoneMode && mode==="split") mode="contour";
     }catch(_){ }
+    const zone = getActiveZone ? getActiveZone() : null;
+    if(mode==="cutout"){
+      const ready = !!(zone && zone.closed && Array.isArray(zone.contour) && zone.contour.length >= 3);
+      if(!ready){
+        state.ui.mode="contour";
+        hoverCanvas=null;
+        hoverCloseCandidate=false;
+        setHint("Сначала замкните основной контур, затем добавляйте вырез. Когда будет минимум 3 точки, нажмите «Замкнуть контур»." );
+        emitUiEvent("pp:cutoutBlocked", { reason:"zone_not_closed" });
+        emitUiEvent("pp:modeChanged", { mode:"contour" });
+        dispatchPolyUpdated("cutout_blocked");
+        render();
+        return;
+      }
+    }
     state.ui.mode=mode;
     hoverCanvas=null;
     hoverCloseCandidate=false;
     const map={
       photo:"Загрузите фото или замените его.",
-      plane:"Контур: ставьте точки по краю зоны и замкните к первой точке (магнит). Плоскость определяется автоматически. Точки можно двигать.",
-      contour:"Контур зоны: ставьте точки по краю и замкните, кликнув рядом с первой точке. После замыкания текстура начнёт применяться.",
-      cutout:"Вырез: обведите объект точками и замкните рядом с первой точкой — вырез исключит область из заливки.",
+      plane:"Контур: ставьте точки по краю зоны и замкните рядом с первой точкой. Плоскость определяется автоматически. Точки можно двигать.",
+      contour:"Контур участка: ставьте точки по краю. Когда будет 3 точки или больше, нажмите «Замкнуть контур» или кликните рядом с первой точкой.",
+      cutout:"Вырез: обведите препятствие точками и замкните рядом с первой точкой — эта область не будет залита плиткой.",
       split:"Разделение: обведите под‑участок внутри зоны и замкните — участок станет новой зоной, а в основной зоне будет вырез.",
       view:"Просмотр: меняйте материалы, сохраняйте результат.",
       calib:"3D‑калибровка: выберите кнопку линии (A1/A2/B1/B2), затем поставьте 2 точки на фото. A — вдоль укладки (в глубину), B — поперёк. Shift+клик очищает текущую линию."
     };
-    setHint(map[mode]||"");render();
+    setHint(map[mode]||"");
+    emitUiEvent("pp:modeChanged", { mode: mode });
+    dispatchPolyUpdated("mode_change");
+    render();
   }
   function exportPNG(){
     (async ()=>{

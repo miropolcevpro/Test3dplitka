@@ -25,6 +25,11 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .canvasToolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
 .toolGroup{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .hint{color:var(--muted);font-size:12px;padding:6px 10px;border:1px dashed rgba(255,255,255,0.14);border-radius:10px;flex:1;min-width:260px}
+.contourAssist{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid rgba(0,229,255,0.18);border-radius:12px;background:rgba(0,229,255,0.06);min-width:320px;flex:1.2}
+.contourAssist__status{font-size:12px;line-height:1.35;color:rgba(231,238,252,0.92)}
+.contourAssist__actions{display:flex;gap:8px;flex-wrap:wrap}
+.contourAssist.isReady{border-color:rgba(255,215,0,0.35);background:rgba(255,215,0,0.08)}
+.contourAssist.isComplete{border-color:rgba(68,212,123,0.35);background:rgba(68,212,123,0.08)}
 .canvasWrap{position:relative;flex:1;min-height:0;background:#0b0e14;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center}
 /* Canvases: WebGL base + 2D overlay. Display size is controlled in JS to preserve photo aspect ratio. */
 #glCanvas,#editorCanvas{display:block;position:absolute;left:50%;top:50%;
@@ -76,7 +81,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .footer{padding:12px 18px;border-top:1px solid var(--border);color:var(--muted);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
 .muted{color:var(--muted);font-size:12px}
 @media (max-width:1100px){.main{grid-template-columns:1fr}.sidePane{order:2}.canvasPane{order:1}.grid--textures{grid-template-columns:repeat(5,minmax(0,1fr))}}
-@media (max-width:720px){.grid--shapes{grid-template-columns:repeat(2,minmax(0,1fr))}.grid--textures{grid-template-columns:repeat(3,minmax(0,1fr))}.hint{min-width:unset}}
+@media (max-width:720px){.grid--shapes{grid-template-columns:repeat(2,minmax(0,1fr))}.grid--textures{grid-template-columns:repeat(3,minmax(0,1fr))}.hint{min-width:unset}.contourAssist{min-width:unset;flex-direction:column;align-items:stretch}.contourAssist__actions{width:100%}.contourAssist__actions .btn{flex:1}}
 
 
 @media (min-width: 1100px){
@@ -85,7 +90,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 
 
 /* Bottom selector bar (shapes + textures) */
-.bottomMenu{background:rgba(15,18,24,0.92);backdrop-filter:blur(10px);border-top:1px solid rgba(255,255,255,0.08);padding:8px 8px;display:flex;flex-direction:column;gap:10px}
+.bottomMenu{background:rgba(15,18,24,0.92);backdrop-filter:blur(10px);border-top:1px solid rgba(255,255,255,0.08);padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px;flex:0 0 auto;min-height:138px;position:relative;z-index:3}
 .bottomSection{display:flex;flex-direction:column;gap:6px}
 .bottomTitle{font-size:12px;color:var(--muted);letter-spacing:.02em;padding:0 4px}
 
@@ -109,6 +114,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
 .hscroll::-webkit-scrollbar{height:10px}
 .hscroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.18);border-radius:999px}
 .hscroll .card{flex:0 0 auto}
+.hscroll__note{padding:10px 12px;border:1px dashed rgba(255,255,255,0.14);border-radius:12px;color:var(--muted);font-size:12px;background:rgba(255,255,255,0.03);min-width:min(320px,100%)}
 
 /* Shapes row: keep image size policy (contain) but make the frame fit the preview (no empty bars)
    by adapting thumbnail aspect-ratio per image. */
@@ -161,6 +167,7 @@ body{margin:0;font-family:var(--font);background:linear-gradient(180deg,#0b0e14,
   .topbar{position:sticky;top:0}
   .sidePane{order:2}
   .canvasPane{order:1}
+  .bottomMenu{min-height:124px}
   .hscroll--shapes .card{width:var(--shape-card-w,150px);height:auto}
   .hscroll--textures .card{width:200px;height:150px}
 }

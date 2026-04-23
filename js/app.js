@@ -18,6 +18,7 @@
   };
   const SIMPLE_MODE = (RELEASE && RELEASE.simpleMode) || { enabled:true };
   const _SECONDARY_TOOLS_KEY = "pp_secondary_tools_v1";
+  let _contourAssistHintLock = false;
   function setNodeHidden(node, hidden){
     if(!node) return;
     node.hidden = !!hidden;
@@ -372,6 +373,21 @@
     else step = "result";
     return { hasPhoto, zone, zoneClosed, hasTexture, step };
   }
+  function getShapeIdList(){
+    return (state.catalog && Array.isArray(state.catalog.shapes) ? state.catalog.shapes : []).map((sh)=>sh && (sh.id||sh.shapeId||sh.slug)).filter(Boolean);
+  }
+  function ensureActiveShapeSelection(){
+    state.catalog = state.catalog || {};
+    const ids = getShapeIdList();
+    if(!ids.length){
+      state.catalog.activeShapeId = null;
+      return null;
+    }
+    if(!state.catalog.activeShapeId || ids.indexOf(state.catalog.activeShapeId) === -1){
+      state.catalog.activeShapeId = ids[0];
+    }
+    return state.catalog.activeShapeId;
+  }
   function setSecondaryToolsOpen(open){
     state.ui = state.ui || {};
     if(state.ui.mode === "cutout") open = true;
@@ -428,7 +444,7 @@
       primaryAction = "contour";
     }else if(model.step === "tile"){
       title = "Шаг 3. Выберите форму и плитку";
-      text = "Сначала выберите форму снизу, затем текстуру слева. После выбора сможете сразу открыть чистый результат.";
+      text = "Сначала выберите форму в нижней панели, затем текстуру слева. После выбора сможете сразу открыть чистый результат.";
       primaryLabel = "Выбрать плитку";
       primaryAction = "tile";
     }else if(model.step === "result"){
@@ -447,6 +463,103 @@
     }
     document.querySelectorAll(".stepper .step").forEach((s)=>s.classList.toggle("step--active", s.dataset.step===model.step));
     restoreSecondaryToolsState();
+  }
+
+
+  function getContourAssistModel(){
+    const ui = state.ui || {};
+    const z = S.getActiveZone ? S.getActiveZone() : null;
+    const cut = (z && S.getActiveCutout) ? S.getActiveCutout(z) : null;
+    const hasPhoto = !!(state.assets && state.assets.photoBitmap);
+    const mode = ui.mode || "photo";
+    const contourPoints = z && Array.isArray(z.contour) ? z.contour.length : 0;
+    const contourClosed = !!(z && z.closed && contourPoints >= 3);
+    const cutoutPoints = cut && Array.isArray(cut.polygon) ? cut.polygon.length : 0;
+    const cutoutClosed = !!(cut && cut.closed && cutoutPoints >= 3);
+    let kind = mode === "cutout" ? "cutout" : "contour";
+    let points = kind === "cutout" ? cutoutPoints : contourPoints;
+    let closed = kind === "cutout" ? cutoutClosed : contourClosed;
+    let visible = !!hasPhoto && (mode === "contour" || mode === "cutout");
+    let status = "";
+    if(!hasPhoto){
+      visible = false;
+    }else if(mode === "cutout" && !contourClosed){
+      visible = true;
+      kind = "contour";
+      points = contourPoints;
+      closed = contourClosed;
+      status = "Сначала замкните основной контур, затем добавляйте вырез.";
+    }else if(kind === "cutout"){
+      if(closed) status = "Вырез замкнут. Можно добавить ещё один через доп. инструменты или вернуться к плитке.";
+      else if(points >= 3) status = "Вырез почти готов. Нажмите «Замкнуть вырез» или кликните рядом с первой точкой.";
+      else if(points > 0) status = `Вырез: ${points} ${points===1?"точка":"точки"}. Продолжайте по краю препятствия.`;
+      else status = "Поставьте точки вокруг препятствия. Вырез доступен только внутри готового участка.";
+    }else{
+      if(closed) status = "Контур замкнут. Теперь выберите форму и плитку или откройте результат.";
+      else if(points >= 3) status = "Контур почти готов. Нажмите «Замкнуть контур» или кликните рядом с первой точкой.";
+      else if(points > 0) status = `Контур: ${points} ${points===1?"точка":"точки"}. Поставьте ещё точки по краю участка.`;
+      else status = "Поставьте минимум 3 точки по краю участка. Замкните контур по первой точке.";
+    }
+    return {
+      visible,
+      kind,
+      points,
+      closed,
+      canUndo: !!(visible && points > 0),
+      canClose: !!(visible && !closed && points >= 3),
+      status
+    };
+  }
+
+  function updateContourAssistUI(){
+    const wrap = el("contourAssist");
+    if(!wrap) return;
+    if(!relVisible("contourAssist", true)){
+      setNodeHidden(wrap, true);
+      return;
+    }
+    const model = getContourAssistModel();
+    setNodeHidden(wrap, !model.visible);
+    if(!model.visible) return;
+    const statusEl = el("contourAssistStatus");
+    const undoBtn = el("contourAssistUndoBtn");
+    const closeBtn = el("contourAssistCloseBtn");
+    wrap.classList.toggle("isReady", !!(!model.closed && model.points >= 3));
+    wrap.classList.toggle("isComplete", !!model.closed);
+    if(statusEl) statusEl.textContent = model.status;
+    if(undoBtn){
+      undoBtn.disabled = !model.canUndo;
+      undoBtn.textContent = model.kind === "cutout" ? "Отменить точку выреза" : "Отменить точку";
+    }
+    if(closeBtn){
+      closeBtn.disabled = !model.canClose;
+      closeBtn.textContent = model.kind === "cutout" ? "Замкнуть вырез" : "Замкнуть контур";
+    }
+  }
+
+  function syncContourHintUi(){
+    try{ updateContourAssistUI(); }catch(_){ }
+    if(_contourAssistHintLock) return;
+    try{
+      const hint = el("hintText");
+      if(!hint) return;
+      const model = getContourAssistModel();
+      if(model.visible) hint.textContent = model.status;
+    }catch(_){ }
+  }
+
+  function flashContourAssistHint(msg){
+    try{
+      const hint = el("hintText");
+      if(!hint) return;
+      _contourAssistHintLock = true;
+      hint.textContent = msg || "";
+      clearTimeout(flashContourAssistHint._t);
+      flashContourAssistHint._t = setTimeout(()=>{
+        _contourAssistHintLock = false;
+        try{ syncContourHintUi(); }catch(_){ }
+      }, 2200);
+    }catch(_){ }
   }
 
   function setBuildInfo(){
@@ -484,6 +597,7 @@
     // Show concise line; do not expose internal ids.
     elx.textContent = `Редактируете: ${(!singleZone && isMaster) ? "★ " : ""}${name}  •  Режим: ${mode}  •  Изменять: ${scope}`;
     try{ updateSimpleShell(); }catch(_){ }
+    try{ syncContourHintUi(); }catch(_){ }
   }
 
 
@@ -832,16 +946,25 @@ function addZoneAndArmContour(){
     renderCutoutsUI();
     updateOffsetControlsVisibility();
     try{ updateSimpleShell(); }catch(_){ }
+    try{ syncContourHintUi(); }catch(_){ }
   }
 
   function renderShapesUI(){
-    const wrap=el("shapesList");wrap.innerHTML="";
-    for(const sh of (state.catalog.shapes||[])){
+    const wrap=el("shapesList");
+    if(!wrap) return;
+    wrap.innerHTML="";
+    const activeShapeId=ensureActiveShapeSelection();
+    const shapes=(state.catalog && Array.isArray(state.catalog.shapes)) ? state.catalog.shapes : [];
+    if(!shapes.length){
+      wrap.innerHTML=`<div class="hscroll__note">Формы пока недоступны. Проверьте загрузку <code>shapes.json</code> рядом с редактором.</div>`;
+      return;
+    }
+    for(const sh of shapes){
       const shapeId=sh.id||sh.shapeId||sh.slug;
       const title=sh.title||sh.name||shapeId;
       const preview=sh.preview||sh.previewUrl||sh.image||sh.icon||sh.iconUrl||null;
       const card=document.createElement("div");
-      card.className="card"+(shapeId===state.catalog.activeShapeId?" card--active":"");
+      card.className="card"+(shapeId===activeShapeId?" card--active":"");
       card.innerHTML=`<div class="thumb">${preview?`<img src="${escapeAttr(preview)}" alt="${escapeAttr(title)}"/>`:""}</div>`;
 
       // Adapt the thumbnail frame to the intrinsic image aspect ratio to remove empty bars,
@@ -1150,91 +1273,91 @@ function addZoneAndArmContour(){
   }
 
 function renderTexturesUI(){
-    const wrap=el("texturesList");wrap.innerHTML="";
-    const shapeId=state.catalog.activeShapeId;
+    const wrap=el("texturesList");
+    if(!wrap) return;
+    wrap.innerHTML="";
+    const searchEl=el("texturesSearch");
+    const q=((searchEl && searchEl.value)||"").trim().toLowerCase();
+    const shapeId=ensureActiveShapeSelection();
+    if(!shapeId){
+      wrap.innerHTML=`<div class="note">Сначала выберите форму в нижней панели.</div>`;
+      _pp_updateTexControlsUI();
+      return;
+    }
     const allList=state.catalog.texturesByShape[shapeId]||[];
     const zone=S.getActiveZone();
-
-    const st=_pp_getTexFilterState();
-    const q=(st.query||"").trim().toLowerCase();
-    let list=allList;
-
-    if(st.filter==="fav"){
+    const activeTexId=(zone && zone.material && zone.material.textureId) ? zone.material.textureId : null;
+    const filter=state.ui && state.ui.textureFilter ? state.ui.textureFilter : "all";
+    let list=allList.slice();
+    if(filter==="fav"){
       list=allList.filter(t=>_pp_isFav(shapeId, t.textureId));
-    }else if(st.filter==="recent"){
+    }else if(filter==="recent"){
       const rec=_pp_getRecentList().filter(x=>x && x.shapeId===shapeId);
-      const map=new Map(allList.map(t=>[t.textureId,t]));
-      list=[];
-      for(const r of rec){ const t=map.get(r.textureId); if(t) list.push(t); }
+      const rank=new Map(rec.map((x,i)=>[x.textureId, i]));
+      list=allList.filter(t=>rank.has(t.textureId)).sort((a,b)=>rank.get(a.textureId)-rank.get(b.textureId));
     }
-
     if(q){
-      list=list.filter(t=>{
-        const a=(t.title||"").toLowerCase();
-        const b=(t.textureId||"").toLowerCase();
-        return a.includes(q) || b.includes(q);
-      });
+      list=list.filter(t=>String(t.title||t.textureId||"").toLowerCase().includes(q));
     }
-
     for(const t of list){
-      const url=resolveTextureUrl(t);
-      const active=zone && zone.material.textureId===t.textureId;
-      const thumb=(t.previewUrl||url);
       const card=document.createElement("div");
-      card.className="card"+(active?" card--active":"");
+      const isActive = !!activeTexId && t.textureId===activeTexId;
+      card.className="card"+(isActive?" card--active":"");
       const favOn=_pp_isFav(shapeId, t.textureId);
-      card.innerHTML=`<button class="ppFavBtn ${favOn?"ppFavBtn--on":""}" title="${favOn?"Убрать из избранного":"В избранное"}" aria-label="favorite" type="button">★</button><div class="thumb">${thumb?`<img src="${escapeAttr(thumb)}" alt="">`:""}</div><div class="card__label"><span>${escapeHtml(t.title||t.textureId||"")}</span><span class="badge">${escapeHtml(t.textureId||"")}</span></div>`;
-            const favBtn=card.querySelector(".ppFavBtn");
+      card.innerHTML=`
+        <div class="thumb">${t.previewUrl?`<img src="${escapeAttr(t.previewUrl)}" alt="${escapeAttr(t.title||t.textureId||'texture')}"/>`:""}</div>
+        <div class="card__label"><span>${escapeHtml(t.title||t.textureId||"—")}</span><button type="button" class="ppFavBtn${favOn?" isOn":""}" aria-label="Избранное">★</button></div>`;
+      const favBtn=card.querySelector('.ppFavBtn');
       if(favBtn){
-        favBtn.addEventListener("click",(ev)=>{
-          ev.preventDefault(); ev.stopPropagation();
+        favBtn.addEventListener('click',(ev)=>{
+          ev.stopPropagation();
           _pp_toggleFav(shapeId, t.textureId);
           renderTexturesUI();
         });
       }
-card.addEventListener("click",()=>{
-        if(!zone) return;
-        const url=resolveTextureUrl(t);
-        const texObj={ textureId: t.textureId, url, maps: t.maps, tileSizeM: t.tileSizeM, params: t.params };
-
-        // Premium P2:
-        // - Desktop (hover capable): click applies immediately (commit), hover does preview.
-        // - Touch/no-hover: first tap previews, second tap applies.
-        const canHover=_pp_canHover();
-        const ps=_pp_getPreviewState();
-
-        if(!canHover){
-          if(ps && ps.zoneId===zone.id && ps.textureId===t.textureId){
-            // second tap -> commit
-          }else{
-            _pp_startPreview(shapeId, texObj);
-            API.setStatus("Предпросмотр: нажмите ещё раз, чтобы применить");
-            return;
-          }
-        }
-
-        // Commit apply
-        if(ps) _pp_clearPreview();
+      const canHover = (typeof window.matchMedia === 'function') ? window.matchMedia('(hover:hover) and (pointer:fine)').matches : false;
+      let texObj=null;
+      const buildTexObj=()=>{
+        if(texObj) return texObj;
+        texObj={
+          textureId:t.textureId,
+          title:t.title,
+          url:t.albedoUrl||t.previewUrl,
+          previewUrl:t.previewUrl,
+          maps:t.maps ? {...t.maps} : undefined,
+          params:t.params ? {...t.params} : undefined,
+          tileSizeM:t.tileSizeM
+        };
+        return texObj;
+      };
+      if(canHover){
+        card.addEventListener('mouseenter',()=>{
+          try{
+            _pp_startPreview(shapeId, buildTexObj());
+          }catch(_){ }
+        });
+        card.addEventListener('mouseleave',()=>{
+          try{ _pp_clearPreview(); ED.render(); }catch(_){ }
+        });
+      }
+      card.addEventListener('click',()=>{
+        const texObj=buildTexObj();
+        try{ _pp_clearPreview(); }catch(_){ }
         pushHistory();
         applyMaterialChange(shapeId, texObj);
         try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("texture_selected", { shapeId: shapeId || null, textureId: t.textureId || null, source: canHover ? "card_click" : "tap_commit", tileSizeM: t.tileSizeM || null }); }catch(_){ }
         _pp_pushRecent(shapeId, t.textureId);
-        renderTexturesUI();renderZonesUI();ED.render();
-        try{ guideToExport(); }catch(_){ }
+        renderTexturesUI();
+        syncSettingsUI();
+        ED.render();
+        try{ updateSimpleShell(); }catch(_){ }
       });
-
-      // Hover preview on desktop
-      if(_pp_canHover()){
-        card.addEventListener("mouseenter", ()=>{
-          if(!zone) return;
-          const url=resolveTextureUrl(t);
-          const texObj={ textureId: t.textureId, url, maps: t.maps, tileSizeM: t.tileSizeM, params: t.params };
-          _pp_startPreview(shapeId, texObj);
-        });
-        card.addEventListener("mouseleave", ()=>{
-          const ps=_pp_getPreviewState();
-          if(ps && ps.textureId===t.textureId) _pp_clearPreview();
-        });
+      if(!canHover){
+        card.addEventListener('pointerdown',()=>{
+          try{
+            _pp_startPreview(shapeId, buildTexObj());
+          }catch(_){ }
+        }, { passive:true });
       }
       wrap.appendChild(card);
     }
@@ -1242,14 +1365,17 @@ card.addEventListener("click",()=>{
     else if(!list.length) wrap.innerHTML=`<div class="note">Ничего не найдено.</div>`;
 
     _pp_updateTexControlsUI();
-    // After DOM is updated, adjust the left textures panel height to show 3 cards fully.
     requestAnimationFrame(fitLeftTexturesPanelForThree);
   }
 
   async function loadTexturesForActiveShape(){
-    const shapeId=state.catalog.activeShapeId;
-    if(!shapeId) return;
+    const shapeId=ensureActiveShapeSelection();
+    if(!shapeId){
+      renderTexturesUI();
+      return;
+    }
     if(!state.catalog.texturesByShape[shapeId]) await API.loadPalette(shapeId);
+    renderShapesUI();
     renderTexturesUI();
   }
 
@@ -2566,7 +2692,21 @@ if(calib3dToggleLinesBtn && relEnabled("calib3d", false)){
     const btnPlane=el("modePlane");
     if(btnPlane){btnPlane.addEventListener("click",()=>{setActiveStep("zone");ED.setMode("contour");syncCloseButtonUI();});}
     el("modeContour").addEventListener("click",()=>{setActiveStep("zone");ED.setMode("contour");syncCloseButtonUI();});
-    el("modeCutout").addEventListener("click",()=>{setSecondaryToolsOpen(true);setActiveStep("zone");ED.setMode("cutout");syncCloseButtonUI();});
+    el("modeCutout").addEventListener("click",()=>{
+      const z = S.getActiveZone ? S.getActiveZone() : null;
+      const canCutout = !!(z && z.closed && Array.isArray(z.contour) && z.contour.length >= 3);
+      setSecondaryToolsOpen(true);
+      setActiveStep("zone");
+      if(!canCutout){
+        ED.setMode("contour");
+        syncCloseButtonUI();
+        try{ API && API.setStatus && API.setStatus("Сначала замкните основной контур, затем добавляйте вырез."); }catch(_){ }
+        flashContourAssistHint("Сначала замкните основной контур, затем добавляйте вырез.");
+        return;
+      }
+      ED.setMode("cutout");
+      syncCloseButtonUI();
+    });
     // "Просмотр" is a quick clean preview: it also hides the contour overlay automatically.
     el("modeView").addEventListener("click",()=>{
       setActiveStep("result");
@@ -2988,8 +3128,29 @@ if(calib3dToggleLinesBtn && relEnabled("calib3d", false)){
       }
     });
 
-    el("undoBtn").addEventListener("click",()=>{if(undo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
-    el("redoBtn").addEventListener("click",()=>{if(redo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}});
+    el("undoBtn").addEventListener("click",()=>{if(undo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();try{ syncContourHintUi(); }catch(_){ }}});
+    el("redoBtn").addEventListener("click",()=>{if(redo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();try{ syncContourHintUi(); }catch(_){ }}});
+    const contourAssistUndoBtn = el("contourAssistUndoBtn");
+    if(contourAssistUndoBtn){
+      contourAssistUndoBtn.addEventListener("click",()=>{
+        if(undo()){
+          normalizeAllZones();
+          ED.render();
+          renderZonesUI();
+          renderShapesUI();
+          renderTexturesUI();
+          syncSettingsUI();
+          try{ syncContourHintUi(); }catch(_){ }
+        }
+      });
+    }
+    const contourAssistCloseBtn = el("contourAssistCloseBtn");
+    if(contourAssistCloseBtn){
+      contourAssistCloseBtn.addEventListener("click",()=>{
+        const closeBtn = el("closePolyBtn");
+        if(closeBtn) closeBtn.click();
+      });
+    }
     window.addEventListener("keydown",(e)=>{
       if(e.ctrlKey&&e.key.toLowerCase()==="z"){if(undo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
       if(e.ctrlKey&&(e.key.toLowerCase()==="y"||(e.shiftKey&&e.key.toLowerCase()==="z"))){if(redo()){normalizeAllZones();ED.render();renderZonesUI();renderShapesUI();renderTexturesUI();syncSettingsUI();}e.preventDefault();}
@@ -3073,6 +3234,7 @@ if(calib3dToggleLinesBtn && relEnabled("calib3d", false)){
         }
         renderZonesUI();
         ED.render();
+        try{ syncContourHintUi(); }catch(_){ }
       });
     }
 
@@ -3089,6 +3251,12 @@ if(calib3dToggleLinesBtn && relEnabled("calib3d", false)){
         }catch(_){}
       });
     }catch(_){}
+
+    try{
+      window.addEventListener("pp:polyUpdated", ()=>{ try{ syncContourHintUi(); }catch(_){ } });
+      window.addEventListener("pp:modeChanged", ()=>{ try{ syncContourHintUi(); }catch(_){ } });
+      window.addEventListener("pp:cutoutBlocked", ()=>{ flashContourAssistHint("Сначала замкните основной контур, затем добавляйте вырез."); });
+    }catch(_){ }
 
     const ovBtn=document.getElementById("uploadOverlayBtn");
     if(ovBtn){ovBtn.addEventListener("click",()=>el("photoInput").click());}

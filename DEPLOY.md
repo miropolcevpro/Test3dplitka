@@ -126,3 +126,15 @@
 - после выбора текстуры shell предлагает открыть результат или скачать PNG;
 - `Вырезы` и кнопка `Вырез` скрыты до открытия `Доп. инструменты`;
 - базовый сценарий загрузка → контур → плитка → просмотр/export остаётся рабочим.
+
+P09 — contour UX assist
+- Guided contour helper in toolbar.
+- Safer contour snap / hit areas for mass-market UX.
+- Cutout guardrails: cutout only after closed main contour.
+- Dynamic contour status + quick actions for undo/close.
+
+
+## P09-HF1 forms bottom restore hotfix
+- Вернуть гарантированно видимую нижнюю rail-панель форм.
+- Автовыбор первой доступной формы, если активная форма не задана или стала недоступной.
+- Восстановить связку: выбор формы -> автоматическая загрузка палитры/текстур этой формы.

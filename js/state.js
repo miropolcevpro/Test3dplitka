@@ -239,7 +239,7 @@ window.PhotoPaveState=(function(){
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.175-guided-simple-mode-shell",ts:new Date().toISOString(),preset:(RELEASE&&RELEASE.preset)||"legacy"},
+    build: { version: "mvp-iter2.2.177-forms-bottom-restore-hotfix",ts:new Date().toISOString(),preset:(RELEASE&&RELEASE.preset)||"legacy"},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:!!(RELEASE&&RELEASE.assetDelivery&&RELEASE.assetDelivery.allowApiPaletteFallback),assetPolicy:(RELEASE&&RELEASE.assetDelivery)||null,config:null},
     ui:makeDefaultUiState(),
     catalog:{shapes:[],palettesByShape:{},texturesByShape:{},activeShapeId:null},

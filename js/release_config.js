@@ -1,6 +1,6 @@
 window.PhotoPaveReleaseConfig=(function(){
   const preset = "public-core";
-  const patch = "P08";
+  const patch = "P09-HF1";
   const currentOrigin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin.replace(/\/$/,"") : "";
   const DEFAULT_GATEWAY = "https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const features = {
@@ -21,6 +21,12 @@ window.PhotoPaveReleaseConfig=(function(){
       enabled:true,
       visible:true,
       stage:"advanced"
+    },
+    contourAssist: {
+      label:"Contour UX assist",
+      enabled:true,
+      visible:true,
+      stage:"public"
     },
     ultra: {
       label:"Premium Ultra",

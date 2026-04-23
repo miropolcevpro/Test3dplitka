@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_175_p08" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_177_p09hf1" />
 </head>
 <body>
   <div class="app">
@@ -87,6 +87,14 @@
             <button class="btn btn--ghost" id="undoBtn" title="Undo (Ctrl+Z)">Отменить действие</button>
             <button class="btn btn--ghost" id="redoBtn" title="Redo (Ctrl+Y)">Повторить действие</button>
             <button class="btn btn--ghost" id="resetZoneBtn">Сброс зоны</button>
+          </div>
+
+          <div class="contourAssist" id="contourAssist" hidden aria-live="polite">
+            <div class="contourAssist__status" id="contourAssistStatus">Поставьте минимум 3 точки по краю участка.</div>
+            <div class="contourAssist__actions">
+              <button class="btn btn--ghost" id="contourAssistUndoBtn" type="button">Отменить точку</button>
+              <button class="btn" id="contourAssistCloseBtn" type="button">Замкнуть контур</button>
+            </div>
           </div>
 
           <div class="hint" id="hintText"></div>
@@ -357,17 +365,17 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/release_config.js?v=iter2_2_175_p08"></script>
-  <script src="js/state.js?v=iter2_2_175_p08"></script>
-  <script src="js/diagnostics.js?v=iter2_2_175_p08"></script>
-  <script src="js/analytics.js?v=iter2_2_175_p08"></script>
+  <script src="js/release_config.js?v=iter2_2_177_p09hf1"></script>
+  <script src="js/state.js?v=iter2_2_177_p09hf1"></script>
+  <script src="js/diagnostics.js?v=iter2_2_177_p09hf1"></script>
+  <script src="js/analytics.js?v=iter2_2_177_p09hf1"></script>
   <script src="js/updater.js?v=iter2_2_169_p02"></script>
   <script src="js/ai_ultra_pipeline.js?v=iter2_2_172_p05"></script>
   <script src="js/ai_auto_calib.js?v=iter2_2_171_p04"></script>
-  <script src="js/api.js?v=iter2_2_173_p06"></script>
+  <script src="js/api.js?v=iter2_2_177_p09hf1"></script>
   <script src="js/webgl_compositor.js?v=iter2_2_169_p02"></script>
   <script src="js/camera_calib.js?v=iter2_2_169_p02"></script>
-  <script src="js/editor.js?v=iter2_2_175_p08"></script>
-  <script src="js/app.js?v=iter2_2_175_p08"></script>
+  <script src="js/editor.js?v=iter2_2_177_p09hf1"></script>
+  <script src="js/app.js?v=iter2_2_177_p09hf1"></script>
 </body>
 </html>
