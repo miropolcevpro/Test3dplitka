@@ -290,6 +290,313 @@ function _softClamp01(v){
     return {a1, a2, c1, c2};
   }
 
+
+
+  function _polygonAreaSigned(points){
+    if(!Array.isArray(points) || points.length < 3) return 0;
+    let a = 0;
+    for(let i=0;i<points.length;i++){
+      const p1 = points[i], p2 = points[(i+1)%points.length];
+      a += (p1.x*p2.y - p2.x*p1.y);
+    }
+    return 0.5*a;
+  }
+
+  function _polygonAreaAbs(points){ return Math.abs(_polygonAreaSigned(points)); }
+
+  function _polyPerimeter(points){
+    if(!Array.isArray(points) || points.length < 2) return 0;
+    let p = 0;
+    for(let i=0;i<points.length;i++){
+      const a = points[i], b = points[(i+1)%points.length];
+      p += Math.hypot((b.x-a.x),(b.y-a.y));
+    }
+    return p;
+  }
+
+  function _bboxOfPts(points){
+    let minX=+Infinity,minY=+Infinity,maxX=-Infinity,maxY=-Infinity;
+    for(const p of (points||[])){
+      if(!p) continue;
+      if(p.x<minX) minX=p.x;
+      if(p.y<minY) minY=p.y;
+      if(p.x>maxX) maxX=p.x;
+      if(p.y>maxY) maxY=p.y;
+    }
+    if(!isFinite(minX)) return {x:0,y:0,w:0,h:0};
+    return {x:minX,y:minY,w:Math.max(0,maxX-minX),h:Math.max(0,maxY-minY)};
+  }
+
+  function _orient(a,b,c){
+    return (b.x-a.x)*(c.y-a.y) - (b.y-a.y)*(c.x-a.x);
+  }
+
+  function _onSeg(a,b,p){
+    return Math.min(a.x,b.x)-1e-6 <= p.x && p.x <= Math.max(a.x,b.x)+1e-6 &&
+           Math.min(a.y,b.y)-1e-6 <= p.y && p.y <= Math.max(a.y,b.y)+1e-6;
+  }
+
+  function _segmentsIntersect(a,b,c,d){
+    const o1 = _orient(a,b,c), o2 = _orient(a,b,d), o3 = _orient(c,d,a), o4 = _orient(c,d,b);
+    if(((o1>EPS && o2<-EPS) || (o1<-EPS && o2>EPS)) && ((o3>EPS && o4<-EPS) || (o3<-EPS && o4>EPS))) return true;
+    if(Math.abs(o1) <= EPS && _onSeg(a,b,c)) return true;
+    if(Math.abs(o2) <= EPS && _onSeg(a,b,d)) return true;
+    if(Math.abs(o3) <= EPS && _onSeg(c,d,a)) return true;
+    if(Math.abs(o4) <= EPS && _onSeg(c,d,b)) return true;
+    return false;
+  }
+
+  function _hasSelfIntersection(points){
+    if(!Array.isArray(points) || points.length < 4) return false;
+    const n = points.length;
+    for(let i=0;i<n;i++){
+      const a1 = points[i], a2 = points[(i+1)%n];
+      for(let j=i+1;j<n;j++){
+        if(Math.abs(i-j) <= 1) continue;
+        if(i === 0 && j === n-1) continue;
+        const b1 = points[j], b2 = points[(j+1)%n];
+        if(_segmentsIntersect(a1,a2,b1,b2)) return true;
+      }
+    }
+    return false;
+  }
+
+  function _rdpOpen(points, epsilon){
+    if(!Array.isArray(points) || points.length <= 2) return (points||[]).slice();
+    const eps2 = Math.max(1e-6, epsilon||0);
+    let idx = -1, dMax = -1;
+    const a = points[0], b = points[points.length-1];
+    const vx = b.x-a.x, vy = b.y-a.y;
+    const vLen = Math.hypot(vx, vy);
+    for(let i=1;i<points.length-1;i++){
+      const p = points[i];
+      let d;
+      if(vLen <= EPS){
+        d = Math.hypot(p.x-a.x, p.y-a.y);
+      }else{
+        d = Math.abs(vy*p.x - vx*p.y + b.x*a.y - b.y*a.x) / vLen;
+      }
+      if(d > dMax){ dMax = d; idx = i; }
+    }
+    if(dMax > eps2 && idx > 0){
+      const left = _rdpOpen(points.slice(0, idx+1), eps2);
+      const right = _rdpOpen(points.slice(idx), eps2);
+      return left.slice(0,-1).concat(right);
+    }
+    return [a,b];
+  }
+
+  function _simplifyClosedPolygon(points, epsilon){
+    if(!Array.isArray(points) || points.length <= 4) return (points||[]).slice();
+    const open = points.slice();
+    open.push(points[0]);
+    const simp = _rdpOpen(open, epsilon);
+    if(simp.length > 1){
+      const first = simp[0], last = simp[simp.length-1];
+      if(Math.hypot(last.x-first.x, last.y-first.y) <= 1e-6) simp.pop();
+    }
+    return simp;
+  }
+
+  function _cross(o,a,b){
+    return (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x);
+  }
+
+  function _convexHull(points){
+    const pts = [];
+    for(const p of (points||[])){
+      if(!p || !_isNum(p.x) || !_isNum(p.y)) continue;
+      pts.push({x:+p.x, y:+p.y});
+    }
+    pts.sort((a,b)=> a.x===b.x ? a.y-b.y : a.x-b.x);
+    const uniq = [];
+    for(const p of pts){
+      const last = uniq[uniq.length-1];
+      if(!last || Math.abs(last.x-p.x)>1e-6 || Math.abs(last.y-p.y)>1e-6) uniq.push(p);
+    }
+    if(uniq.length <= 2) return uniq;
+    const lower=[];
+    for(const p of uniq){
+      while(lower.length>=2 && _cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+      lower.push(p);
+    }
+    const upper=[];
+    for(let i=uniq.length-1;i>=0;i--){
+      const p = uniq[i];
+      while(upper.length>=2 && _cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+      upper.push(p);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper);
+  }
+
+  function _pcaMetrics(points){
+    const pts = Array.isArray(points) ? points : [];
+    if(pts.length < 3) return { elongation:1, major:null, minor:null };
+    let mx=0,my=0;
+    for(const p of pts){ mx += p.x; my += p.y; }
+    mx/=pts.length; my/=pts.length;
+    let cxx=0,cxy=0,cyy=0;
+    for(const p of pts){
+      const x = p.x-mx, y = p.y-my;
+      cxx += x*x; cxy += x*y; cyy += y*y;
+    }
+    cxx/=pts.length; cxy/=pts.length; cyy/=pts.length;
+    const tr = cxx+cyy;
+    const det = cxx*cyy - cxy*cxy;
+    const disc = Math.max(0, tr*tr - 4*det);
+    const sdisc = Math.sqrt(disc);
+    const l1 = 0.5*(tr+sdisc);
+    const l2 = Math.max(EPS, 0.5*(tr-sdisc));
+    return { elongation: Math.max(1, l1/l2), major:l1, minor:l2 };
+  }
+
+  function _countSharpTurns(points){
+    if(!Array.isArray(points) || points.length < 4) return 0;
+    let n = 0;
+    for(let i=0;i<points.length;i++){
+      const prev = points[(i-1+points.length)%points.length];
+      const cur = points[i];
+      const next = points[(i+1)%points.length];
+      const v1 = _norm({x:prev.x-cur.x, y:prev.y-cur.y});
+      const v2 = _norm({x:next.x-cur.x, y:next.y-cur.y});
+      const cos = _clamp(_dot(v1,v2), -1, 1);
+      const ang = Math.acos(cos);
+      if(ang < 0.72) n++;
+    }
+    return n;
+  }
+
+  function _edgeStats(points){
+    const out = { count:0, min:0, max:0, avg:0, shortRatio:0 };
+    if(!Array.isArray(points) || points.length < 2) return out;
+    const lens = [];
+    let sum = 0;
+    for(let i=0;i<points.length;i++){
+      const a = points[i], b = points[(i+1)%points.length];
+      const L = Math.hypot(b.x-a.x, b.y-a.y);
+      if(!(L>0)) continue;
+      lens.push(L); sum += L;
+    }
+    if(!lens.length) return out;
+    const avg = sum/lens.length;
+    let short = 0;
+    for(const L of lens){ if(L < avg*0.42) short++; }
+    return { count:lens.length, min:Math.min(...lens), max:Math.max(...lens), avg:avg, shortRatio: short / lens.length };
+  }
+
+  function _reasonText(reason){
+    const map = {
+      contour_too_small: "Контур ещё слишком маленький для авто-перспективы.",
+      self_intersection: "Контур пересекает сам себя.",
+      area_too_small: "Контур слишком маленький для надёжной перспективной посадки.",
+      too_narrow: "Контур слишком узкий или вытянутый для надёжной авто-перспективы.",
+      poor_aspect_ratio: "Контур слишком вытянутый и плохо подходит для надёжной авто-перспективы.",
+      near_triangle: "Контур почти треугольный и не даёт устойчиво выделить основные стороны.",
+      too_round: "Контур слишком округлый: трудно выделить ближнюю, дальнюю и боковые стороны.",
+      ragged_contour: "Контур слишком рваный и содержит много мелких изломов.",
+      weak_side_structure: "По контуру нельзя надёжно выделить ближнюю/дальнюю и боковые стороны."
+    };
+    return map[reason] || "Контур плохо подходит для авто-перспективы.";
+  }
+
+  function _buildContourSuggestion(reasons){
+    const rr = Array.isArray(reasons) ? reasons : [];
+    if(rr.includes("self_intersection")) return "Перерисуйте контур без пересечений.";
+    if(rr.includes("near_triangle")) return "Сделайте контур ближе к 4–6 опорным точкам по основным краям зоны.";
+    if(rr.includes("too_round")) return "Сделайте контур более угловым: меньше округлости, больше опорных точек по прямым краям.";
+    if(rr.includes("ragged_contour")) return "Упростите контур: уберите мелкие изломы и оставьте только основные стороны.";
+    if(rr.includes("too_narrow") || rr.includes("poor_aspect_ratio")) return "Попробуйте выделить более широкую рабочую зону или провести контур по главным краям площадки.";
+    if(rr.includes("area_too_small")) return "Увеличьте зону контура или выберите участок с большей видимой площадью.";
+    if(rr.includes("weak_side_structure")) return "Постройте контур так, чтобы читались ближняя, дальняя и две боковые стороны.";
+    return "Упростите контур: оставьте 4–6 опорных точек по главным краям зоны.";
+  }
+
+  function validateContourForAutoCalib(contour, imgW, imgH, opts){
+    const W = Math.max(1, imgW||1);
+    const H = Math.max(1, imgH||1);
+    const o = opts || {};
+    const pts = (Array.isArray(contour) ? contour : []).map((p)=>({x:+(p&&p.x), y:+(p&&p.y)})).filter((p)=>_isNum(p.x)&&_isNum(p.y));
+    if(pts.length < 4){
+      return { ok:false, blocked:true, reason:"contour_too_small", reasons:["contour_too_small"], score:0, metrics:null, shortMessage:_reasonText("contour_too_small"), message:_reasonText("contour_too_small"), suggestion:"Замкните контур минимум из 4 точек." };
+    }
+
+    const diag = Math.hypot(W,H);
+    const area = _polygonAreaAbs(pts);
+    const perimeter = _polyPerimeter(pts);
+    const bbox = _bboxOfPts(pts);
+    const hull = _convexHull(pts);
+    const hullArea = _polygonAreaAbs(hull);
+    const simp = _simplifyClosedPolygon(pts, Math.max(6, 0.009*diag));
+    const pca = _pcaMetrics(pts);
+    const edges = _edgeStats(pts);
+    const sharpTurns = _countSharpTurns(pts);
+    const areaRatio = area / Math.max(1, W*H);
+    const minSide = Math.max(1, Math.min(bbox.w, bbox.h));
+    const maxSide = Math.max(1, Math.max(bbox.w, bbox.h));
+    const aspect = maxSide / minSide;
+    const minDimRatio = minSide / Math.max(1, Math.min(W,H));
+    const compactness = perimeter > EPS ? _clamp((4*Math.PI*area)/(perimeter*perimeter), 0, 1.2) : 0;
+    const solidity = hullArea > EPS ? _clamp(area/hullArea, 0, 1.2) : 1;
+    const selfIntersection = _hasSelfIntersection(pts);
+    const simpCount = simp.length;
+    const hullVertices = hull.length;
+
+    let score = 100;
+    const reasons = [];
+    const addReason = function(code, penalty){
+      if(reasons.indexOf(code) === -1) reasons.push(code);
+      score -= penalty || 0;
+    };
+
+    if(selfIntersection){
+      reasons.push("self_intersection");
+      score = 0;
+    }
+    if(areaRatio < (o.minAreaRatio || 0.0025)) addReason("area_too_small", 34);
+    if(minDimRatio < (o.minDimRatio || 0.04) || aspect > (o.maxAspect || 12.0) || (aspect > 6.0 && minDimRatio < 0.14)) addReason("too_narrow", 40);
+    else if(aspect > 5.0 && minDimRatio < 0.1) addReason("poor_aspect_ratio", 20);
+    if(simpCount <= 3 || hullVertices <= 3) addReason("near_triangle", 32);
+    if(compactness > 0.76 && pca.elongation < 1.16) addReason("too_round", 22);
+    if(solidity < 0.8 || (edges.shortRatio > 0.4 && sharpTurns >= 5) || (simpCount >= 10 && pca.elongation < 1.12) || (simpCount >= 9 && (simpCount - hullVertices) >= 3 && solidity < 0.88)) addReason("ragged_contour", 24);
+    if(pca.elongation < 1.08 && compactness > 0.62) addReason("weak_side_structure", 22);
+
+    score = Math.max(0, Math.round(score));
+    const blocked = reasons.includes("self_intersection") || reasons.includes("area_too_small") || reasons.includes("too_narrow") || reasons.includes("near_triangle") || score < 60 || ((reasons.includes("too_round") || reasons.includes("ragged_contour")) && reasons.includes("weak_side_structure"));
+    const reason = reasons[0] || null;
+    const shortMessage = reason ? _reasonText(reason) : null;
+    const suggestion = blocked ? _buildContourSuggestion(reasons) : null;
+    const message = blocked && reason ? (shortMessage + (suggestion ? (" " + suggestion) : "")) : null;
+
+    return {
+      ok: !blocked,
+      blocked: blocked,
+      reason: reason,
+      reasons: reasons,
+      score: score,
+      metrics: {
+        area: Math.round(area),
+        areaRatio: +areaRatio.toFixed(4),
+        perimeter: Math.round(perimeter),
+        bbox: { w: Math.round(bbox.w), h: Math.round(bbox.h) },
+        aspect: +aspect.toFixed(2),
+        minDimRatio: +minDimRatio.toFixed(3),
+        compactness: +compactness.toFixed(3),
+        solidity: +solidity.toFixed(3),
+        pcaElongation: +(pca.elongation||1).toFixed(3),
+        contourPoints: pts.length,
+        simplifiedPoints: simpCount,
+        hullVertices: hullVertices,
+        shortEdgeRatio: +(edges.shortRatio||0).toFixed(3),
+        sharpTurns: sharpTurns,
+        selfIntersection: !!selfIntersection
+      },
+      shortMessage: shortMessage,
+      message: message,
+      suggestion: suggestion
+    };
+  }
+
   function autoLinesFromContour(contour, imgW, imgH, opts){
     // New auto heuristic (v2):
     // 1) Estimate "depth" axis vA using PCA (pick eigenvector closer to screen-up).
@@ -301,7 +608,10 @@ function _softClamp01(v){
     const H = Math.max(1, imgH||1);
     const o = opts || {};
     const minLenPx = Math.max(18, (o.minLenPx||0), 0.05*Math.hypot(W,H));
-    if(!Array.isArray(contour) || contour.length < 4) return {ok:false, reason:"contour_too_small"};
+    const contourValidation = validateContourForAutoCalib(contour, W, H, o.validation || null);
+    if(!contourValidation || contourValidation.ok !== true){
+      return {ok:false, reason:"unsafe_contour", validation: contourValidation};
+    }
 
     // --- Resample contour edges to get stable statistics (avoid short-segment noise).
     const pts = [];
@@ -488,15 +798,16 @@ function _softClamp01(v){
     const sA = _sinAngleFromDirs(A1.dir, A2.dir);
     const sB = _sinAngleFromDirs(B1.dir, B2.dir);
     if(sA < 0.02) return {ok:false, reason:"A_pair_near_parallel", meta:{sA}};
-    if(sB < 0.02) return {ok:true, lines, warn:"B_pair_near_parallel", meta:{sB, minLenPx, samples:pts.length, elongation:elong, qSide, qDepth}};
+    if(sB < 0.02) return {ok:true, lines, warn:"B_pair_near_parallel", meta:{sB, minLenPx, samples:pts.length, elongation:elong, qSide, qDepth, contourValidation}};
 
-    return {ok:true, lines, meta:{minLenPx, samples:pts.length, elongation:elong, qSide, qDepth}};
+    return {ok:true, lines, meta:{minLenPx, samples:pts.length, elongation:elong, qSide, qDepth, contourValidation}};
   }
 
   window.PhotoPaveCameraCalib = {
     lineFromPts,
     intersectLines,
     computeFromLines,
-    autoLinesFromContour
+    autoLinesFromContour,
+    validateContourForAutoCalib
   };
 })();

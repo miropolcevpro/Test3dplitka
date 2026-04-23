@@ -1,2 +1,2 @@
-mvp-iter2.2.182-autocontour-ui-restore
-Patch: P12 restore legacy auto-contour quick entry
+mvp-iter2.2.183-contour-geometry-guardrails
+Patch: P13 contour geometry guardrails for auto-perspective

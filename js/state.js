@@ -236,16 +236,17 @@ window.PhotoPaveState=(function(){
     st.assets.exportBlockedReason = null;
     st.assets.textureLoadInfo = {};
     st.assets.lastTextureLoad = null;
+    st.assets.lastContourValidation = null;
     return st;
   }
 
   const state={
     // IMPORTANT: version string is displayed in the footer and helps bust caches in iframe setups.
-    build: { version: "mvp-iter2.2.182-autocontour-ui-restore",ts:new Date().toISOString(),preset:(RELEASE&&RELEASE.preset)||"legacy"},
+    build: { version: "mvp-iter2.2.183-contour-geometry-guardrails",ts:new Date().toISOString(),preset:(RELEASE&&RELEASE.preset)||"legacy"},
     api:{gatewayBase:DEFAULT_GATEWAY,apiBase:DEFAULT_GATEWAY,storageBase:"https://storage.yandexcloud.net/webar3dtexture",allowApiPalette:!!(RELEASE&&RELEASE.assetDelivery&&RELEASE.assetDelivery.allowApiPaletteFallback),assetPolicy:(RELEASE&&RELEASE.assetDelivery)||null,config:null},
     ui:makeDefaultUiState(),
     catalog:{shapes:[],palettesByShape:{},texturesByShape:{},activeShapeId:null},
-    assets:{photoBitmap:null,photoW:0,photoH:0,textureCache:new Map(),lastLoadError:null,exportSafe:true,exportBlockedReason:null,textureLoadInfo:{},lastTextureLoad:null},
+    assets:{photoBitmap:null,photoW:0,photoH:0,textureCache:new Map(),lastLoadError:null,exportSafe:true,exportBlockedReason:null,textureLoadInfo:{},lastTextureLoad:null,lastContourValidation:null},
     // UX premium helpers
     ux:{autoScaleEnabled:true,autoScaleK:3.6},
     // Ultra AI state (Patch 1/2)

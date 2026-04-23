@@ -1,6 +1,6 @@
 window.PhotoPaveReleaseConfig=(function(){
   const preset = "public-core";
-  const patch = "P12";
+  const patch = "P13";
   const currentOrigin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin.replace(/\/$/,"") : "";
   const DEFAULT_GATEWAY = "https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const features = {
@@ -30,6 +30,12 @@ window.PhotoPaveReleaseConfig=(function(){
     },
     autoContourQuick: {
       label:"Быстрый автоконтур",
+      enabled:true,
+      visible:true,
+      stage:"public"
+    },
+    contourGeometryGuard: {
+      label:"Guardrails для геометрически опасных контуров",
       enabled:true,
       visible:true,
       stage:"public"
@@ -162,7 +168,8 @@ window.PhotoPaveReleaseConfig=(function(){
       "export_clicked",
       "export_success",
       "advanced_mode_opened",
-      "render_error"
+      "render_error",
+      "auto_contour_blocked_geometry"
     ]
   };
 
