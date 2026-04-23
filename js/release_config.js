@@ -144,7 +144,7 @@ window.PhotoPaveReleaseConfig=(function(){
   }
 
   const scenePresets = {
-    stage:"admin_shell_foundation",
+    stage:"admin_shell_noauth_separation_hotfix",
     enabled:false,
     schemaVersion:1,
     contractVersion:1,
@@ -157,7 +157,7 @@ window.PhotoPaveReleaseConfig=(function(){
     publicReadMode:"published_only",
     adminReadMode:"draft_then_published",
     adminApi:{
-      stage:"foundation",
+      stage:"noauth_hotfix",
       enabled:false,
       contextMode:"bootstrap_only",
       contextQueryParam:"ppAdmin",
@@ -188,7 +188,7 @@ window.PhotoPaveReleaseConfig=(function(){
       }
     },
     adminShell:{
-      stage:"foundation",
+      stage:"noauth_hotfix",
       enabled:false,
       autoInit:true,
       showOnAdminOnly:true,

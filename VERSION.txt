@@ -1,3 +1,9 @@
-mvp-iter2.2.188-admin-shell-foundation
-Patch: P18
-Base: photo_pave_patch_p17_admin_write_api_foundation.zip
+mvp-iter2.2.189-admin-noauth-separation-hotfix
+Patch: P18.1
+Base: P18 (mvp-iter2.2.188-admin-shell-foundation)
+Date: 2026-04-23
+Notes:
+- Public index cleaned from admin shell markup and admin shell script.
+- Added separate admin.html entrypoint for protected Tilda admin page.
+- Admin shell now supports no-token/read-only mode via bootstrap requireAuth:false.
+- Admin token badge replaced with protected-page badge in no-auth mode.

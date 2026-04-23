@@ -148,7 +148,9 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       r.modeBadge.textContent = mode === "admin" ? "Admin" : "Public";
     }
     if(r.tokenBadge){
-      if(adminRt && adminRt.tokenPresent) r.tokenBadge.textContent = "Токен: " + String(adminRt.tokenMask || "есть");
+      const requireAuth = !!(adminRt && adminRt.config && adminRt.config.requireAuth !== false);
+      if(!requireAuth) r.tokenBadge.textContent = "Защищённая страница";
+      else if(adminRt && adminRt.tokenPresent) r.tokenBadge.textContent = "Токен: " + String(adminRt.tokenMask || "есть");
       else r.tokenBadge.textContent = "Токен не задан";
     }
     return runtime;
@@ -337,6 +339,9 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       renderMeta();
       const count=(runtime.scenes || []).length;
       setStatus(count ? ("Список сцен готов: " + count) : "Сцены не найдены", count ? "Можно открыть сцену в resolved / draft / published режиме." : runtime.config.emptyStateText);
+      if(!count && getAdminRuntime() && getAdminRuntime().config && getAdminRuntime().config.requireAuth === false){
+        setStatus("Admin shell активен", "Read-only режим без токенов. Сцены появятся после загрузки manifest/scenes в storage.");
+      }
       return runtime;
     }catch(err){
       runtime.lastError = String(err && err.message || err);
