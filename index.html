@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_187_p17" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_188_p18" />
 </head>
 <body>
   <div class="app">
@@ -39,6 +39,42 @@
       <div class="simpleShell__actions">
         <button class="btn" id="simpleShellPrimaryBtn" type="button">Загрузить фото</button>
         <button class="btn btn--ghost" id="simpleShellSecondaryBtn" type="button">Доп. инструменты</button>
+      </div>
+    </section>
+
+    <section class="scenePresetAdminShell" id="scenePresetAdminShell" hidden aria-live="polite">
+      <div class="scenePresetAdminShell__head">
+        <div>
+          <div class="scenePresetAdminShell__eyebrow">Admin authoring</div>
+          <div class="scenePresetAdminShell__title">Сцены и черновики визуализации</div>
+        </div>
+        <div class="scenePresetAdminShell__headActions">
+          <span class="scenePresetAdminShell__badge" id="scenePresetAdminShellModeBadge">Public</span>
+          <span class="scenePresetAdminShell__badge scenePresetAdminShell__badge--muted" id="scenePresetAdminShellTokenBadge">Токен не задан</span>
+          <button class="btn btn--ghost" id="scenePresetAdminShellCollapseBtn" type="button">Свернуть</button>
+        </div>
+      </div>
+      <div class="scenePresetAdminShell__statusbar">
+        <div class="scenePresetAdminShell__status" id="scenePresetAdminShellStatus">Admin shell не активирован.</div>
+        <div class="scenePresetAdminShell__substatus" id="scenePresetAdminShellSubstatus">Отдельная закрытая страница Tilda сможет включить этот режим через bootstrap.</div>
+      </div>
+      <div class="scenePresetAdminShell__toolbar">
+        <button class="btn" id="scenePresetAdminShellRefreshBtn" type="button">Обновить список</button>
+        <button class="btn btn--ghost" id="scenePresetAdminShellOpenResolvedBtn" type="button">Открыть resolved</button>
+        <button class="btn btn--ghost" id="scenePresetAdminShellOpenDraftBtn" type="button">Открыть draft</button>
+        <button class="btn btn--ghost" id="scenePresetAdminShellOpenPublishedBtn" type="button">Открыть published</button>
+      </div>
+      <div class="scenePresetAdminShell__grid">
+        <div class="scenePresetAdminShell__panel">
+          <div class="scenePresetAdminShell__panelTitle">Список сцен</div>
+          <div class="scenePresetAdminShell__sceneList" id="scenePresetAdminShellSceneList"></div>
+        </div>
+        <div class="scenePresetAdminShell__panel">
+          <div class="scenePresetAdminShell__panelTitle">Текущая сцена и статус</div>
+          <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellSceneMeta"></div>
+          <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellSourceMeta"></div>
+          <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellAuthoringMeta"></div>
+        </div>
       </div>
     </section>
 
@@ -364,20 +400,21 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/release_config.js?v=iter2_2_187_p17"></script>
-  <script src="js/state.js?v=iter2_2_187_p17"></script>
+  <script src="js/release_config.js?v=iter2_2_188_p18"></script>
+  <script src="js/state.js?v=iter2_2_188_p18"></script>
   <script src="js/diagnostics.js?v=iter2_2_182_p12"></script>
   <script src="js/analytics.js?v=iter2_2_182_p12"></script>
   <script src="js/updater.js?v=iter2_2_169_p02"></script>
   <script src="js/ai_ultra_pipeline.js?v=iter2_2_172_p05"></script>
   <script src="js/ai_auto_calib.js?v=iter2_2_171_p04"></script>
-  <script src="js/api.js?v=iter2_2_187_p17"></script>
-  <script src="js/scene_presets.js?v=iter2_2_187_p17"></script>
-  <script src="js/scene_preset_state.js?v=iter2_2_187_p17"></script>
-  <script src="js/scene_preset_admin.js?v=iter2_2_187_p17"></script>
+  <script src="js/api.js?v=iter2_2_188_p18"></script>
+  <script src="js/scene_presets.js?v=iter2_2_188_p18"></script>
+  <script src="js/scene_preset_state.js?v=iter2_2_188_p18"></script>
+  <script src="js/scene_preset_admin.js?v=iter2_2_188_p18"></script>
   <script src="js/webgl_compositor.js?v=iter2_2_169_p02"></script>
   <script src="js/camera_calib.js?v=iter2_2_169_p02"></script>
-  <script src="js/editor.js?v=iter2_2_187_p17"></script>
-  <script src="js/app.js?v=iter2_2_187_p17"></script>
+  <script src="js/editor.js?v=iter2_2_188_p18"></script>
+  <script src="js/app.js?v=iter2_2_188_p18"></script>
+  <script src="js/scene_preset_admin_shell.js?v=iter2_2_188_p18"></script>
 </body>
 </html>

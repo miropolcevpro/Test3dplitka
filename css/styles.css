@@ -385,3 +385,43 @@ body.singleZoneMode .zoneList .zoneItem .ppZoneActions{
 /* v2.2.165: force-hide perspective control (not used in current mode) */
 #perspectiveField{display:none !important;}
 #perspectiveRange{display:none !important;}
+
+
+/* Scene preset admin shell (separate locked Tilda page) */
+.scenePresetAdminShell{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(122,162,255,0.10),rgba(122,162,255,0.04));}
+.scenePresetAdminShell__head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.scenePresetAdminShell__eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.scenePresetAdminShell__title{font-size:16px;font-weight:700;line-height:1.2}
+.scenePresetAdminShell__headActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.scenePresetAdminShell__badge{padding:7px 9px;border-radius:999px;border:1px solid rgba(122,162,255,0.28);background:rgba(122,162,255,0.12);font-size:11px;color:var(--text);white-space:nowrap}
+.scenePresetAdminShell__badge--muted{border-color:rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:var(--muted)}
+.scenePresetAdminShell__statusbar{display:flex;flex-direction:column;gap:4px}
+.scenePresetAdminShell__status{font-size:13px;font-weight:600}
+.scenePresetAdminShell__substatus{font-size:12px;color:var(--muted)}
+.scenePresetAdminShell__toolbar{display:flex;gap:8px;flex-wrap:wrap}
+.scenePresetAdminShell__grid{display:grid;grid-template-columns:minmax(280px, 420px) minmax(320px, 1fr);gap:12px;min-height:0}
+.scenePresetAdminShell__panel{background:rgba(8,11,17,0.22);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:10px 10px 12px;min-height:0}
+.scenePresetAdminShell__panelTitle{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.03em;text-transform:uppercase;margin-bottom:8px}
+.scenePresetAdminShell__sceneList{display:flex;flex-direction:column;gap:8px;max-height:250px;overflow:auto;padding-right:2px}
+.scenePresetAdminShell__sceneItem{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:10px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.04);cursor:pointer}
+.scenePresetAdminShell__sceneItem:hover{background:rgba(255,255,255,0.07)}
+.scenePresetAdminShell__sceneItem.isActive{border-color:rgba(122,162,255,0.48);background:rgba(122,162,255,0.10)}
+.scenePresetAdminShell__sceneText{display:flex;flex-direction:column;gap:4px;min-width:0}
+.scenePresetAdminShell__sceneTitle{font-size:13px;font-weight:600;line-height:1.25}
+.scenePresetAdminShell__sceneSub{font-size:11px;color:var(--muted);line-height:1.35}
+.scenePresetAdminShell__chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.scenePresetAdminShell__chip{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.03em;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06)}
+.scenePresetAdminShell__chip--draft{border-color:rgba(255,191,71,0.30);background:rgba(255,191,71,0.12);color:#ffd89c}
+.scenePresetAdminShell__chip--published{border-color:rgba(46,240,107,0.30);background:rgba(46,240,107,0.12);color:#9cf1bb}
+.scenePresetAdminShell__chip--active{border-color:rgba(122,162,255,0.34);background:rgba(122,162,255,0.12);color:#d8e4ff}
+.scenePresetAdminShell__meta{display:flex;flex-direction:column;gap:8px;padding-top:6px}
+.scenePresetAdminShell__metaCard{padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.04)}
+.scenePresetAdminShell__metaTitle{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:6px}
+.scenePresetAdminShell__metaRow{display:flex;justify-content:space-between;gap:10px;font-size:12px;line-height:1.35}
+.scenePresetAdminShell__metaRow span:last-child{text-align:right;color:var(--text)}
+.scenePresetAdminShell__empty{padding:14px;border:1px dashed rgba(255,255,255,0.14);border-radius:12px;color:var(--muted);font-size:12px;line-height:1.45}
+body.ppAdminShellCollapsed .scenePresetAdminShell__grid,
+body.ppAdminShellCollapsed .scenePresetAdminShell__toolbar{display:none}
+body.ppAdminShellMode .simpleShell{display:none !important}
+@media (max-width: 980px){.scenePresetAdminShell__grid{grid-template-columns:1fr}.scenePresetAdminShell__sceneList{max-height:210px}}
+@media (max-width: 720px){.scenePresetAdminShell{padding:10px 12px}.scenePresetAdminShell__title{font-size:15px}.scenePresetAdminShell__toolbar .btn{flex:1 1 170px}.scenePresetAdminShell__headActions{width:100%}}

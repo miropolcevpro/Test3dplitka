@@ -3643,6 +3643,98 @@ el("exportPngBtn").addEventListener("click",()=>{ try{ ANALYTICS && ANALYTICS.tr
     return { start, stop, setProgress, setText, hide };
   })();
 
+  function buildSceneBaseFallbackFromRecord(scene){
+    const src=scene && typeof scene === "object" ? scene : {};
+    const geom=src.geometry && typeof src.geometry === "object" ? src.geometry : {};
+    const zoneId=(src.baseSnapshot && src.baseSnapshot.ui && src.baseSnapshot.ui.activeZoneId) || "zone_main";
+    return {
+      schemaVersion:1,
+      kind:"scene-base",
+      id:src.id || "scene",
+      sceneId:src.id || "scene",
+      title:src.title || src.id || "Сцена",
+      photo:{ sourceUrl:(src.urls && src.urls.photoUrl) || null, thumbUrl:(src.urls && src.urls.thumbUrl) || null, width:state.assets && state.assets.photoW || null, height:state.assets && state.assets.photoH || null },
+      floorPlane: geom.floorPlane ? stateClone(geom.floorPlane) : { points:[], closed:false },
+      zones:[{
+        id:zoneId,
+        name:"Зона 1",
+        enabled:true,
+        closed:true,
+        contour:Array.isArray(geom.contour) ? stateClone(geom.contour) : [],
+        cutouts:Array.isArray(geom.cutouts) ? stateClone(geom.cutouts) : [],
+        linked:false
+      }],
+      catalog:{ activeShapeId:(src.defaults && src.defaults.shapeId) || (state.catalog && state.catalog.activeShapeId) || null },
+      ui:{
+        activeStep:"zone",
+        mode:"view",
+        editScope:"active",
+        shellMode:"simple",
+        secondaryToolsOpen:true,
+        singleZoneMode:true,
+        masterZoneId:null,
+        activeZoneId:zoneId,
+        activeCutoutId:null
+      },
+      meta:src.meta && typeof src.meta === "object" ? stateClone(src.meta) : {}
+    };
+  }
+
+  async function refreshAfterPresetApply(){
+    try{ normalizeAllZones(); }catch(_){ }
+    try{ ensureActiveZone(); }catch(_){ }
+    try{ enforceSingleZoneMode(); }catch(_){ }
+    try{ renderShapesUI(); }catch(_){ }
+    try{ await loadTexturesForActiveShape(); }catch(_){ }
+    try{ renderZonesUI(); }catch(_){ }
+    try{ updateSplitZoneBtnUI(); }catch(_){ }
+    try{ syncSettingsUI(); }catch(_){ }
+    try{ updateAutoContourQuickUI(); }catch(_){ }
+    try{ await ED.render(); }catch(_){ }
+    try{ pushHistory(); }catch(_){ }
+    return true;
+  }
+
+  async function openScenePresetRecord(scene, options){
+    const PST=window.PhotoPaveScenePresetState || null;
+    const record=scene && typeof scene === "object" ? scene : null;
+    if(!record) throw new Error("Scene record is required");
+    if(SCENES && typeof SCENES.attachSceneToState === "function"){
+      try{ SCENES.attachSceneToState(record); }catch(_){ }
+    }
+    if(PST && typeof PST.applySceneBase === "function"){
+      const payload=(record.baseSnapshot && typeof record.baseSnapshot === "object") ? record.baseSnapshot : buildSceneBaseFallbackFromRecord(record);
+      PST.applySceneBase(payload, { state:state });
+    }
+    state.scenePresets = state.scenePresets || {};
+    state.scenePresets.activeSceneId = record.id || null;
+    try{ API.setStatus("Сцена загружена: " + String(record.title || record.id || "scene")); }catch(_){ }
+    await refreshAfterPresetApply();
+    return record;
+  }
+
+  async function openVariantPresetRecord(variant, options){
+    const PST=window.PhotoPaveScenePresetState || null;
+    const record=variant && typeof variant === "object" ? variant : null;
+    if(!record) throw new Error("Variant record is required");
+    if(SCENES && typeof SCENES.attachVariantToState === "function"){
+      try{ SCENES.attachVariantToState(record); }catch(_){ }
+    }
+    if(PST && typeof PST.applyVariantSnapshot === "function"){
+      PST.applyVariantSnapshot(record.snapshot ? Object.assign({}, record, { stateSnapshot:record.snapshot }) : record, { state:state });
+    }
+    try{ API.setStatus("Вариант загружен: " + String(record.title || record.key || "variant")); }catch(_){ }
+    await refreshAfterPresetApply();
+    return record;
+  }
+
+  window.PhotoPaveAppBridge = Object.assign(window.PhotoPaveAppBridge || {}, {
+    refreshAfterPresetApply,
+    openScenePresetRecord,
+    openVariantPresetRecord,
+    getState:()=>state
+  });
+
   async function bootstrap(){
     try{ ANALYTICS && ANALYTICS.init && ANALYTICS.init(); }catch(_){ }
     try{ DIAG && DIAG.note && DIAG.note("bootstrap_start", { patch:(state.release&&state.release.patch)||null }); }catch(_){ }

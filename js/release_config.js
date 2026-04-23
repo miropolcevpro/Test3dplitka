@@ -144,7 +144,7 @@ window.PhotoPaveReleaseConfig=(function(){
   }
 
   const scenePresets = {
-    stage:"admin_write_api_foundation",
+    stage:"admin_shell_foundation",
     enabled:false,
     schemaVersion:1,
     contractVersion:1,
@@ -186,6 +186,16 @@ window.PhotoPaveReleaseConfig=(function(){
         publishVariant:"POST",
         uploadAsset:"POST"
       }
+    },
+    adminShell:{
+      stage:"foundation",
+      enabled:false,
+      autoInit:true,
+      showOnAdminOnly:true,
+      defaultSource:"resolved",
+      allowPublishedOpen:true,
+      allowDraftOpen:true,
+      emptyStateText:"Сцены ещё не опубликованы или не подготовлены в storage."
     }
   };
 
