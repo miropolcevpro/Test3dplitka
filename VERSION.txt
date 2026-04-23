@@ -1,2 +1,2 @@
-mvp-iter2.2.179-workspace-photo-area-cleanup
-Patch: P10 workspace photo area cleanup
+mvp-iter2.2.181-texture-2k-first-fallback-1k
+Patch: P11 texture 2k-first with safe fallback to 1k + map-set diagnostics

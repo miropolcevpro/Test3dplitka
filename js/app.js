@@ -566,11 +566,17 @@
   }
 
   function setBuildInfo(){
+    const node = el("buildInfo");
+    if(!node) return;
     const preset = (state.release && state.release.preset) || (state.build && state.build.preset) || null;
     const patch = (state.release && state.release.patch) || null;
-    const suffix = preset ? ` • ${preset}` : "";
-    const patchSuffix = patch ? ` • ${patch}` : "";
-    el("buildInfo").textContent=`${state.build.version}${suffix}${patchSuffix} • ${state.build.ts}`;
+    const fullVersion = (state.build && state.build.version) ? String(state.build.version) : "";
+    const m = /iter(\d+\.\d+\.\d+)/.exec(fullVersion);
+    const compactVersion = m ? `v${m[1]}` : fullVersion;
+    const compactParts = [compactVersion, patch].filter(Boolean);
+    node.textContent = compactParts.join(" · ") || fullVersion || "build";
+    const titleParts = [fullVersion, preset, patch, state.build && state.build.ts ? state.build.ts : null].filter(Boolean);
+    node.title = titleParts.join(" • ");
   }
   
   // UX-P1: show user what is being edited (active segment + scope + mode)
@@ -807,6 +813,8 @@ function addZoneAndArmContour(){
       z.material.textureId = master.material.textureId ?? z.material.textureId;
       z.material.textureUrl= master.material.textureUrl ?? z.material.textureUrl;
       if(master.material.maps) z.material.maps = JSON.parse(JSON.stringify(master.material.maps));
+      if(master.material.mapsMeta) z.material.mapsMeta = JSON.parse(JSON.stringify(master.material.mapsMeta));
+      if(master.material.mapSet) z.material.mapSet = JSON.parse(JSON.stringify(master.material.mapSet));
       if(master.material.pbrParams) z.material.pbrParams = JSON.parse(JSON.stringify(master.material.pbrParams));
       if(master.material.tileSizeM!=null) z.material.tileSizeM = master.material.tileSizeM;
       if(master.material.params_base) z.material.params_base = JSON.parse(JSON.stringify(master.material.params_base));
@@ -1250,6 +1258,8 @@ function addZoneAndArmContour(){
           textureId: tex.textureId,
           textureUrl: tex.url,
           maps: tex.maps ? {...tex.maps} : {albedo: tex.url},
+          mapsMeta: tex.mapsMeta ? JSON.parse(JSON.stringify(tex.mapsMeta)) : null,
+          mapSet: tex.mapSet ? JSON.parse(JSON.stringify(tex.mapSet)) : null,
           pbrParams: (tex.params ? {...tex.params} : null),
           tileSizeM: (tex.tileSizeM!=null ? tex.tileSizeM : null)
         };
@@ -1264,15 +1274,21 @@ function addZoneAndArmContour(){
       z.material.textureId = null;
       z.material.textureUrl = null;
       z.material.maps = null;
+      z.material.mapsMeta = null;
+      z.material.mapSet = null;
       z.material.pbrParams = null;
     }else if(tex){
       z.material.textureId = tex.textureId;
       z.material.textureUrl = tex.url;
       if(tex.maps){
         z.material.maps = {...tex.maps};
+        z.material.mapsMeta = tex.mapsMeta ? JSON.parse(JSON.stringify(tex.mapsMeta)) : null;
+        z.material.mapSet = tex.mapSet ? JSON.parse(JSON.stringify(tex.mapSet)) : null;
         if(tex.tileSizeM!=null) z.material.tileSizeM = tex.tileSizeM;
       }else{
         z.material.maps = {albedo: tex.url};
+        z.material.mapsMeta = null;
+        z.material.mapSet = null;
       }
       z.material.pbrParams = (tex.params ? {...tex.params} : null);
     }
@@ -1349,6 +1365,8 @@ function renderTexturesUI(){
           url:t.albedoUrl||t.previewUrl,
           previewUrl:t.previewUrl,
           maps:t.maps ? {...t.maps} : undefined,
+          mapsMeta:t.mapsMeta ? JSON.parse(JSON.stringify(t.mapsMeta)) : undefined,
+          mapSet:t.mapSet ? JSON.parse(JSON.stringify(t.mapSet)) : undefined,
           params:t.params ? {...t.params} : undefined,
           tileSizeM:t.tileSizeM
         };
@@ -1699,6 +1717,8 @@ async function handlePhotoFile(file, source){
       textureId: z.material.textureId ?? null,
       textureUrl: z.material.textureUrl ?? null,
       maps: z.material.maps ? JSON.parse(JSON.stringify(z.material.maps)) : null,
+      mapsMeta: z.material.mapsMeta ? JSON.parse(JSON.stringify(z.material.mapsMeta)) : null,
+      mapSet: z.material.mapSet ? JSON.parse(JSON.stringify(z.material.mapSet)) : null,
       pbrParams: z.material.pbrParams ? JSON.parse(JSON.stringify(z.material.pbrParams)) : null,
       tileSizeM: z.material.tileSizeM ?? null,
       params_base: z.material.params_base ? JSON.parse(JSON.stringify(z.material.params_base)) : null,
@@ -1713,6 +1733,8 @@ async function handlePhotoFile(file, source){
     z.material.textureId = snap.textureId;
     z.material.textureUrl = snap.textureUrl;
     z.material.maps = snap.maps;
+    z.material.mapsMeta = snap.mapsMeta || null;
+    z.material.mapSet = snap.mapSet || null;
     z.material.pbrParams = snap.pbrParams;
     if(snap.tileSizeM!=null) z.material.tileSizeM = snap.tileSizeM;
     if(snap.params_base) z.material.params_base = snap.params_base;
@@ -1776,6 +1798,8 @@ async function handlePhotoFile(file, source){
         zone.material.textureId = master.material.textureId;
         zone.material.textureUrl = master.material.textureUrl;
         zone.material.maps = master.material.maps ? JSON.parse(JSON.stringify(master.material.maps)) : null;
+        zone.material.mapsMeta = master.material.mapsMeta ? JSON.parse(JSON.stringify(master.material.mapsMeta)) : null;
+        zone.material.mapSet = master.material.mapSet ? JSON.parse(JSON.stringify(master.material.mapSet)) : null;
         zone.material.pbrParams = master.material.pbrParams ? JSON.parse(JSON.stringify(master.material.pbrParams)) : null;
         if(master.material.tileSizeM!=null) zone.material.tileSizeM = master.material.tileSizeM;
       }else{
@@ -1786,6 +1810,8 @@ async function handlePhotoFile(file, source){
           zone.material.textureId = mo.textureId ?? null;
           zone.material.textureUrl = mo.textureUrl ?? null;
           zone.material.maps = mo.maps ? JSON.parse(JSON.stringify(mo.maps)) : null;
+          zone.material.mapsMeta = mo.mapsMeta ? JSON.parse(JSON.stringify(mo.mapsMeta)) : null;
+          zone.material.mapSet = mo.mapSet ? JSON.parse(JSON.stringify(mo.mapSet)) : null;
           zone.material.pbrParams = mo.pbrParams ? JSON.parse(JSON.stringify(mo.pbrParams)) : null;
           if(mo.tileSizeM!=null) zone.material.tileSizeM = mo.tileSizeM;
         }
@@ -1966,15 +1992,21 @@ function applyChangeToTiling(change){
         master.material.textureId = null;
         master.material.textureUrl = null;
         master.material.maps = null;
+        master.material.mapsMeta = null;
+        master.material.mapSet = null;
         master.material.pbrParams = null;
       }else if(tex){
         master.material.textureId = tex.textureId;
         master.material.textureUrl = tex.url;
         if(tex.maps){
           master.material.maps = {...tex.maps};
+          master.material.mapsMeta = tex.mapsMeta ? JSON.parse(JSON.stringify(tex.mapsMeta)) : null;
+          master.material.mapSet = tex.mapSet ? JSON.parse(JSON.stringify(tex.mapSet)) : null;
           if(tex.tileSizeM!=null) master.material.tileSizeM = tex.tileSizeM;
         }else{
           master.material.maps = {albedo: tex.url};
+          master.material.mapsMeta = null;
+          master.material.mapSet = null;
         }
         master.material.pbrParams = (tex.params ? {...tex.params} : null);
       }
@@ -2004,6 +2036,8 @@ function applyChangeToTiling(change){
           textureId: tex.textureId,
           textureUrl: tex.url,
           maps: tex.maps ? {...tex.maps} : {albedo: tex.url},
+          mapsMeta: tex.mapsMeta ? JSON.parse(JSON.stringify(tex.mapsMeta)) : null,
+          mapSet: tex.mapSet ? JSON.parse(JSON.stringify(tex.mapSet)) : null,
           pbrParams: (tex.params ? {...tex.params} : null),
           tileSizeM: (tex.tileSizeM!=null ? tex.tileSizeM : null)
         };
@@ -2019,15 +2053,21 @@ function applyChangeToTiling(change){
       z.material.textureId = null;
       z.material.textureUrl = null;
       z.material.maps = null;
+      z.material.mapsMeta = null;
+      z.material.mapSet = null;
       z.material.pbrParams = null;
     }else if(tex){
       z.material.textureId = tex.textureId;
       z.material.textureUrl = tex.url;
       if(tex.maps){
         z.material.maps = {...tex.maps};
+        z.material.mapsMeta = tex.mapsMeta ? JSON.parse(JSON.stringify(tex.mapsMeta)) : null;
+        z.material.mapSet = tex.mapSet ? JSON.parse(JSON.stringify(tex.mapSet)) : null;
         if(tex.tileSizeM!=null) z.material.tileSizeM = tex.tileSizeM;
       }else{
         z.material.maps = {albedo: tex.url};
+        z.material.mapsMeta = null;
+        z.material.mapSet = null;
       }
       z.material.pbrParams = (tex.params ? {...tex.params} : null);
       // Premium-P4: auto-scale for unlinked/master zones on commit

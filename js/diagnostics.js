@@ -66,6 +66,8 @@ window.PhotoPaveDiagnostics=(function(){
         shapeId: mat.shapeId || null,
         textureId: mat.textureId || null,
         textureUrl: mat.textureUrl || null,
+        mapsSummary: mat.mapSet ? safeJsonClone(mat.mapSet) : null,
+        mapResolutionHints: mat.mapsMeta ? safeJsonClone(mat.mapsMeta) : null,
         closed: !!(z && z.closed),
         cutouts: Array.isArray(z && z.cutouts) ? z.cutouts.length : 0
       });
@@ -125,6 +127,8 @@ window.PhotoPaveDiagnostics=(function(){
       lastLoadError: assets.lastLoadError || null,
       activeShapeId: catalog.activeShapeId || null,
       textureCacheSize: assets.textureCache && typeof assets.textureCache.size === "number" ? assets.textureCache.size : 0,
+      lastTextureLoad: safeJsonClone(assets.lastTextureLoad || null),
+      textureLoadInfo: safeJsonClone(assets.textureLoadInfo || null),
       loadedAssetIds: getLoadedAssetIds()
     };
   }

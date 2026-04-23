@@ -1,6 +1,6 @@
 window.PhotoPaveReleaseConfig=(function(){
   const preset = "public-core";
-  const patch = "P10";
+  const patch = "P11";
   const currentOrigin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin.replace(/\/$/,"") : "";
   const DEFAULT_GATEWAY = "https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const features = {
@@ -89,6 +89,12 @@ window.PhotoPaveReleaseConfig=(function(){
 
   const assetDelivery = {
     stage:"hardening",
+    textureResolutionPolicy:{
+      strategy:"2k_first_fallback_1k",
+      preferredResolution:"2k",
+      fallbackResolution:"1k",
+      applyTo:["albedo","normal","roughness","ao","height"]
+    },
     strictStaticShapes:true,
     preferLocalAiRuntime:true,
     allowRemoteAiRuntime:true,

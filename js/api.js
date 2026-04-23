@@ -43,6 +43,122 @@ window.PhotoPaveAPI=(function(){
     catch(_){ return null; }
   }
 
+  function _texturePolicy(){
+    const fallback = { preferredResolution:"2k", fallbackResolution:"1k", strategy:"2k_first_fallback_1k", applyTo:["albedo","normal","roughness","ao","height"] };
+    const src = assetPolicy && assetPolicy.textureResolutionPolicy ? assetPolicy.textureResolutionPolicy : null;
+    return Object.assign({}, fallback, src||{});
+  }
+  function _mapKindSuffix(kind){
+    const k = String(kind||"albedo").toLowerCase();
+    if(k === "basecolor") return "albedo";
+    return ({ albedo:"albedo", normal:"normal", roughness:"roughness", ao:"ao", height:"height", preview:"preview" })[k] || k;
+  }
+  function _detectTextureResolution(url){
+    const s = String(url||"");
+    const m = s.match(/\/(1k|2k)\//i);
+    return m ? String(m[1]).toLowerCase() : null;
+  }
+  function _replaceSurfaceResolution(url, resolution){
+    const abs = _absUrl(url);
+    return abs.replace(/\/(1k|2k)\//i, "/" + String(resolution||"2k") + "/");
+  }
+  function _basename(pathLike){
+    const clean = String(pathLike||"").split("?")[0].split("#")[0];
+    const parts = clean.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length-1] : "";
+  }
+  function _ensureSurfaceFilename(textureId, kind, candidate){
+    const base = _basename(candidate||"");
+    if(base && /\.(png|jpe?g|webp)$/i.test(base)) return base;
+    const suffix = _mapKindSuffix(kind);
+    return encodeURIComponent(textureId) + "_" + suffix + ".webp";
+  }
+  function _buildStorageSurfaceUrl(shapeId, textureId, resolution, fileName){
+    if(!shapeId || !textureId || !fileName) return null;
+    const storageBase = state.api.storageBase.replace(/\/$/,"");
+    return storageBase + "/surfaces/" + encodeURIComponent(shapeId) + "/" + encodeURIComponent(textureId) + "/" + encodeURIComponent(String(resolution||"2k")) + "/" + fileName;
+  }
+  function _candidateFromRelativeAsset(rel, shapeId, textureId, kind, resolution){
+    const trimmed = String(rel||"").replace(/^\//,"");
+    if(!trimmed) return null;
+    const storageBase = state.api.storageBase.replace(/\/$/,"");
+    if(trimmed.startsWith("surfaces/") || trimmed.startsWith("palettes/")){
+      const abs = storageBase + "/" + trimmed;
+      if(trimmed.startsWith("surfaces/")) return _replaceSurfaceResolution(abs, resolution);
+      return abs;
+    }
+    if(shapeId && textureId && /\.(png|jpe?g|webp)$/i.test(trimmed)){
+      return _buildStorageSurfaceUrl(shapeId, textureId, resolution, _ensureSurfaceFilename(textureId, kind, trimmed));
+    }
+    return new URL(trimmed, window.location.href).toString();
+  }
+  function _candidateFromAbsoluteAsset(absUrl, shapeId, textureId, kind, resolution){
+    const s = String(absUrl||"").trim();
+    if(!s) return null;
+    const storageBase = state.api.storageBase.replace(/\/$/,"");
+    if(s.includes(".apigw.yandexcloud.net")){
+      const m = s.match(/\/webar3dtexture\/(.+)$/);
+      if(m) return _candidateFromRelativeAsset(m[1], shapeId, textureId, kind, resolution);
+      const m2 = s.match(/\/(surfaces\/.+)$/);
+      if(m2) return _candidateFromRelativeAsset(m2[1], shapeId, textureId, kind, resolution);
+      const m3 = s.match(/\/(palettes\/.+)$/);
+      if(m3) return storageBase + "/" + m3[1];
+      if(shapeId && textureId){
+        return _buildStorageSurfaceUrl(shapeId, textureId, resolution, _ensureSurfaceFilename(textureId, kind, null));
+      }
+    }
+    if(/\/surfaces\//i.test(s)) return _replaceSurfaceResolution(s, resolution);
+    return s;
+  }
+  function resolveTextureMapUrls(u, shapeId, textureId, kind){
+    const policy = _texturePolicy();
+    const preferredResolution = policy.preferredResolution || "2k";
+    const fallbackResolution = policy.fallbackResolution || "1k";
+    const normalizedKind = _mapKindSuffix(kind);
+    const raw = (typeof u === "string") ? u.trim() : "";
+    const declared = !!raw || normalizedKind === "albedo";
+    let preferredUrl = null;
+    if(raw){
+      preferredUrl = /^https?:\/\//i.test(raw)
+        ? _candidateFromAbsoluteAsset(raw, shapeId, textureId, normalizedKind, preferredResolution)
+        : _candidateFromRelativeAsset(raw, shapeId, textureId, normalizedKind, preferredResolution);
+    }else if(shapeId && textureId && normalizedKind === "albedo"){
+      preferredUrl = _buildStorageSurfaceUrl(shapeId, textureId, preferredResolution, _ensureSurfaceFilename(textureId, normalizedKind, null));
+    }
+    const fallbackUrl = preferredUrl ? _replaceSurfaceResolution(preferredUrl, fallbackResolution) : null;
+    return {
+      preferredUrl,
+      fallbackUrl,
+      declared,
+      kind: normalizedKind,
+      preferredResolution,
+      fallbackResolution,
+      strategy: policy.strategy || "2k_first_fallback_1k"
+    };
+  }
+  function resolveTextureFallbackUrl(url){
+    const abs = _absUrl(url);
+    const current = _detectTextureResolution(abs);
+    if(current === "2k") return _replaceSurfaceResolution(abs, "1k");
+    return null;
+  }
+  function _recordTextureLoad(requestedUrl, loadedUrl){
+    state.assets = state.assets || {};
+    state.assets.textureLoadInfo = state.assets.textureLoadInfo || {};
+    const requested = _absUrl(requestedUrl||loadedUrl||"");
+    const resolved = _absUrl(loadedUrl||requestedUrl||"");
+    const entry = {
+      requestedUrl: requested,
+      loadedUrl: resolved,
+      resolution: _detectTextureResolution(resolved),
+      fallbackUsed: requested !== resolved,
+      at: new Date().toISOString()
+    };
+    state.assets.textureLoadInfo[requested] = entry;
+    state.assets.lastTextureLoad = entry;
+    return entry;
+  }
+
   async function fetchJson(url,opts={}){
     const abs=_ensureAllowed(url,"json","JSON asset");
     const res=await fetch(abs,{...opts,headers:{...(opts.headers||{}),"Accept":"application/json"}});
@@ -113,37 +229,8 @@ function absFromStorageMaybe(p){
   function resolveAssetUrl(u, shapeId, textureId){
     if(!u || typeof u !== "string") return null;
     const s = u.trim();
-    const storageBase = state.api.storageBase.replace(/\/$/,"");
-    // Relative paths -> Object Storage
-    if(!/^https?:\/\//i.test(s)){
-      const rel = s.replace(/^\//,"");
-      if(rel.startsWith("surfaces/") || rel.startsWith("palettes/")){
-        return storageBase + "/" + rel;
-      }
-      // sometimes palette stores just filename or subpath; try to map to surfaces
-      if(shapeId && textureId && rel){
-        // If looks like an albedo file name, attach to standard surfaces path
-        if(/\.(png|jpe?g|webp)$/i.test(rel) && !rel.includes("/")){
-          return storageBase + "/surfaces/" + encodeURIComponent(shapeId) + "/" + encodeURIComponent(textureId) + "/1k/" + rel;
-        }
-      }
-      return new URL(rel, window.location.href).toString();
-    }
-    // Absolute URLs
-    if(s.includes(".apigw.yandexcloud.net")){
-      // Common proxy patterns: .../webar3dtexture/<path> or .../surfaces/<path> or .../palettes/<path>
-      const m = s.match(/\/webar3dtexture\/(.+)$/);
-      if(m) return storageBase + "/" + m[1];
-      const m2 = s.match(/\/(surfaces\/.+)$/);
-      if(m2) return storageBase + "/" + m2[1];
-      const m3 = s.match(/\/(palettes\/.+)$/);
-      if(m3) return storageBase + "/" + m3[1];
-      // If still gateway, drop it (will likely 401) and try storage-based guess
-      if(shapeId && textureId){
-        return storageBase + "/surfaces/" + encodeURIComponent(shapeId) + "/" + encodeURIComponent(textureId) + "/1k/" + encodeURIComponent(textureId) + "_albedo.webp";
-      }
-    }
-    return s;
+    if(!/^https?:\/\//i.test(s)) return _candidateFromRelativeAsset(s, shapeId, textureId, "preview", "1k");
+    return _candidateFromAbsoluteAsset(s, shapeId, textureId, "preview", "1k");
   }
 
   
@@ -210,13 +297,18 @@ function normalizePaletteTextures(pal, shapeId){
       else if(typeof it.baseColor==="string") albedoUrl=it.baseColor;
 
       const pUrl = resolveAssetUrl(previewUrl, shapeId, textureId);
-      const aUrl = resolveAssetUrl(albedoUrl, shapeId, textureId) || pUrl;
+      const aRes = resolveTextureMapUrls(albedoUrl, shapeId, textureId, "albedo");
+      const nRes = resolveTextureMapUrls(it.maps?.normal, shapeId, textureId, "normal");
+      const rRes = resolveTextureMapUrls(it.maps?.roughness, shapeId, textureId, "roughness");
+      const aoRes = resolveTextureMapUrls(it.maps?.ao, shapeId, textureId, "ao");
+      const hRes = resolveTextureMapUrls(it.maps?.height, shapeId, textureId, "height");
+      const aUrl = aRes.preferredUrl || pUrl;
 
-      // PBR maps: strictly from it.maps.* (no extension guessing here)
-      const nUrl = resolveAssetUrl(it.maps?.normal, shapeId, textureId);
-      const rUrl = resolveAssetUrl(it.maps?.roughness, shapeId, textureId);
-      const aoUrl = resolveAssetUrl(it.maps?.ao, shapeId, textureId);
-      const hUrl = resolveAssetUrl(it.maps?.height, shapeId, textureId);
+      // PBR maps: 2k-first with safe 1k fallback.
+      const nUrl = nRes.preferredUrl;
+      const rUrl = rRes.preferredUrl;
+      const aoUrl = aoRes.preferredUrl;
+      const hUrl = hRes.preferredUrl;
 
       const tileSizeM = (typeof it.tileSizeM==="number") ? it.tileSizeM :
                         (typeof it.tileSize==="number") ? it.tileSize : null;
@@ -230,6 +322,25 @@ function normalizePaletteTextures(pal, shapeId){
         previewUrl: pUrl,
         albedoUrl: aUrl,
         maps: { albedo: aUrl, normal: nUrl, roughness: rUrl, ao: aoUrl, height: hUrl },
+        mapsMeta: {
+          albedo: aRes,
+          normal: nRes,
+          roughness: rRes,
+          ao: aoRes,
+          height: hRes
+        },
+        mapSet: {
+          strategy: aRes.strategy,
+          declared: {
+            albedo: !!aRes.preferredUrl,
+            normal: !!nRes.preferredUrl,
+            roughness: !!rRes.preferredUrl,
+            ao: !!aoRes.preferredUrl,
+            height: !!hRes.preferredUrl
+          },
+          fullPbrDeclared: !!(aRes.preferredUrl && nRes.preferredUrl && rRes.preferredUrl && aoRes.preferredUrl && hRes.preferredUrl),
+          pbrGateNormalPresent: !!nRes.preferredUrl
+        },
         tileSizeM,
         params,
         pbrComplete: !!(aUrl && nUrl && rUrl && aoUrl),
@@ -300,12 +411,20 @@ function normalizePaletteTextures(pal, shapeId){
       ao: absFromStorageMaybe(t.maps.ao),
       height: absFromStorageMaybe(t.maps.height),
     } : null;
+    const mapsMeta=t.mapsMeta ? {
+      albedo: t.mapsMeta.albedo ? Object.assign({}, t.mapsMeta.albedo, { preferredUrl: absFromStorageMaybe(t.mapsMeta.albedo.preferredUrl), fallbackUrl: absFromStorageMaybe(t.mapsMeta.albedo.fallbackUrl) }) : null,
+      normal: t.mapsMeta.normal ? Object.assign({}, t.mapsMeta.normal, { preferredUrl: absFromStorageMaybe(t.mapsMeta.normal.preferredUrl), fallbackUrl: absFromStorageMaybe(t.mapsMeta.normal.fallbackUrl) }) : null,
+      roughness: t.mapsMeta.roughness ? Object.assign({}, t.mapsMeta.roughness, { preferredUrl: absFromStorageMaybe(t.mapsMeta.roughness.preferredUrl), fallbackUrl: absFromStorageMaybe(t.mapsMeta.roughness.fallbackUrl) }) : null,
+      ao: t.mapsMeta.ao ? Object.assign({}, t.mapsMeta.ao, { preferredUrl: absFromStorageMaybe(t.mapsMeta.ao.preferredUrl), fallbackUrl: absFromStorageMaybe(t.mapsMeta.ao.fallbackUrl) }) : null,
+      height: t.mapsMeta.height ? Object.assign({}, t.mapsMeta.height, { preferredUrl: absFromStorageMaybe(t.mapsMeta.height.preferredUrl), fallbackUrl: absFromStorageMaybe(t.mapsMeta.height.fallbackUrl) }) : null,
+    } : null;
     if(!albedoUrl){ blockedCount++; continue; }
     tex.push({
       ...t,
       previewUrl,
       albedoUrl,
-      maps
+      maps,
+      mapsMeta
     });
   }
   state.catalog.texturesByShape[shapeId]=tex;
@@ -327,17 +446,19 @@ function normalizePaletteTextures(pal, shapeId){
         img.src=abs;
       });
     }
-    let finalUrl=url;
+    let finalUrl=_absUrl(url);
     try{
       const img = await tryLoad(finalUrl);
+      _recordTextureLoad(finalUrl, finalUrl);
       state.assets.exportSafe = true;
       state.assets.exportBlockedReason = null;
       _clearAssetError();
       return img;
     }catch(e1){
-      const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(finalUrl, null, null) : null;
+      const alt = resolveTextureFallbackUrl(finalUrl);
       if(alt && alt!==finalUrl){
         const img = await tryLoad(alt);
+        _recordTextureLoad(finalUrl, alt);
         state.assets.exportSafe = true;
         state.assets.exportBlockedReason = null;
         _clearAssetError();
@@ -366,23 +487,25 @@ function normalizePaletteTextures(pal, shapeId){
       });
     }
 
-    let finalUrl=resolveAssetUrl(url, null, null) || url;
+    let finalUrl=_absUrl(url);
     let img=null;
 
     try{
       const loaded=await tryLoad(finalUrl, true);
       img=loaded.img;
       finalUrl=loaded.finalUrl;
+      _recordTextureLoad(url, finalUrl);
       state.assets.exportSafe = true;
       state.assets.exportBlockedReason = null;
       _clearAssetError();
     }catch(e1){
-      const alt = (typeof resolveAssetUrl==="function") ? resolveAssetUrl(finalUrl, null, null) : null;
+      const alt = resolveTextureFallbackUrl(finalUrl);
       if(alt && alt!==finalUrl){
         try{
           const loaded=await tryLoad(alt, true);
           img=loaded.img;
           finalUrl=loaded.finalUrl;
+          _recordTextureLoad(url, finalUrl);
           state.assets.exportSafe = true;
           state.assets.exportBlockedReason = null;
           _clearAssetError();
@@ -392,6 +515,7 @@ function normalizePaletteTextures(pal, shapeId){
             const loaded=await tryLoad(alt, false);
             img=loaded.img;
             finalUrl=loaded.finalUrl;
+            _recordTextureLoad(url, finalUrl);
             state.assets.exportSafe = false;
             state.assets.exportBlockedReason = "Texture loaded without CORS; PNG export may be blocked.";
             _setAssetError(state.assets.exportBlockedReason, true, { kind:"image", url: String(alt||finalUrl||"") });
@@ -408,6 +532,7 @@ function normalizePaletteTextures(pal, shapeId){
         const loaded=await tryLoad(finalUrl, false);
         img=loaded.img;
         finalUrl=loaded.finalUrl;
+        _recordTextureLoad(url, finalUrl);
         state.assets.exportSafe = false;
         state.assets.exportBlockedReason = "Texture loaded without CORS; PNG export may be blocked.";
         _setAssetError(state.assets.exportBlockedReason, true, { kind:"image", url: String(finalUrl||"") });
@@ -429,5 +554,5 @@ function normalizePaletteTextures(pal, shapeId){
     }
     return img;
   }
-  return {setStatus,loadConfig,loadShapes,loadPalette,loadImage,loadImageStrict};
+  return {setStatus,loadConfig,loadShapes,loadPalette,loadImage,loadImageStrict,resolveTextureFallbackUrl,detectTextureResolution:_detectTextureResolution};
 })();
