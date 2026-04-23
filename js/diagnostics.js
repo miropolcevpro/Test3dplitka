@@ -129,7 +129,6 @@ window.PhotoPaveDiagnostics=(function(){
       textureCacheSize: assets.textureCache && typeof assets.textureCache.size === "number" ? assets.textureCache.size : 0,
       lastTextureLoad: safeJsonClone(assets.lastTextureLoad || null),
       textureLoadInfo: safeJsonClone(assets.textureLoadInfo || null),
-      lastContourValidation: safeJsonClone(assets.lastContourValidation || null),
       loadedAssetIds: getLoadedAssetIds()
     };
   }

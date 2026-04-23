@@ -554,5 +554,5 @@ function normalizePaletteTextures(pal, shapeId){
     }
     return img;
   }
-  return {setStatus,loadConfig,loadShapes,loadPalette,loadImage,loadImageStrict,resolveTextureFallbackUrl,detectTextureResolution:_detectTextureResolution};
+  return {setStatus,loadConfig,loadShapes,loadPalette,loadImage,loadImageStrict,resolveTextureFallbackUrl,detectTextureResolution:_detectTextureResolution,fetchJson,absFromStorageMaybe};
 })();

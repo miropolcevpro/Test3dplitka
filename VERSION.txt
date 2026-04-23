@@ -1,2 +1,3 @@
-mvp-iter2.2.183-contour-geometry-guardrails
-Patch: P13 contour geometry guardrails for auto-perspective
+mvp-iter2.2.187-admin-write-api-foundation
+Patch: P17
+Base: photo_pave_patch_p16_storage_read_contracts.zip

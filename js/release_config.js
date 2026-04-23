@@ -1,6 +1,6 @@
 window.PhotoPaveReleaseConfig=(function(){
   const preset = "public-core";
-  const patch = "P13";
+  const patch = "P15";
   const currentOrigin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin.replace(/\/$/,"") : "";
   const DEFAULT_GATEWAY = "https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const features = {
@@ -30,12 +30,6 @@ window.PhotoPaveReleaseConfig=(function(){
     },
     autoContourQuick: {
       label:"Быстрый автоконтур",
-      enabled:true,
-      visible:true,
-      stage:"public"
-    },
-    contourGeometryGuard: {
-      label:"Guardrails для геометрически опасных контуров",
       enabled:true,
       visible:true,
       stage:"public"
@@ -149,6 +143,52 @@ window.PhotoPaveReleaseConfig=(function(){
     return allowed.includes(origin);
   }
 
+  const scenePresets = {
+    stage:"admin_write_api_foundation",
+    enabled:false,
+    schemaVersion:1,
+    contractVersion:1,
+    manifestFile:"manifest.json",
+    sceneFile:"scene.json",
+    variantsIndexFile:"variants.json",
+    variantsDir:"variants",
+    publishedRoot:"preset-scenes/published",
+    draftRoot:"preset-scenes/draft",
+    publicReadMode:"published_only",
+    adminReadMode:"draft_then_published",
+    adminApi:{
+      stage:"foundation",
+      enabled:false,
+      contextMode:"bootstrap_only",
+      contextQueryParam:"ppAdmin",
+      contextQueryValue:"1",
+      storageKey:"pp_scene_presets_admin_token",
+      sessionStorageKey:"pp_scene_presets_admin_token",
+      allowTokenFromStorage:true,
+      allowTokenFromQuery:false,
+      allowTokenPersistence:false,
+      authHeader:"Authorization",
+      authScheme:"Bearer",
+      authTokenHeader:"X-PhotoPave-Admin-Token",
+      requireAuth:true,
+      timeoutMs:25000,
+      endpoints:{
+        saveSceneDraft:"scene-presets/admin/draft/scene",
+        saveVariantDraft:"scene-presets/admin/draft/variant",
+        publishScene:"scene-presets/admin/publish/scene",
+        publishVariant:"scene-presets/admin/publish/variant",
+        uploadAsset:"scene-presets/admin/upload"
+      },
+      methods:{
+        saveSceneDraft:"POST",
+        saveVariantDraft:"POST",
+        publishScene:"POST",
+        publishVariant:"POST",
+        uploadAsset:"POST"
+      }
+    }
+  };
+
   const analytics = {
     stage:"foundation",
     enabled:true,
@@ -168,8 +208,7 @@ window.PhotoPaveReleaseConfig=(function(){
       "export_clicked",
       "export_success",
       "advanced_mode_opened",
-      "render_error",
-      "auto_contour_blocked_geometry"
+      "render_error"
     ]
   };
 
@@ -379,6 +418,7 @@ window.PhotoPaveReleaseConfig=(function(){
     assetDelivery,
     capabilityMatrix,
     analytics,
+    scenePresets,
     simpleMode,
     resolveCapabilityProfile,
     getAllowedOrigins,

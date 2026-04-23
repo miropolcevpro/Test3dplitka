@@ -6,6 +6,7 @@
   const RELEASE=window.PhotoPaveReleaseConfig||null;
   const DIAG=window.PhotoPaveDiagnostics||null;
   const ANALYTICS=window.PhotoPaveAnalytics||null;
+  const SCENES=window.PhotoPaveScenePresets||null;
   const el=(id)=>document.getElementById(id);
   const escapeHtml=(s)=>String(s||"").replace(/[&<>'"]/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[c]));
   const ESC_ATTR_MAP={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
@@ -544,26 +545,6 @@
     }
   }
 
-
-  function getAutoContourValidation(zone){
-    try{
-      const z = zone || (S.getActiveZone ? S.getActiveZone() : null);
-      if(!(z && z.closed && Array.isArray(z.contour) && z.contour.length >= 4)) return null;
-      if(!window.PhotoPaveCameraCalib || typeof window.PhotoPaveCameraCalib.validateContourForAutoCalib !== "function") return null;
-      const validation = window.PhotoPaveCameraCalib.validateContourForAutoCalib(z.contour, state.assets && state.assets.photoW, state.assets && state.assets.photoH);
-      state.assets = state.assets || {};
-      state.assets.lastContourValidation = validation || null;
-      return validation || null;
-    }catch(_){ return null; }
-  }
-
-  function buildAutoContourGuardMessage(validation){
-    if(!validation) return "Контур плохо подходит для авто-перспективы.";
-    const shortMessage = validation.shortMessage || validation.message || "Контур плохо подходит для авто-перспективы.";
-    const suggestion = validation.suggestion ? (" " + validation.suggestion) : "";
-    return shortMessage + suggestion;
-  }
-
   function updateAutoContourQuickUI(){
     const btn = el("autoContourQuickBtn");
     if(!btn) return;
@@ -573,22 +554,12 @@
     }
     setNodeHidden(btn, false);
     const z = S.getActiveZone ? S.getActiveZone() : null;
-    const hasPhoto = !!(state.assets && state.assets.photoBitmap);
+    const hasPhoto = !!(state.assets && state.assets.photo);
     const closed = !!(z && z.closed && Array.isArray(z.contour) && z.contour.length >= 4);
     btn.disabled = !hasPhoto || !closed;
-    btn.dataset.guardBlocked = "0";
     if(!hasPhoto) btn.title = "Сначала загрузите фото участка";
     else if(!closed) btn.title = "Сначала замкните основной контур";
-    else {
-      const validation = getAutoContourValidation(z);
-      if(validation && validation.ok === false){
-        btn.disabled = false;
-        btn.dataset.guardBlocked = "1";
-        btn.title = buildAutoContourGuardMessage(validation);
-      }else{
-        btn.title = "Автоматически оценить перспективу по уже замкнутому контуру";
-      }
-    }
+    else btn.title = "Автоматически оценить перспективу по уже замкнутому контуру";
   }
 
   function syncContourHintUi(){
@@ -2413,6 +2384,7 @@ function applyChangeToTiling(change){
     // Auto calibration from the already drawn contour (test)
     async function _autoCalibFromContour(){
       const c3 = _ensureCalib3DState();
+      if(c3.enabled !== true){ c3.enabled = true; if(calib3dEnableChk) calib3dEnableChk.checked = true; }
 
       // Need a closed contour
       const z = S.getActiveZone && S.getActiveZone();
@@ -2424,21 +2396,6 @@ function applyChangeToTiling(change){
         ED.render();
         return;
       }
-
-      const contourValidation = getAutoContourValidation(z);
-      if(contourValidation && contourValidation.ok === false){
-        c3.status = "error";
-        c3.error = "Автоконтур отключён: " + buildAutoContourGuardMessage(contourValidation);
-        c3.warn = contourValidation.reason || "unsafe_contour";
-        try{ API && API.setStatus && API.setStatus(c3.error); }catch(_){ }
-        try{ DIAG && DIAG.note && DIAG.note("auto_contour_blocked_geometry", { validation: contourValidation, zoneId: z && z.id ? z.id : null }); }catch(_){ }
-        try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("auto_contour_blocked_geometry", { reason: contourValidation.reason || null, score: contourValidation.score || 0 }, { allowDuplicate:true }); }catch(_){ }
-        try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
-        ED.render();
-        return;
-      }
-
-      if(c3.enabled !== true){ c3.enabled = true; if(calib3dEnableChk) calib3dEnableChk.checked = true; }
 
       if(!window.PhotoPaveCameraCalib || typeof window.PhotoPaveCameraCalib.autoLinesFromContour !== "function" || typeof window.PhotoPaveCameraCalib.computeFromLines !== "function"){
         c3.status = "error";
@@ -2454,13 +2411,9 @@ function applyChangeToTiling(change){
 
       const r = window.PhotoPaveCameraCalib.autoLinesFromContour(z.contour, state.assets.photoW, state.assets.photoH);
       if(!r || !r.ok || !r.lines){
-        const guardValidation = (r && r.validation) ? r.validation : contourValidation;
         c3.status = "error";
-        c3.error = (guardValidation && guardValidation.ok === false)
-          ? ("Автоконтур отключён: " + buildAutoContourGuardMessage(guardValidation))
-          : ("Авто по контуру не удалось (" + (r && r.reason ? r.reason : "weak") + "). Попробуйте упростить контур или использовать ручные линии.");
+        c3.error = "Авто по контуру не удалось (" + (r && r.reason ? r.reason : "weak") + "). Попробуйте ручные линии.";
         try{ API && API.setStatus && API.setStatus(c3.error); }catch(_){ }
-        try{ DIAG && DIAG.note && DIAG.note("auto_contour_failed", { reason: r && r.reason ? r.reason : "weak", validation: guardValidation || null, zoneId: z && z.id ? z.id : null }); }catch(_){ }
         try{ window.dispatchEvent(new Event("calib3d:change")); }catch(_){ }
         ED.render();
         return;
@@ -3694,6 +3647,7 @@ el("exportPngBtn").addEventListener("click",()=>{ try{ ANALYTICS && ANALYTICS.tr
     try{ ANALYTICS && ANALYTICS.init && ANALYTICS.init(); }catch(_){ }
     try{ DIAG && DIAG.note && DIAG.note("bootstrap_start", { patch:(state.release&&state.release.patch)||null }); }catch(_){ }
     applyReleaseFlags();
+    try{ SCENES && SCENES.ensureState && SCENES.ensureState(state); }catch(_){ }
     setBuildInfo();
     ensureActiveZone();
     enforceSingleZoneMode();
