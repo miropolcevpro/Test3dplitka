@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" class="ppAdminPageRoot">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -22,7 +22,7 @@
     body.ppAdminPage .simpleShell{ display:none !important; }
   </style>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_189_p18_1" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_195_p22_repo_package" />
 </head>
 <body class="ppAdminPage">
   <div class="app">
@@ -91,6 +91,113 @@
           <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellSceneMeta"></div>
           <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellSourceMeta"></div>
           <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellAuthoringMeta"></div>
+        </div>
+      </div>
+      <div class="scenePresetAdminShell__editorWrap">
+        <div class="scenePresetAdminShell__panel">
+          <div class="scenePresetAdminShell__panelTitle">Редактор сцены (local draft)</div>
+          <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellDraftState">Подготовьте сцену для локального draft.</div>
+          <div class="scenePresetAdminShell__formGrid">
+            <label class="field scenePresetAdminShell__field">
+              <span>Scene ID</span>
+              <input class="ppInput" id="scenePresetAdminShellSceneId" type="text" placeholder="private-yard" />
+            </label>
+            <label class="field scenePresetAdminShell__field">
+              <span>Название</span>
+              <input class="ppInput" id="scenePresetAdminShellSceneTitle" type="text" placeholder="Частный двор" />
+            </label>
+            <label class="field scenePresetAdminShell__field">
+              <span>Порядок</span>
+              <input class="ppInput" id="scenePresetAdminShellSceneOrder" type="number" step="10" placeholder="10" />
+            </label>
+            <label class="scenePresetAdminShell__toggle">
+              <input id="scenePresetAdminShellSceneEnabled" type="checkbox" checked />
+              <span>Сцена активна</span>
+            </label>
+            <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+              <span>Photo URL (опционально, если фото уже размещено)</span>
+              <input class="ppInput" id="scenePresetAdminShellScenePhotoUrl" type="url" placeholder="https://.../scene-photo.jpg" />
+            </label>
+            <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+              <span>Thumb URL (опционально)</span>
+              <input class="ppInput" id="scenePresetAdminShellSceneThumbUrl" type="url" placeholder="https://.../scene-thumb.jpg" />
+            </label>
+            <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+              <span>Заметка</span>
+              <textarea class="ppInput" id="scenePresetAdminShellSceneNote" rows="3" placeholder="Краткая заметка по сцене и её назначению"></textarea>
+            </label>
+          </div>
+          <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--editor">
+            <button class="btn" id="scenePresetAdminShellNewBtn" type="button">Новая сцена</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellUploadPhotoBtn" type="button">Загрузить фото</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellCaptureBtn" type="button">Захватить текущую сцену</button>
+            <button class="btn" id="scenePresetAdminShellSaveLocalBtn" type="button">Сохранить local draft</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellExportBtn" type="button">Экспорт scene.json</button>
+            <button class="btn" id="scenePresetAdminShellExportPackageBtn" type="button">Экспорт repo-пакета сцены</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellImportBtn" type="button">Импорт scene.json</button>
+            <input id="scenePresetAdminShellImportInput" type="file" accept="application/json,.json" hidden />
+          </div>
+          <div class="scenePresetAdminShell__geometryWrap">
+        <div class="scenePresetAdminShell__panel">
+          <div class="scenePresetAdminShell__panelTitle">Геометрия сцены</div>
+          <div class="scenePresetAdminShell__geometryState" id="scenePresetAdminShellGeometryState">Загрузите фото и выставьте базовый контур сцены.</div>
+          <div class="scenePresetAdminShell__geometryChips" id="scenePresetAdminShellGeometryChips"></div>
+          <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellGeometryMeta"></div>
+          <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--geometry">
+            <button class="btn btn--ghost" id="scenePresetAdminShellModeContourBtn" type="button">Режим контура</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellModeCutoutBtn" type="button">Режим выреза</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellModeViewBtn" type="button">Просмотр</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellCloseContourBtn" type="button">Замкнуть текущий контур</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellResetGeometryBtn" type="button">Сбросить геометрию</button>
+          </div>
+          <div class="scenePresetAdminShell__help">
+            Сначала подготовьте базовую геометрию сцены: фото → контур → вырезы → просмотр. После этого захватывайте сцену в local draft и переходите к ручной настройке вариантов текстур.
+          </div>
+        </div>
+      </div>
+
+        <div class="scenePresetAdminShell__panel scenePresetAdminShell__panel--variant">
+          <div class="scenePresetAdminShell__panelTitle">Редактор варианта (local draft)</div>
+          <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellVariantState">Выберите форму и текстуру, затем захватите текущий вариант.</div>
+          <div class="scenePresetAdminShell__variantContext" id="scenePresetAdminShellVariantContext"></div>
+          <div class="scenePresetAdminShell__formGrid">
+            <label class="field scenePresetAdminShell__field">
+              <span>Shape ID</span>
+              <input class="ppInput" id="scenePresetAdminShellVariantShapeId" type="text" placeholder="old_gorod" />
+            </label>
+            <label class="field scenePresetAdminShell__field">
+              <span>Texture ID</span>
+              <input class="ppInput" id="scenePresetAdminShellVariantTextureId" type="text" placeholder="gray_mix" />
+            </label>
+            <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+              <span>Название варианта</span>
+              <input class="ppInput" id="scenePresetAdminShellVariantTitle" type="text" placeholder="Частный двор · Старый город · Серый" />
+            </label>
+            <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+              <span>Preview URL (опционально)</span>
+              <input class="ppInput" id="scenePresetAdminShellVariantPreviewUrl" type="url" placeholder="https://.../variant-preview.jpg" />
+            </label>
+            <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+              <span>Заметка по варианту</span>
+              <textarea class="ppInput" id="scenePresetAdminShellVariantNote" rows="3" placeholder="Комментарий по ручной настройке, калибровке, ultra и перспективе"></textarea>
+            </label>
+          </div>
+          <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--editor">
+            <button class="btn btn--ghost" id="scenePresetAdminShellCaptureVariantBtn" type="button">Захватить текущий вариант</button>
+            <button class="btn" id="scenePresetAdminShellSaveVariantLocalBtn" type="button">Сохранить local variant</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellOpenVariantLocalBtn" type="button">Открыть local variant</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellExportVariantBtn" type="button">Экспорт variant.json</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellImportVariantBtn" type="button">Импорт variant.json</button>
+            <input id="scenePresetAdminShellImportVariantInput" type="file" accept="application/json,.json" hidden />
+          </div>
+          <div class="scenePresetAdminShell__variantList" id="scenePresetAdminShellVariantList"></div>
+          <div class="scenePresetAdminShell__help">
+            Вариант сохраняет ручные настройки формы, текстуры, параметров материала, camera/AI state и активной зоны поверх уже подготовленной базовой сцены. Это foundation для последующего published workflow.
+          </div>
+        </div>
+      <div class="scenePresetAdminShell__help">
+            Local draft сохраняется в браузере и подходит для authoring без backend. Для надёжного backup или переноса используйте экспорт scene.json.
+          </div>
         </div>
       </div>
     </section>
@@ -417,21 +524,21 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/release_config.js?v=iter2_2_189_p18_1"></script>
-  <script src="js/state.js?v=iter2_2_189_p18_1"></script>
+  <script src="js/release_config.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/state.js?v=iter2_2_195_p22_repo_package"></script>
   <script src="js/diagnostics.js?v=iter2_2_182_p12"></script>
   <script src="js/analytics.js?v=iter2_2_182_p12"></script>
   <script src="js/updater.js?v=iter2_2_169_p02"></script>
   <script src="js/ai_ultra_pipeline.js?v=iter2_2_172_p05"></script>
   <script src="js/ai_auto_calib.js?v=iter2_2_171_p04"></script>
-  <script src="js/api.js?v=iter2_2_189_p18_1"></script>
-  <script src="js/scene_presets.js?v=iter2_2_189_p18_1"></script>
-  <script src="js/scene_preset_state.js?v=iter2_2_189_p18_1"></script>
-  <script src="js/scene_preset_admin.js?v=iter2_2_189_p18_1"></script>
+  <script src="js/api.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/scene_presets.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/scene_preset_state.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/scene_preset_admin.js?v=iter2_2_195_p22_repo_package"></script>
   <script src="js/webgl_compositor.js?v=iter2_2_169_p02"></script>
   <script src="js/camera_calib.js?v=iter2_2_169_p02"></script>
-  <script src="js/editor.js?v=iter2_2_189_p18_1"></script>
-  <script src="js/app.js?v=iter2_2_189_p18_1"></script>
-  <script src="js/scene_preset_admin_shell.js?v=iter2_2_189_p18_1"></script>
+  <script src="js/editor.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/app.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/scene_preset_admin_shell.js?v=iter2_2_195_p22_repo_package"></script>
 </body>
 </html>

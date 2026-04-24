@@ -414,6 +414,24 @@ body.singleZoneMode .zoneList .zoneItem .ppZoneActions{
 .scenePresetAdminShell__chip--draft{border-color:rgba(255,191,71,0.30);background:rgba(255,191,71,0.12);color:#ffd89c}
 .scenePresetAdminShell__chip--published{border-color:rgba(46,240,107,0.30);background:rgba(46,240,107,0.12);color:#9cf1bb}
 .scenePresetAdminShell__chip--active{border-color:rgba(122,162,255,0.34);background:rgba(122,162,255,0.12);color:#d8e4ff}
+
+.scenePresetAdminShell__chip--local{border-color:rgba(122,162,255,0.30);background:rgba(122,162,255,0.12);color:#d8e4ff}
+.scenePresetAdminShell__chip--warn{border-color:rgba(255,191,71,0.34);background:rgba(255,191,71,0.12);color:#ffd89c}
+.scenePresetAdminShell__chip--ok{border-color:rgba(46,240,107,0.30);background:rgba(46,240,107,0.12);color:#9cf1bb}
+.scenePresetAdminShell__geometryWrap{margin-top:12px}
+.scenePresetAdminShell__geometryState{font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.45}
+.scenePresetAdminShell__geometryChips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.scenePresetAdminShell__toolbar--geometry{margin-top:10px}
+.scenePresetAdminShell__editorWrap{margin-top:12px}
+.scenePresetAdminShell__editorState{font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.4}
+.scenePresetAdminShell__formGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.scenePresetAdminShell__field{display:flex;flex-direction:column;gap:6px}
+.scenePresetAdminShell__field span{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+.scenePresetAdminShell__field--full{grid-column:1/-1}
+.scenePresetAdminShell__toggle{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid rgba(255,255,255,0.10);border-radius:12px;background:rgba(255,255,255,0.04);font-size:12px}
+.scenePresetAdminShell__toggle input{margin:0}
+.scenePresetAdminShell__toolbar--editor{margin-top:10px}
+.scenePresetAdminShell__help{margin-top:8px;font-size:12px;line-height:1.45;color:var(--muted)}
 .scenePresetAdminShell__meta{display:flex;flex-direction:column;gap:8px;padding-top:6px}
 .scenePresetAdminShell__metaCard{padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.04)}
 .scenePresetAdminShell__metaTitle{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:6px}
@@ -423,5 +441,40 @@ body.singleZoneMode .zoneList .zoneItem .ppZoneActions{
 body.ppAdminShellCollapsed .scenePresetAdminShell__grid,
 body.ppAdminShellCollapsed .scenePresetAdminShell__toolbar{display:none}
 body.ppAdminShellMode .simpleShell{display:none !important}
-@media (max-width: 980px){.scenePresetAdminShell__grid{grid-template-columns:1fr}.scenePresetAdminShell__sceneList{max-height:210px}}
+@media (max-width: 980px){.scenePresetAdminShell__grid{grid-template-columns:1fr}.scenePresetAdminShell__sceneList{max-height:210px}.scenePresetAdminShell__formGrid{grid-template-columns:1fr}}
 @media (max-width: 720px){.scenePresetAdminShell{padding:10px 12px}.scenePresetAdminShell__title{font-size:15px}.scenePresetAdminShell__toolbar .btn{flex:1 1 170px}.scenePresetAdminShell__headActions{width:100%}}
+
+.scenePresetAdminShell__panel--variant{margin-top:12px}
+.scenePresetAdminShell__variantContext{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.scenePresetAdminShell__variantList{display:flex;flex-direction:column;gap:8px;margin-top:10px;max-height:240px;overflow:auto;padding-right:2px}
+
+
+/* Admin-only layout hotfix: allow full-height authoring UI with vertical scroll instead of hard clipping */
+html.ppAdminPageRoot,
+body.ppAdminPage{height:auto;min-height:100%;overflow:auto;}
+body.ppAdminPage{overflow-x:hidden;overflow-y:auto;}
+body.ppAdminPage .app{height:auto;min-height:100dvh;}
+body.ppAdminPage .main{flex:1 0 auto;min-height:auto;align-items:flex-start;overflow:visible;}
+body.ppAdminPage .canvasPane{min-height:720px;overflow:visible;}
+body.ppAdminPage .canvasWrap{min-height:520px;max-height:none;}
+body.ppAdminPage #leftPane{align-self:stretch;max-height:none;}
+body.ppAdminPage #leftPane #texturesPanel{height:auto;min-height:420px;}
+body.ppAdminPage #leftPane #texturesPanel .panel__body--textures{max-height:none;}
+body.ppAdminPage .scenePresetAdminShell__sceneList,
+body.ppAdminPage .scenePresetAdminShell__variantList{max-height:320px;}
+body.ppAdminPage .scenePresetAdminShell__grid{align-items:start;}
+body.ppAdminPage .bottomMenu{min-height:auto;}
+@media (max-width: 1280px){
+  body.ppAdminPage .main{flex-direction:column;}
+  body.ppAdminPage #leftPane{flex:0 0 auto;max-width:none;min-width:0;width:100%;}
+  body.ppAdminPage .canvasPane{min-height:620px;width:100%;}
+  body.ppAdminPage .canvasWrap{min-height:420px;}
+}
+@media (max-width: 720px){
+  body.ppAdminPage .app{min-height:100svh;}
+  body.ppAdminPage .main{padding:6px 8px 12px;}
+  body.ppAdminPage .canvasPane{min-height:480px;}
+  body.ppAdminPage .canvasWrap{min-height:320px;}
+  body.ppAdminPage .scenePresetAdminShell__sceneList,
+  body.ppAdminPage .scenePresetAdminShell__variantList{max-height:none;}
+}

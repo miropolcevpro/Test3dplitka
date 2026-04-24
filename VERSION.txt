@@ -1,4 +1,4 @@
-mvp-iter2.2.190-github-tilda-admin-hosting-hotfix
-Patch: P18.2
-Base: P18.1 admin no-auth separation hotfix
-Notes: Adds deploy-ready /photo-pave-admin/ hosted bundle for GitHub Pages + Tilda iframe integration; public root remains clean.
+mvp-iter2.2.195-repo-package-export
+Patch: P22
+Base: photo_pave_patch_p21_1_admin_visual_height_hotfix.zip
+Summary: semi-automatic repo-ready scene package export from admin local drafts, including scene.json, variants.json and all variant snapshots by texture.
