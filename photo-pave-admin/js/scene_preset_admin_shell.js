@@ -1233,7 +1233,20 @@ window.PhotoPaveScenePresetAdminShell=(function(){
 
   async function runQuickFinalizeExportFlow(){
     const runtime=ensureRuntime(state||{});
-    const scene=ensureEditorDraft(runtime);
+    const geom=getGeometrySummary();
+    let scene=ensureEditorDraft(runtime);
+    if(geom.photoLoaded && geom.contourClosed && (!scene.baseSnapshot || runtime.editor.dirty)){
+      scene = await saveLocalDraft();
+    }
+    const ctx=getActiveVariantContext(runtime);
+    const currentVariant=runtime.variantEditor && runtime.variantEditor.draft ? runtime.variantEditor.draft : null;
+    const hasVariantContext=ctx.hasShape && ctx.hasTexture;
+    const existingKey=hasVariantContext ? makeVariantKey(scene.sceneId, ctx.shapeId, ctx.textureId) : null;
+    const hasSavedCurrent=existingKey && runtime.localVariants && runtime.localVariants[existingKey];
+    if(scene.baseSnapshot && hasVariantContext && (runtime.variantEditor.dirty || !hasSavedCurrent || (currentVariant && currentVariant.shapeId===ctx.shapeId && currentVariant.textureId===ctx.textureId))){
+      try{ await saveLocalVariant(); }catch(err){ setStatus('Не удалось сохранить текущую текстуру перед экспортом', String(err && err.message || err)); throw err; }
+    }
+    scene=ensureEditorDraft(runtime);
     if(scene.sceneId) applyPublishAutofillToScene();
     const variants=getSceneVariants(runtime, scene.sceneId);
     if(variants.length) applyPublishAutofillToVariants();
@@ -1918,6 +1931,38 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return out;
   }
 
+  async function bitmapToJpegBytes(bitmap, options){
+    if(!bitmap) return null;
+    const opts=options && typeof options === "object" ? options : {};
+    const maxW=Number(opts.maxWidth) > 0 ? Number(opts.maxWidth) : 0;
+    const maxH=Number(opts.maxHeight) > 0 ? Number(opts.maxHeight) : 0;
+    let w=bitmap.width || 0, h=bitmap.height || 0;
+    if(!w || !h) return null;
+    let scale=1;
+    if(maxW && w*scale > maxW) scale=Math.min(scale, maxW / w);
+    if(maxH && h*scale > maxH) scale=Math.min(scale, maxH / h);
+    const tw=Math.max(1, Math.round(w*scale));
+    const th=Math.max(1, Math.round(h*scale));
+    const canvas=document.createElement('canvas');
+    canvas.width=tw; canvas.height=th;
+    const ctx=canvas.getContext('2d');
+    if(!ctx) throw new Error('Canvas 2D unavailable for asset export');
+    ctx.drawImage(bitmap, 0, 0, tw, th);
+    const blob=await new Promise((resolve)=>canvas.toBlob(resolve, 'image/jpeg', typeof opts.quality === 'number' ? opts.quality : 0.92));
+    if(!blob) throw new Error('Не удалось подготовить JPEG asset');
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
+  function buildPublishedMediaPaths(sceneId, cfg){
+    const normalized=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    const rootPath='preset-scenes/published/' + normalizeSceneId(sceneId || 'scene', 'scene') + '/' + normalized.mediaDir + '/';
+    return {
+      photo: rootPath + normalized.scenePhotoFile,
+      thumb: rootPath + normalized.sceneThumbFile,
+      cover: rootPath + normalized.sceneCoverFile
+    };
+  }
+
   function makeRepoPackageReadme(scene, variants, cfg, readiness){
     const lines=[];
     lines.push('Photo Pave scene package');
@@ -2086,7 +2131,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return Promise.resolve(true);
   }
 
-  function buildScenePackageFiles(scene, variants, cfg){
+  async function buildScenePackageFiles(scene, variants, cfg){
     const sceneId=normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene');
     const root='preset-scenes/published/' + sceneId + '/';
     const manifestEntry=makePublishedManifestEntry(scene, variants.length);
@@ -2114,6 +2159,22 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       { name: root + publishCfg.mediaDir + '/__README_ASSETS__.txt', data: 'Place published scene assets here: ' + publishCfg.scenePhotoFile + ', ' + publishCfg.sceneThumbFile + ', ' + publishCfg.sceneCoverFile + '.\n', updatedAt: new Date().toISOString() },
       { name: root + publishCfg.previewsDir + '/__README_PREVIEWS__.txt', data: 'Place published variant previews here. Expected extension: .' + publishCfg.variantPreviewExt + '.\n', updatedAt: new Date().toISOString() }
     ];
+    const photoBitmap=safeGet(state,['assets','photoBitmap'],null);
+    if(photoBitmap){
+      const mediaPaths=buildPublishedMediaPaths(scene.sceneId, publishCfg);
+      try{
+        const photoBytes=await bitmapToJpegBytes(photoBitmap, { quality:0.92 });
+        if(photoBytes) files.push({ name: mediaPaths.photo, data: photoBytes, updatedAt:new Date().toISOString() });
+      }catch(_){ }
+      try{
+        const thumbBytes=await bitmapToJpegBytes(photoBitmap, { maxWidth:960, maxHeight:960, quality:0.88 });
+        if(thumbBytes) files.push({ name: mediaPaths.thumb, data: thumbBytes, updatedAt:new Date().toISOString() });
+      }catch(_){ }
+      try{
+        const coverBytes=await bitmapToJpegBytes(photoBitmap, { maxWidth:1600, maxHeight:1600, quality:0.9 });
+        if(coverBytes) files.push({ name: mediaPaths.cover, data: coverBytes, updatedAt:new Date().toISOString() });
+      }catch(_){ }
+    }
     variants.forEach((variant)=>{
       const stem=buildPublishedVariantStem(variant);
       files.push({ name: root + 'variants/' + stem + '.json', data: JSON.stringify(variant, null, 2) + '\n', updatedAt: variant.updatedAt || new Date().toISOString() });
@@ -2157,7 +2218,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
     const readiness=computePublishReadiness(scene, variants, cfg);
     if(!readiness.ok) throw new Error(readiness.errors.join(' · '));
-    const files=buildScenePackageFiles(scene, variants, cfg).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''), 'en'));
+    const files=(await buildScenePackageFiles(scene, variants, cfg)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''), 'en'));
     const blob=makeZipBlob(files);
     const filename=(scene.sceneId || 'scene') + '_published_package.zip';
     downloadBlob(filename, blob);

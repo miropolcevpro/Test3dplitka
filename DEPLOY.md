@@ -129,3 +129,9 @@ P20 deployment notes:
 - Admin got a new quick workflow panel.
 - Advanced publish tools are now tucked into a collapsible section.
 - Tilda iframe query version updated.
+
+
+## Patch P36.1 — quick export fix + scale max 18
+- Quick export now auto-saves scene/current variant when possible and exports generated scene media assets into package zip.
+- Tile scale upper limit increased to 18.0 in public and admin.
+- Hard refresh admin/public after deploy to avoid stale slider cache.
