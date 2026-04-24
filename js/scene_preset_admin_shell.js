@@ -378,6 +378,32 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return variant;
   }
 
+  function isValidSavedVariant(variant){
+    const v=variant && typeof variant === "object" ? variant : null;
+    if(!v) return false;
+    if(!String(v.sceneId || '').trim()) return false;
+    if(!String(v.shapeId || '').trim()) return false;
+    if(!String(v.textureId || '').trim()) return false;
+    const snap=v.stateSnapshot && typeof v.stateSnapshot === 'object' ? v.stateSnapshot : null;
+    if(!snap) return false;
+    const zones=Array.isArray(snap.zones) ? snap.zones : [];
+    if(!zones.length) return false;
+    const hasUsefulZone=zones.some((z)=>{
+      if(!z || typeof z !== 'object') return false;
+      const material=z.material && typeof z.material === 'object' ? z.material : null;
+      return !!(material && (String(material.shapeId || '').trim() || String(material.textureId || '').trim() || material.params_base || material.params_ultra || material.maps || material.textureUrl));
+    });
+    if(!hasUsefulZone) return false;
+    const activeShapeId = String((snap.catalog && snap.catalog.activeShapeId) || '').trim();
+    if(activeShapeId && activeShapeId !== String(v.shapeId || '').trim()) return false;
+    return true;
+  }
+
+  function getInvalidSceneVariants(runtime, sceneId){
+    const wanted=normalizeSceneId(sceneId || getActiveVariantContext(runtime).sceneId, "scene");
+    return Object.values(runtime.localVariants || {}).filter((v)=>v && v.sceneId===wanted && !isValidSavedVariant(v)).sort((a,b)=>String(a.updatedAt||'').localeCompare(String(b.updatedAt||''), 'ru'));
+  }
+
   function loadLocalVariants(runtime){
     const raw=safeStorageGet(runtime.config.localVariantStorageKey, {});
     const out={};
@@ -674,7 +700,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
 
   function getSceneVariants(runtime, sceneId){
     const wanted=normalizeSceneId(sceneId || getActiveVariantContext(runtime).sceneId, "scene");
-    return Object.values(runtime.localVariants || {}).filter((v)=>v && v.sceneId===wanted).sort((a,b)=>{
+    return Object.values(runtime.localVariants || {}).filter((v)=>v && v.sceneId===wanted && isValidSavedVariant(v)).sort((a,b)=>{
       const t1=String(a.shapeId||"") + "|" + String(a.textureId||"");
       const t2=String(b.shapeId||"") + "|" + String(b.textureId||"");
       return t1.localeCompare(t2, "ru");
@@ -1181,6 +1207,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     const variants=getSceneVariants(runtime, scene.sceneId);
     const geom=getGeometrySummary();
     const ctx=getActiveVariantContext(runtime);
+    const invalidVariants=getInvalidSceneVariants(runtime, scene.sceneId);
     const savedSceneReady=!!(scene.sceneId && scene.baseSnapshot);
     if(r.quickState){
       const steps=[];
@@ -1190,7 +1217,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       else if(!scene.baseSnapshot) steps.push('Сохраните сцену');
       else steps.push('Можно скачать полный zip сцены');
       if(scene.baseSnapshot && !variants.length) steps.push('Варианты можно добавлять по мере настройки');
-      else if(variants.length) steps.push('Сохранённых вариантов: ' + String(variants.length));
+      else if(variants.length) steps.push('Сохранённых валидных вариантов: ' + String(variants.length));
+      if(invalidVariants.length) steps.push('Пропущенных невалидных: ' + String(invalidVariants.length));
       r.quickState.textContent = steps.join(' · ');
     }
     if(r.quickChips){
@@ -1199,7 +1227,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       chips.push('<span class="scenePresetAdminShell__chip ' + (geom.photoLoaded ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">фото ' + (geom.photoLoaded?'загружено':'не загружено') + '</span>');
       chips.push('<span class="scenePresetAdminShell__chip ' + (geom.contourClosed ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">контур ' + (geom.contourClosed?'готов':'не готов') + '</span>');
       chips.push('<span class="scenePresetAdminShell__chip ' + (scene.baseSnapshot ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">scene draft ' + (scene.baseSnapshot?'готов':'нет') + '</span>');
-      chips.push('<span class="scenePresetAdminShell__chip ' + (variants.length ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">variants: ' + String(variants.length) + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (variants.length ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">valid variants: ' + String(variants.length) + '</span>');
+      if(invalidVariants.length) chips.push('<span class="scenePresetAdminShell__chip scenePresetAdminShell__chip--warn">invalid skipped: ' + String(invalidVariants.length) + '</span>');
       chips.push('<span class="scenePresetAdminShell__chip ' + (ctx.hasShape ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">shape: ' + escapeHtml(ctx.shapeId || '—') + '</span>');
       chips.push('<span class="scenePresetAdminShell__chip ' + (ctx.hasTexture ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">texture: ' + escapeHtml(ctx.textureId || '—') + '</span>');
       chips.push('<span class="scenePresetAdminShell__chip ' + (savedSceneReady ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">' + (savedSceneReady?'zip готов':'сначала сохраните сцену') + '</span>');
@@ -1538,6 +1567,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
   async function saveLocalVariant(){
     const runtime=ensureRuntime(state||{});
     const variant=await captureCurrentVariant({ cleanAfterCapture:true });
+    if(!isValidSavedVariant(variant)) throw new Error('Текущий вариант ещё не готов к сохранению: проверьте shape, texture и состояние сцены');
     variant.updatedAt = new Date().toISOString();
     updateRuntimeLocalVariantIndex(runtime, variant);
     const ok=persistLocalVariants(runtime);
@@ -1571,6 +1601,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     const text=await file.text();
     const parsed=JSON.parse(text);
     const variant=normalizeLocalVariant(parsed);
+    if(!isValidSavedVariant(variant)) throw new Error('Импортированный variant.json не содержит валидный сохранённый вариант');
     const runtime=ensureRuntime(state||{});
     updateRuntimeLocalVariantIndex(runtime, variant);
     persistLocalVariants(runtime);
@@ -2245,7 +2276,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     const blob=makeZipBlob(files);
     const filename=(scene.sceneId || 'scene') + '_full_scene.zip';
     downloadBlob(filename, blob);
-    setStatus('Полный zip сцены выгружен', (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · вариантов: ' + String(variants.length));
+    setStatus('Полный zip сцены выгружен', (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · valid variants: ' + String(variants.length));
     return { scene, variants, files:files.map((f)=>f.name) };
   }
 
@@ -2258,14 +2289,16 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     const variants=getSceneVariants(runtime, scene.sceneId);
     if(!variants.length) throw new Error("Для сцены ещё нет сохранённых local variants. Сначала сохраните хотя бы один вариант текстуры.");
     const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const invalidVariants=getInvalidSceneVariants(runtime, scene.sceneId);
     const readiness=computePublishReadiness(scene, variants, cfg);
     if(!readiness.ok) throw new Error(readiness.errors.join(' · '));
+    if(invalidVariants.length) setStatus('Обнаружены невалидные local variants', 'В export они будут пропущены: ' + invalidVariants.map((v)=>formatVariantLabel(v)).join(', '));
     const files=(await buildScenePackageFiles(scene, variants, cfg)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''), 'en'));
     const blob=makeZipBlob(files);
     const filename=(scene.sceneId || 'scene') + '_published_package.zip';
     downloadBlob(filename, blob);
-    if(readiness.warnings.length) setStatus("Repo-ready пакет экспортирован", (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · вариантов: ' + String(variants.length) + ' · warnings: ' + readiness.warnings.join('; '));
-    else setStatus("Repo-ready пакет экспортирован", (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · вариантов: ' + String(variants.length));
+    if(readiness.warnings.length) setStatus("Repo-ready пакет экспортирован", (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · valid variants: ' + String(variants.length) + ' · warnings: ' + readiness.warnings.join('; '));
+    else setStatus("Repo-ready пакет экспортирован", (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · valid variants: ' + String(variants.length));
     return { scene, variants, files:files.map((f)=>f.name) };
   }
 
@@ -2288,7 +2321,11 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     const variants=[];
     const warnings=[];
     variantEntries.forEach((entry)=>{
-      try{ variants.push(normalizeLocalVariant(JSON.parse(textFromBytes(entry.data)))); }
+      try{
+        const importedVariant=normalizeLocalVariant(JSON.parse(textFromBytes(entry.data)));
+        if(isValidSavedVariant(importedVariant)) variants.push(importedVariant);
+        else warnings.push('Пропущен невалидный variant: ' + entry.name);
+      }
       catch(_){ warnings.push('Не удалось импортировать variant: ' + entry.name); }
     });
     const autofillEntry=entries.find((e)=>new RegExp('__AUTOFILL_PRESET__' + sceneIdRe + '\.json$','i').test(e.name));

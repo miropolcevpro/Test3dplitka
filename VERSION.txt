@@ -1,4 +1,4 @@
-mvp-iter2.2.214-p36.4-deploy-ready-zip-hotfix
-Patch: P36.4
-Base: photo_pave_patch_p36_3_full_scene_zip_hotfix.zip
-Summary: if scene media are included in exported zip, photoUrl/thumbUrl/coverUrl are auto-written into scene.json, manifest entry and manifest merge patch for deploy-ready archives.
+mvp-iter2.2.215-p36.5-valid-saved-variant-export
+Patch: P36.5
+Base: photo_pave_patch_p36_4_deploy_ready_zip_hotfix.zip
+Summary: exported and imported packages now include only valid saved variants with real shapeId/textureId and non-empty state snapshots; placeholder variants are skipped from published zip.

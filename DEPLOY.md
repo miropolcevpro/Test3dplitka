@@ -147,3 +147,9 @@ P20 deployment notes:
 ## P36.4 deploy-ready zip hotfix
 - When scene media files are included in exported zip, the package now auto-writes media/scene-photo.jpg, media/scene-thumb.jpg and media/scene-cover.jpg into scene.json, __manifest_entry__*.json and __MANIFEST_MERGE_PATCH__*.json.
 - The archive is intended to be extracted into the repo root and deployed directly to GitHub Pages.
+
+
+## P36.5 valid variant export hardening
+- Exported scene zip now includes only valid saved variants.
+- Placeholder variants with empty shape/texture/zones are skipped.
+- Package import and variant import also skip invalid placeholder variants.
