@@ -492,3 +492,10 @@ body.ppAdminPage .bottomMenu{min-height:auto;}
 .scenePresetAdminShell__codeBox{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre}
 
 .scenePresetAdminShell__panel--bulkAssets{margin-top:12px}
+
+.scenePresetAdminShell__panel--quickFlow{margin-bottom:12px;background:rgba(122,162,255,0.08);border-color:rgba(122,162,255,0.18)}
+.scenePresetAdminShell__advanced{margin-top:12px;border:1px solid rgba(255,255,255,0.10);border-radius:14px;background:rgba(255,255,255,0.03)}
+.scenePresetAdminShell__advancedSummary{cursor:pointer;list-style:none;padding:12px 14px;font-size:13px;font-weight:700;color:var(--text)}
+.scenePresetAdminShell__advancedSummary::-webkit-details-marker{display:none}
+.scenePresetAdminShell__advanced[open]{padding-bottom:12px}
+.scenePresetAdminShell__advanced .scenePresetAdminShell__panel{margin:0 12px 12px}

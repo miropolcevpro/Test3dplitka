@@ -261,6 +261,13 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       btnAnalyzeBulkAssets:document.getElementById("scenePresetAdminShellAnalyzeBulkAssetsBtn"),
       btnApplyBulkAssets:document.getElementById("scenePresetAdminShellApplyBulkAssetsBtn"),
       btnClearBulkAssets:document.getElementById("scenePresetAdminShellClearBulkAssetsBtn"),
+      quickState:document.getElementById("scenePresetAdminShellQuickState"),
+      quickChips:document.getElementById("scenePresetAdminShellQuickChips"),
+      btnQuickNewScene:document.getElementById("scenePresetAdminShellQuickNewSceneBtn"),
+      btnQuickSaveScene:document.getElementById("scenePresetAdminShellQuickSaveSceneBtn"),
+      btnQuickSaveVariant:document.getElementById("scenePresetAdminShellQuickSaveVariantBtn"),
+      btnQuickFinalizeExport:document.getElementById("scenePresetAdminShellQuickFinalizeExportBtn"),
+      btnQuickToggleAdvanced:document.getElementById("scenePresetAdminShellQuickToggleAdvancedBtn"),
       btnModeContour:document.getElementById("scenePresetAdminShellModeContourBtn"),
       btnModeCutout:document.getElementById("scenePresetAdminShellModeCutoutBtn"),
       btnModeView:document.getElementById("scenePresetAdminShellModeViewBtn"),
@@ -1057,6 +1064,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     renderPublishAutofill();
     renderPublishHelper();
     renderBulkAssetImport();
+    renderQuickFlow();
   }
 
   function renderBulkAssetImport(){
@@ -1164,6 +1172,91 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     persistBulkAssetImport(runtime);
     renderBulkAssetImport();
     setStatus('Bulk asset список очищен', 'Можно вставить новый список URL и снова выполнить разбор.');
+  }
+
+  function renderQuickFlow(){
+    const runtime=ensureRuntime(state||{});
+    const r=getRefs();
+    const scene=ensureEditorDraft(runtime);
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    const geom=getGeometrySummary();
+    const ctx=getActiveVariantContext(runtime);
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const readiness=computePublishReadiness(scene, variants, cfg);
+    if(r.quickState){
+      const steps=[];
+      steps.push(scene.sceneId ? 'Сцена: ' + scene.sceneId : 'Сначала создайте сцену');
+      if(!geom.photoLoaded) steps.push('Загрузите фото');
+      else if(!geom.contourClosed) steps.push('Замкните контур');
+      else if(!scene.baseSnapshot) steps.push('Сохраните сцену');
+      else if(!variants.length) steps.push('Сохраните хотя бы один вариант');
+      else if(!readiness.ok) steps.push('Заполните обязательные publish-данные');
+      else steps.push('Можно экспортировать готовый архив');
+      r.quickState.textContent = steps.join(' · ');
+    }
+    if(r.quickChips){
+      const chips=[];
+      chips.push('<span class="scenePresetAdminShell__chip ' + (scene.sceneId ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">sceneId ' + escapeHtml(scene.sceneId || 'не задан') + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (geom.photoLoaded ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">фото ' + (geom.photoLoaded?'загружено':'не загружено') + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (geom.contourClosed ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">контур ' + (geom.contourClosed?'готов':'не готов') + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (scene.baseSnapshot ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">scene draft ' + (scene.baseSnapshot?'готов':'нет') + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (variants.length ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">variants: ' + String(variants.length) + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (ctx.hasShape ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">shape: ' + escapeHtml(ctx.shapeId || '—') + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (ctx.hasTexture ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">texture: ' + escapeHtml(ctx.textureId || '—') + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (readiness.ok ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">' + (readiness.ok?'export готов':'нужны правки') + '</span>');
+      r.quickChips.innerHTML = chips.join('');
+    }
+    if(r.btnQuickSaveScene) r.btnQuickSaveScene.disabled = !(geom.photoLoaded && geom.contourClosed);
+    if(r.btnQuickSaveVariant) r.btnQuickSaveVariant.disabled = !(scene.baseSnapshot && ctx.hasShape && ctx.hasTexture);
+    if(r.btnQuickFinalizeExport) r.btnQuickFinalizeExport.disabled = !(scene.sceneId && scene.baseSnapshot && variants.length);
+  }
+
+  async function runQuickNewSceneFlow(){
+    seedNewScene();
+    promptPhotoUpload();
+    renderQuickFlow();
+  }
+
+  async function runQuickSaveSceneFlow(){
+    const scene=await saveLocalDraft();
+    renderQuickFlow();
+    setStatus('Сцена сохранена', (scene.title || scene.sceneId) + ' · теперь настраивайте первую текстуру и сохраняйте варианты.');
+    return scene;
+  }
+
+  async function runQuickSaveVariantFlow(){
+    const variant=await saveLocalVariant();
+    renderQuickFlow();
+    setStatus('Вариант сохранён', (variant.shapeId || 'shape') + ' · ' + (variant.textureId || 'texture') + ' · можно переходить к следующей текстуре.');
+    return variant;
+  }
+
+  async function runQuickFinalizeExportFlow(){
+    const runtime=ensureRuntime(state||{});
+    const scene=ensureEditorDraft(runtime);
+    if(scene.sceneId) applyPublishAutofillToScene();
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    if(variants.length) applyPublishAutofillToVariants();
+    renderPublishHelper();
+    renderQuickFlow();
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const readiness=computePublishReadiness(ensureEditorDraft(runtime), getSceneVariants(runtime, ensureEditorDraft(runtime).sceneId), cfg);
+    if(!readiness.ok){
+      setStatus('Архив пока не готов', readiness.errors.join(' · '));
+      throw new Error(readiness.errors.join(' · '));
+    }
+    return exportScenePackage();
+  }
+
+  function toggleAdvancedPublishTools(){
+    try{
+      const root=document.getElementById('scenePresetAdminShellAdvanced');
+      if(!root) return false;
+      root.open = !root.open;
+      const r=getRefs();
+      if(r.btnQuickToggleAdvanced) r.btnQuickToggleAdvanced.textContent = root.open ? 'Скрыть расширенные инструменты' : 'Показать расширенные инструменты';
+      return root.open;
+    }catch(_){ return false; }
   }
 
   function renderPublishAutofill(){
@@ -2262,9 +2355,11 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     if(r.bulkAssetInput) r.bulkAssetInput.addEventListener("input", ()=>{ readBulkAssetImport(); renderBulkAssetImport(); });
     if(r.inputEnabled) r.inputEnabled.addEventListener("change", ()=>{ readEditorDraft(); markEditorDirty(true); });
     if(r.btnNew) r.btnNew.addEventListener("click", ()=>{ seedNewScene(); });
+    if(r.btnQuickNewScene) r.btnQuickNewScene.addEventListener("click", ()=>{ runQuickNewSceneFlow().catch((err)=>setStatus("Не удалось начать новую сцену", String(err && err.message || err))); });
     if(r.btnCapture) r.btnCapture.addEventListener("click", ()=>{ captureCurrentScene().catch((err)=>setStatus("Не удалось захватить сцену", String(err && err.message || err))); });
     if(r.btnUploadPhoto) r.btnUploadPhoto.addEventListener("click", ()=>{ promptPhotoUpload(); });
     if(r.btnSaveLocal) r.btnSaveLocal.addEventListener("click", ()=>{ saveLocalDraft().catch((err)=>setStatus("Не удалось сохранить local draft", String(err && err.message || err))); });
+    if(r.btnQuickSaveScene) r.btnQuickSaveScene.addEventListener("click", ()=>{ runQuickSaveSceneFlow().catch((err)=>setStatus("Не удалось сохранить сцену", String(err && err.message || err))); });
     if(r.btnExport) r.btnExport.addEventListener("click", ()=>{ exportCurrentDraft().catch((err)=>setStatus("Не удалось выгрузить scene.json", String(err && err.message || err))); });
     if(r.btnExportPackage) r.btnExportPackage.addEventListener("click", ()=>{ exportScenePackage().catch((err)=>setStatus("Не удалось выгрузить пакет сцены", String(err && err.message || err))); });
     if(r.btnCopyManifest) r.btnCopyManifest.addEventListener("click", ()=>{ const rt=ensureRuntime(state||{}); const scene=ensureEditorDraft(rt); const variants=getSceneVariants(rt, scene.sceneId); copyText(JSON.stringify(makePublishedManifestEntry(scene, variants.length), null, 2), "Manifest entry скопирован").catch((err)=>setStatus("Не удалось скопировать manifest entry", String(err && err.message || err))); });
@@ -2272,6 +2367,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     if(r.btnCopyDeploy) r.btnCopyDeploy.addEventListener("click", ()=>{ const val=(getRefs().helperDeploy && getRefs().helperDeploy.value) || ""; copyText(val, "Deploy инструкция скопирована").catch((err)=>setStatus("Не удалось скопировать deploy инструкцию", String(err && err.message || err))); });
     if(r.btnValidatePublish) r.btnValidatePublish.addEventListener("click", ()=>{ renderPublishHelper(); const rt=ensureRuntime(state||{}); const scene=ensureEditorDraft(rt); const variants=getSceneVariants(rt, scene.sceneId); const cfg=normalizePublishAutofill(rt.publishAutofill || createDefaultPublishAutofill()); const readiness=computePublishReadiness(scene, variants, cfg); setStatus(readiness.ok ? "Пакет готов к публикации" : "Пакет требует исправлений", readiness.ok ? "Можно экспортировать repo-пакет сцены." : readiness.errors.join(' · ')); });
     if(r.btnImportPackage) r.btnImportPackage.addEventListener("click", ()=>{ if(r.importPackageInput) r.importPackageInput.click(); });
+    if(r.btnQuickFinalizeExport) r.btnQuickFinalizeExport.addEventListener("click", ()=>{ runQuickFinalizeExportFlow().catch((err)=>setStatus("Не удалось подготовить и выгрузить архив", String(err && err.message || err))); });
+    if(r.btnQuickToggleAdvanced) r.btnQuickToggleAdvanced.addEventListener("click", ()=>{ toggleAdvancedPublishTools(); });
     if(r.btnImport) r.btnImport.addEventListener("click", ()=>{ if(r.importInput) r.importInput.click(); });
     if(r.btnModeContour) r.btnModeContour.addEventListener("click", ()=>{ runGeometryAction("contour"); });
     if(r.btnModeCutout) r.btnModeCutout.addEventListener("click", ()=>{ runGeometryAction("cutout"); });
@@ -2284,6 +2381,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     });
     if(r.btnCaptureVariant) r.btnCaptureVariant.addEventListener("click", ()=>{ captureCurrentVariant().catch((err)=>setStatus("Не удалось захватить вариант", String(err && err.message || err))); });
     if(r.btnSaveVariantLocal) r.btnSaveVariantLocal.addEventListener("click", ()=>{ saveLocalVariant().catch((err)=>setStatus("Не удалось сохранить local variant", String(err && err.message || err))); });
+    if(r.btnQuickSaveVariant) r.btnQuickSaveVariant.addEventListener("click", ()=>{ runQuickSaveVariantFlow().catch((err)=>setStatus("Не удалось сохранить текущую текстуру", String(err && err.message || err))); });
     if(r.btnOpenVariantLocal) r.btnOpenVariantLocal.addEventListener("click", ()=>{ openLocalVariant().catch((err)=>setStatus("Не удалось открыть local variant", String(err && err.message || err))); });
     if(r.btnExportVariant) r.btnExportVariant.addEventListener("click", ()=>{ exportCurrentVariant().catch((err)=>setStatus("Не удалось выгрузить variant.json", String(err && err.message || err))); });
     if(r.btnImportVariant) r.btnImportVariant.addEventListener("click", ()=>{ if(r.importVariantInput) r.importVariantInput.click(); });
@@ -2313,7 +2411,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return runtime;
   }
 
-  const API={ init, refreshCatalog, selectScene, openScene, saveLocalDraft, captureCurrentScene, importSceneFile, importScenePackageFile, runGeometryAction, getGeometrySummary, captureCurrentVariant, saveLocalVariant, openLocalVariant, importVariantFile, exportScenePackage, getRuntime:()=>ensureRuntime(state||{}) };
+  const API={ init, refreshCatalog, selectScene, openScene, saveLocalDraft, captureCurrentScene, importSceneFile, importScenePackageFile, runGeometryAction, getGeometrySummary, captureCurrentVariant, saveLocalVariant, openLocalVariant, importVariantFile, exportScenePackage, runQuickNewSceneFlow, runQuickSaveSceneFlow, runQuickSaveVariantFlow, runQuickFinalizeExportFlow, getRuntime:()=>ensureRuntime(state||{}) };
 
   if(document.readyState === "loading"){
     document.addEventListener("DOMContentLoaded", ()=>{ try{ if(getConfig(null).autoInit) init(); }catch(_){ } }, { once:true });

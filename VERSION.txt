@@ -1,4 +1,4 @@
-mvp-iter2.2.209-scale-range-hotfix
-Patch: P35
-Base: photo_pave_patch_p34_exported_package_import_back_to_admin.zip
-Summary: increased tile scale upper amplitude by 100% in public and admin UI (max 15 instead of 13.5) with cache-busting update.
+mvp-iter2.2.210-admin-simple-scene-export-flow
+Patch: P36
+Base: photo_pave_patch_p35_scale_range_hotfix.zip
+Summary: simplified admin workflow with quick scene/variant save and one-click prepare+export archive flow, while keeping advanced publish tools collapsed.

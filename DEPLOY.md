@@ -123,3 +123,9 @@ P20 deployment notes:
 - Increased UI max for tile scale from 13.5 to 15.0 in public and admin entrypoints.
 - This doubles the upward enlargement amplitude relative to the previous default-centered range (12 -> 13.5 became 12 -> 15.0).
 - Hard refresh browser/Tilda iframe after deploy to avoid stale HTML cache.
+
+
+## Patch P36 — simple scene → variants → export flow
+- Admin got a new quick workflow panel.
+- Advanced publish tools are now tucked into a collapsible section.
+- Tilda iframe query version updated.

@@ -22,7 +22,7 @@
     body.ppAdminPage .simpleShell{ display:none !important; }
   </style>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_209_p35_scale_range" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_210_p36_simple_flow" />
 </head>
 <body class="ppAdminPage">
   <div class="app">
@@ -94,6 +94,22 @@
         </div>
       </div>
       <div class="scenePresetAdminShell__editorWrap">
+
+      <div class="scenePresetAdminShell__panel scenePresetAdminShell__panel--quickFlow">
+        <div class="scenePresetAdminShell__panelTitle">Быстрый сценарий: сцена → варианты → архив</div>
+        <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellQuickState">Начните с новой сцены и загрузки фото.</div>
+        <div class="scenePresetAdminShell__geometryChips" id="scenePresetAdminShellQuickChips"></div>
+        <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--editor">
+          <button class="btn" id="scenePresetAdminShellQuickNewSceneBtn" type="button">1. Новая сцена + фото</button>
+          <button class="btn" id="scenePresetAdminShellQuickSaveSceneBtn" type="button">2. Сохранить сцену</button>
+          <button class="btn" id="scenePresetAdminShellQuickSaveVariantBtn" type="button">3. Сохранить текущую текстуру</button>
+          <button class="btn" id="scenePresetAdminShellQuickFinalizeExportBtn" type="button">4. Подготовить и выгрузить архив</button>
+          <button class="btn btn--ghost" id="scenePresetAdminShellQuickToggleAdvancedBtn" type="button">Показать расширенные инструменты</button>
+        </div>
+        <div class="scenePresetAdminShell__help">
+          Рабочий поток теперь простой: создайте сцену, загрузите фото, замкните контур, сохраните сцену, дальше по очереди настраивайте текстуры и после каждой нажимайте «Сохранить текущую текстуру». Когда набор готов — нажмите «Подготовить и выгрузить архив».
+        </div>
+      </div>
         <div class="scenePresetAdminShell__panel">
           <div class="scenePresetAdminShell__panelTitle">Редактор сцены (local draft)</div>
           <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellDraftState">Подготовьте сцену для локального draft.</div>
@@ -201,6 +217,8 @@
         </div>
 
         
+        <details class="scenePresetAdminShell__advanced" id="scenePresetAdminShellAdvanced">
+          <summary class="scenePresetAdminShell__advancedSummary">Расширенные инструменты публикации</summary>
           <div class="scenePresetAdminShell__panel scenePresetAdminShell__panel--publishAutofill">
             <div class="scenePresetAdminShell__panelTitle">Repo structure autofill</div>
             <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellPublishAutofillState">Настройте base URL и шаблоны имён файлов, затем автозаполните URL сцены и preview URL вариантов.</div>
@@ -301,6 +319,7 @@ https://.../old_gorod__gray.jpg"></textarea>
             <textarea class="ppInput scenePresetAdminShell__codeBox" id="scenePresetAdminShellPublishHelperPackage" rows="14" readonly></textarea>
           </label>
         </div>
+        </details>
       </div>
     </section>
 
@@ -626,21 +645,21 @@ https://.../old_gorod__gray.jpg"></textarea>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/release_config.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/state.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/diagnostics.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/analytics.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/updater.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/api.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/scene_presets.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/scene_preset_state.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/scene_preset_admin.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/camera_calib.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/editor.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/app.js?v=iter2_2_209_p35_scale_range"></script>
-  <script src="js/scene_preset_admin_shell.js?v=iter2_2_209_p35_scale_range"></script>
+  <script src="js/release_config.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/state.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/diagnostics.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/analytics.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/updater.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/api.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/scene_presets.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/scene_preset_state.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/scene_preset_admin.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/camera_calib.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/editor.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/app.js?v=iter2_2_210_p36_simple_flow"></script>
+  <script src="js/scene_preset_admin_shell.js?v=iter2_2_210_p36_simple_flow"></script>
 </body>
 </html>
