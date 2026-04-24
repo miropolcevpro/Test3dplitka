@@ -1,4 +1,4 @@
-mvp-iter2.2.208-exported-package-import-back-to-admin
-Patch: P34
-Base: photo_pave_patch_p33_published_package_export_polish.zip
-Summary: admin can import previously exported published package zip back into local scene draft, local variants and publish autofill preset.
+mvp-iter2.2.209-scale-range-hotfix
+Patch: P35
+Base: photo_pave_patch_p34_exported_package_import_back_to_admin.zip
+Summary: increased tile scale upper amplitude by 100% in public and admin UI (max 15 instead of 13.5) with cache-busting update.

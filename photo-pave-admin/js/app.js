@@ -2092,7 +2092,7 @@ async function handlePhotoFile(file, source){
   function syncSettingsUI(){
     const z=S.getActiveZone(); if(!z) return;
     ensureZoneMaterialParams(z);
-		// Scale slider range is intentionally constrained (pro-friendly defaults).
+		// Scale slider range is intentionally constrained, but the upper enlargement amplitude was increased by 100% for large-tile scenes.
 		// Clamp stored values to the UI range to avoid sudden jumps when opening older projects.
 		{
 			const sr = el("scaleRange");

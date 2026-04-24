@@ -117,3 +117,9 @@ P20 deployment notes:
 ## Patch P33 — published package export polish
 - Admin helper now previews package composition and zip includes richer service files for publication.
 - Update Tilda iframe query version after deploy to bypass cache.
+
+
+## Patch P35 — tile scale amplitude hotfix
+- Increased UI max for tile scale from 13.5 to 15.0 in public and admin entrypoints.
+- This doubles the upward enlargement amplitude relative to the previous default-centered range (12 -> 13.5 became 12 -> 15.0).
+- Hard refresh browser/Tilda iframe after deploy to avoid stale HTML cache.
