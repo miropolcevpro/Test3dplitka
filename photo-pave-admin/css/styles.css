@@ -478,3 +478,17 @@ body.ppAdminPage .bottomMenu{min-height:auto;}
   body.ppAdminPage .scenePresetAdminShell__sceneList,
   body.ppAdminPage .scenePresetAdminShell__variantList{max-height:none;}
 }
+
+.scenePresetAdminShell__panel--publishHelper{margin-top:12px}
+.scenePresetAdminShell__codeBox{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px;line-height:1.45;min-height:120px;white-space:pre;resize:vertical}
+
+.readyScenesShell__valueRow{display:flex;flex-wrap:wrap;gap:8px}
+.readyScenesShell__valueChip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid rgba(122,162,255,0.24);background:rgba(122,162,255,0.10);font-size:12px;color:#d8e4ff}
+.readyScenesShell__featuredHint{font-size:12px;line-height:1.45;color:rgba(231,238,252,0.72)}
+.readyScenesShell__actions .btn:first-child{box-shadow:0 10px 24px rgba(122,162,255,0.18)}
+@media (max-width:720px){.readyScenesShell__valueRow{gap:6px}.readyScenesShell__valueChip{font-size:11px;padding:5px 8px}}
+
+.scenePresetAdminShell__panel--publishAutofill{margin-top:12px}
+.scenePresetAdminShell__codeBox{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre}
+
+.scenePresetAdminShell__panel--bulkAssets{margin-top:12px}

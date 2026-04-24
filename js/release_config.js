@@ -1,6 +1,6 @@
 window.PhotoPaveReleaseConfig=(function(){
   const preset = "public-core";
-  const patch = "P15";
+  const patch = "P28";
   const currentOrigin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin.replace(/\/$/,"") : "";
   const DEFAULT_GATEWAY = "https://d5d1712p9mu7k3aurh9s.laqt4bj7.apigw.yandexcloud.net";
   const features = {
@@ -156,6 +156,25 @@ window.PhotoPaveReleaseConfig=(function(){
     draftRoot:"preset-scenes/draft",
     publicReadMode:"published_only",
     adminReadMode:"draft_then_published",
+    publicReadyMode:{
+      enabled:true,
+      autoBootstrap:true,
+      autoOpenFirstScene:true,
+      panelEnabled:true,
+      maxSceneButtons:6,
+      exactVariantOnly:true,
+      keepUploadFlow:true,
+      skipBrokenScenes:true,
+      cacheMissingVariants:true,
+      preloadCount:3,
+      scrollToViewerOnOpen:true,
+      openSceneTimeoutMs:9000,
+      applySceneTimeoutMs:9000,
+      openVariantTimeoutMs:7000,
+      applyVariantTimeoutMs:7000,
+      loadPhotoOnOpen:true,
+      photoAssetTimeoutMs:12000
+    },
     adminApi:{
       stage:"noauth_hotfix",
       enabled:false,

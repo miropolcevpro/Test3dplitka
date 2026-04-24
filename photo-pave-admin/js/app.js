@@ -18,6 +18,7 @@
     try{ return RELEASE && typeof RELEASE.isVisible==="function" ? RELEASE.isVisible(name, fallback) : !!fallback; }catch(_){ return !!fallback; }
   };
   const SIMPLE_MODE = (RELEASE && RELEASE.simpleMode) || { enabled:true };
+  const READY_SCENES_MODE = (RELEASE && RELEASE.scenePresets && RELEASE.scenePresets.publicReadyMode) || { enabled:true, autoBootstrap:true, autoOpenFirstScene:true, panelEnabled:true, maxSceneButtons:6, exactVariantOnly:true, keepUploadFlow:true };
   const _SECONDARY_TOOLS_KEY = "pp_secondary_tools_v1";
   let _contourAssistHintLock = false;
   function setNodeHidden(node, hidden){
@@ -427,8 +428,16 @@
       setNodeHidden(shell, true);
       return;
     }
-    setNodeHidden(shell, false);
     const model = getSimpleFlowState();
+    const readyRt = ensurePublicReadyRuntime();
+    const hasReadyScenes = isReadyScenePublicEnabled() && Array.isArray(readyRt.scenes) && !!readyRt.scenes.length;
+    const wantsUploadFallback = !!(state.ui && state.ui.readySceneUploadFallback);
+    const shouldHideForShowroom = hasReadyScenes && !model.hasPhoto && !wantsUploadFallback;
+    setNodeHidden(shell, shouldHideForShowroom);
+    if(shouldHideForShowroom){
+      try{ renderReadyScenesShell(); }catch(_){ }
+      return;
+    }
     state.ui = state.ui || {};
     state.ui.shellMode = "simple";
     state.ui.activeStep = model.step;
@@ -440,6 +449,10 @@
     let text = "Начните с фотографии двора или дорожки. Затем система проведёт вас по шагам.";
     let primaryLabel = "Загрузить фото";
     let primaryAction = "photo";
+    if(state.ui && state.ui.readySceneUploadFallback && model.step === "photo"){
+      title = "Своя фотография";
+      text = "Загрузите фото своего двора, если хотите работать не с готовой сценой, а со своим объектом.";
+    }
     if(model.step === "zone"){
       title = "Шаг 2. Обведите участок мощения";
       text = model.zoneClosed
@@ -471,8 +484,471 @@
     }
     document.querySelectorAll(".stepper .step").forEach((s)=>s.classList.toggle("step--active", s.dataset.step===model.step));
     restoreSecondaryToolsState();
+    try{ renderReadyScenesShell(); }catch(_){ }
   }
 
+  function ensurePublicReadyRuntime(){
+    state.scenePresets = state.scenePresets || {};
+    if(!state.scenePresets.publicReady || typeof state.scenePresets.publicReady !== "object") state.scenePresets.publicReady = { enabled:false, visible:false, status:"idle", scenes:[], selectedSceneId:null, selectedVariantKey:null, active:false, loading:false, lastError:null, lastSceneTitle:null, source:"published", lastLoadedAt:null, lastVariantAt:null, variantState:"pending", variantLabel:"Ожидает вариант", variantMessage:"После открытия сцены выберите форму и текстуру. Если опубликован точный вариант — он применится автоматически.", lastWantedVariantKey:null, missingVariantKeys:{}, brokenSceneIds:{}, brokenAssetUrls:{}, validSceneCount:0, invalidSceneCount:0, preloadDone:{}, assetFailureCount:0, lastSceneOpenAt:null, lastSceneOpenError:null, lastPhotoAssetUrl:null, lastPhotoAssetError:null };
+    const rt=state.scenePresets.publicReady;
+    if(!rt.missingVariantKeys || typeof rt.missingVariantKeys !== "object") rt.missingVariantKeys = {};
+    if(!rt.brokenSceneIds || typeof rt.brokenSceneIds !== "object") rt.brokenSceneIds = {};
+    if(!rt.preloadDone || typeof rt.preloadDone !== "object") rt.preloadDone = {};
+    if(!rt.brokenAssetUrls || typeof rt.brokenAssetUrls !== "object") rt.brokenAssetUrls = {};
+    if(typeof rt.validSceneCount !== "number") rt.validSceneCount = Array.isArray(rt.scenes) ? rt.scenes.length : 0;
+    if(typeof rt.invalidSceneCount !== "number") rt.invalidSceneCount = 0;
+    if(typeof rt.assetFailureCount !== "number") rt.assetFailureCount = 0;
+    return rt;
+  }
+  function getReadyModeConfig(){
+    return (READY_SCENES_MODE && typeof READY_SCENES_MODE === "object") ? READY_SCENES_MODE : {};
+  }
+  function isNotFoundLike(err){
+    const msg=String(err && err.message || err || '').toLowerCase();
+    return msg.includes('404') || msg.includes('not found');
+  }
+  function withTimeout(promise, ms, label){
+    const timeoutMs=Math.max(1000, Number(ms)||0);
+    if(!timeoutMs) return Promise.resolve(promise);
+    let timer=0;
+    return Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject)=>{ timer=setTimeout(()=>reject(new Error((label||'Operation') + ' timed out')), timeoutMs); })
+    ]).finally(()=>{ if(timer) clearTimeout(timer); });
+  }
+  function absReadyAssetUrl(url){
+    try{ return String(new URL(String(url||''), window.location.href)); }catch(_){ return String(url||''); }
+  }
+  function markBrokenReadyAsset(rt, url, reason){
+    const abs=absReadyAssetUrl(url);
+    if(!abs) return null;
+    if(!rt.brokenAssetUrls || typeof rt.brokenAssetUrls !== "object") rt.brokenAssetUrls = {};
+    if(!rt.brokenAssetUrls[abs]) rt.assetFailureCount = Number(rt.assetFailureCount || 0) + 1;
+    rt.brokenAssetUrls[abs] = String(reason || 'asset_error');
+    return abs;
+  }
+  function isBrokenReadyAsset(rt, url){
+    const abs=absReadyAssetUrl(url);
+    return !!(abs && rt && rt.brokenAssetUrls && rt.brokenAssetUrls[abs]);
+  }
+  function getReadySceneVisualUrl(rt, scene){
+    const urls=(scene && scene.urls) ? [scene.urls.coverUrl, scene.urls.thumbUrl, scene.urls.photoUrl] : [];
+    for(const raw of urls){
+      const url=String(raw || '').trim();
+      if(!url) continue;
+      if(!isBrokenReadyAsset(rt, url)) return url;
+    }
+    return null;
+  }
+
+  function normalizePublishedReadyScenes(rawScenes){
+    const seen={};
+    const valid=[];
+    let invalid=0;
+    (Array.isArray(rawScenes) ? rawScenes : []).forEach((scene)=>{
+      if(!scene || typeof scene !== 'object'){ invalid++; return; }
+      const id=String(scene.id || scene.sceneId || '').trim();
+      if(!id || seen[id]){ invalid++; return; }
+      seen[id]=true;
+      valid.push(scene);
+    });
+    return { valid, invalid };
+  }
+  function preloadReadySceneVisuals(rt){
+    const cfg=getReadyModeConfig();
+    const count=Math.max(0, Number(cfg.preloadCount || 3));
+    if(!count || typeof Image === 'undefined') return;
+    const scenes=getReadySceneDisplayScenes(rt).slice(0, count);
+    scenes.forEach((scene)=>{
+      const url=getReadySceneVisualUrl(rt, scene);
+      const abs=absReadyAssetUrl(url);
+      if(!abs || rt.preloadDone[abs]) return;
+      rt.preloadDone[abs]='loading';
+      try{
+        const img=new Image();
+        img.decoding='async';
+        img.loading='eager';
+        img.onload=()=>{ rt.preloadDone[abs]='ok'; };
+        img.onerror=()=>{ rt.preloadDone[abs]='error'; markBrokenReadyAsset(rt, abs, 'preview_error'); try{ renderReadyScenesShell(); }catch(_){ } };
+        img.src=abs;
+      }catch(_){
+        rt.preloadDone[abs]='error';
+        markBrokenReadyAsset(rt, abs, 'preview_exception');
+      }
+    });
+  }
+  async function loadReadyScenePhotoAsset(url){
+    const abs=absReadyAssetUrl(url);
+    if(!abs) throw new Error('Photo asset URL is missing');
+    const prevBitmap = state.assets ? state.assets.photoBitmap : null;
+    const resp = await fetch(abs, { cache:'force-cache' });
+    if(!resp.ok) throw new Error('Photo asset HTTP ' + String(resp.status || 'error'));
+    const blob = await resp.blob();
+    const bmp = await createImageBitmap(blob);
+    const maxSide=3072;
+    let w=bmp.width,h=bmp.height;
+    let sc=1,longSide=Math.max(w,h);
+    if(longSide>maxSide) sc=maxSide/longSide;
+    const nw=Math.round(w*sc),nh=Math.round(h*sc);
+    const off=document.createElement('canvas');off.width=nw;off.height=nh;
+    off.getContext('2d').drawImage(bmp,0,0,nw,nh);
+    try{ if(bmp && bmp.close) bmp.close(); }catch(_){ }
+    const resized=await createImageBitmap(off);
+    state.assets.photoBitmap=resized;state.assets.photoW=nw;state.assets.photoH=nh;
+    state.assets.sourceUrl = abs;
+    state.assets.sourceKind = 'published';
+    try{
+      const st = _pp_computePhotoExposure(resized);
+      state.assets.photoAvgLum = st.avgLum;
+      state.assets.photoExposure = st.exposure;
+    }catch(_){ state.assets.photoAvgLum = 0.5; state.assets.photoExposure = 1.0; }
+    try{ state.assets.photoLight = _pp_estimatePhotoLight(resized); }
+    catch(_){ state.assets.photoLight = { azimuth:120, elevation:35, lightStrength:1.0, ambientStrength:0.32 }; }
+    try{ if(prevBitmap && prevBitmap.close) prevBitmap.close(); }catch(_){ }
+    return { url:abs, width:nw, height:nh };
+  }
+  function isReadyScenePublicEnabled(){
+    return !!(READY_SCENES_MODE && READY_SCENES_MODE.enabled !== false && READY_SCENES_MODE.panelEnabled !== false && SCENES);
+  }
+  function readySceneRefs(){
+    return {
+      root:el("readyScenesShell"),
+      status:el("readyScenesShellStatus"),
+      list:el("readyScenesShellSceneList"),
+      meta:el("readyScenesShellMeta"),
+      featured:el("readyScenesShellFeatured"),
+      featuredPreview:el("readyScenesShellFeaturedPreview"),
+      featuredTitle:el("readyScenesShellFeaturedTitle"),
+      featuredText:el("readyScenesShellFeaturedText"),
+      featuredMeta:el("readyScenesShellFeaturedMeta"),
+      valueRow:el("readyScenesShellValueRow"),
+      variantBadge:el("readyScenesShellVariantBadge"),
+      variantText:el("readyScenesShellVariantText"),
+      featuredHint:el("readyScenesShellFeaturedHint"),
+      openBtn:el("readyScenesShellOpenBtn"),
+      refreshBtn:el("readyScenesShellRefreshBtn"),
+      uploadBtn:el("readyScenesShellUploadBtn")
+    };
+  }
+  function setReadySceneStatus(msg){
+    const r=readySceneRefs();
+    if(r.status) r.status.textContent = String(msg || "");
+  }
+  function setPublicReadyUploadMode(reason){
+    const rt=ensurePublicReadyRuntime();
+    rt.active = false;
+    rt.selectedVariantKey = null;
+    rt.variantState = "pending";
+    rt.variantLabel = "Режим своё фото";
+    rt.variantMessage = "Вы работаете со своей фотографией. Опубликованные точные варианты сцен сейчас не применяются.";
+    rt.lastWantedVariantKey = null;
+    state.ui = state.ui || {};
+    state.ui.readySceneMode = false;
+    state.ui.readySceneSceneId = null;
+    state.ui.readySceneUploadFallback = true;
+    rt.status = "upload_mode";
+    if(reason) rt.lastError = String(reason);
+    try{ renderReadyScenesShell(); }catch(_){ }
+  }
+  function getReadySceneDisplayScenes(rt){
+    const cfg=getReadyModeConfig();
+    let scenes=Array.isArray(rt.scenes) ? rt.scenes.slice() : [];
+    if(cfg.skipBrokenScenes !== false){
+      scenes=scenes.filter((scene)=>!(scene && scene.id && rt.brokenSceneIds && rt.brokenSceneIds[scene.id]));
+    }
+    return scenes.slice(0, Math.max(1, Number(cfg.maxSceneButtons || 6)));
+  }
+  function getSelectedReadyScene(rt){
+    const scenes=getReadySceneDisplayScenes(rt);
+    if(!scenes.length) return null;
+    return scenes.find((scene)=>scene && scene.id===rt.selectedSceneId) || scenes[0] || null;
+  }
+  function describeReadyScene(scene){
+    if(!scene) return { title:'', text:'', meta:[] };
+    const metaObj = scene.meta && typeof scene.meta === 'object' ? scene.meta : {};
+    const title = String(scene.title || scene.id || 'scene');
+    const text = String(metaObj.subtitle || metaObj.description || metaObj.summary || 'Откройте готовую сцену, затем переключайте форму и текстуру без ручной калибровки.');
+    const meta=[];
+    if(scene.id) meta.push('sceneId: ' + scene.id);
+    if(scene.defaults && scene.defaults.shapeId) meta.push('shape по умолчанию: ' + scene.defaults.shapeId);
+    if(scene.defaults && scene.defaults.textureId) meta.push('texture по умолчанию: ' + scene.defaults.textureId);
+    return { title, text, meta };
+  }
+  function getReadyVariantDescriptor(rt){
+    const stateName=String(rt.variantState || 'pending');
+    if(stateName === 'exact'){
+      return { cls:'isExact', label:'Точный вариант найден', text:String(rt.variantMessage || 'Для выбранной формы и текстуры применён опубликованный точный вариант.') };
+    }
+    if(stateName === 'fallback'){
+      return { cls:'isFallback', label:'Показан fallback сцены', text:String(rt.variantMessage || 'Для этой комбинации отдельный published variant не найден. Показана базовая сцена.') };
+    }
+    if(stateName === 'upload'){
+      return { cls:'isFallback', label:'Режим своё фото', text:String(rt.variantMessage || 'Вы работаете со своей фотографией.') };
+    }
+    return { cls:'isPending', label:String(rt.variantLabel || 'Ожидает вариант'), text:String(rt.variantMessage || 'После открытия сцены выберите форму и текстуру. Если опубликован точный вариант — он применится автоматически.') };
+  }
+
+  function getReadySceneValueBits(rt, selected, isUploadFallback){
+    if(isUploadFallback){
+      return ['Своя фотография', 'Ручная настройка сцены', 'Точный пример зависит от вашего кадра'];
+    }
+    const bits=['Без загрузки фото', 'Перспектива уже подготовлена', 'Плитку можно сравнить сразу'];
+    if(selected && selected.defaults && (selected.defaults.shapeId || selected.defaults.textureId)) bits.push('Есть стартовый вариант для сцены');
+    else bits.push('Своё фото — по желанию');
+    return bits;
+  }
+
+  function getReadySceneFeaturedHint(rt, selected, isUploadFallback){
+    if(isUploadFallback) return 'Вы переключились в режим своей фотографии. Здесь вы настраиваете сцену вручную, как и раньше.';
+    if(rt.active && selected && selected.id === rt.selectedSceneId) return 'Сцена уже открыта. Меняйте форму и плитку — система попробует подхватить точный подготовленный вариант автоматически.';
+    return 'Готовая сцена уже подготовлена: перспектива и базовая геометрия настроены заранее. Вам останется только выбрать покрытие.';
+  }
+
+  function maybeScrollReadyViewerIntoView(options){
+    const cfg=getReadyModeConfig();
+    if(cfg.scrollToViewerOnOpen === false) return;
+    if(options && options.auto) return;
+    try{
+      const node=el('canvasWrap') || el('glCanvas') || el('texturesPanel');
+      if(node && typeof node.scrollIntoView === 'function'){ node.scrollIntoView({ behavior:'smooth', block:'start' }); }
+    }catch(_){ }
+  }
+
+  function renderReadyScenesShell(){
+    const rt=ensurePublicReadyRuntime();
+    const r=readySceneRefs();
+    if(!r.root) return;
+    if(!isReadyScenePublicEnabled()){ setNodeHidden(r.root, true); return; }
+    const scenes=getReadySceneDisplayScenes(rt);
+    const selected=getSelectedReadyScene(rt);
+    const hasAny=!!scenes.length;
+    const isUploadFallback=!!(state.ui && state.ui.readySceneUploadFallback && !state.ui.readySceneMode);
+    setNodeHidden(r.root, !hasAny && rt.status !== "loading");
+    if(r.list){
+      if(!scenes.length){
+        r.list.innerHTML = '';
+      }else{
+        r.list.innerHTML = scenes.map((scene)=>{
+          const active=scene && scene.id===((selected && selected.id) || rt.selectedSceneId);
+          const cover=getReadySceneVisualUrl(rt, scene) || '';
+          const metaObj=scene && scene.meta && typeof scene.meta === 'object' ? scene.meta : {};
+          const subtitle=String(metaObj.cardLabel || metaObj.subtitle || metaObj.category || (cover ? 'Готовый сценарий' : 'Превью будет показано после публикации фото'));
+          const style=cover ? ' style="background-image:url(' + escapeAttr(cover) + ')"' : '';
+          return '<button class="readyScenesShell__sceneCard' + (active ? ' isActive' : '') + '" type="button" data-scene-id="' + escapeAttr(scene.id) + '">'
+            + '<span class="readyScenesShell__scenePreview"' + style + '></span>'
+            + '<span class="readyScenesShell__sceneCardBody">'
+            +   '<span class="readyScenesShell__sceneCardTitle">' + escapeHtml(scene.title || scene.id) + '</span>'
+            +   '<span class="readyScenesShell__sceneCardText">' + escapeHtml(subtitle) + '</span>'
+            + '</span>'
+            + '</button>';
+        }).join('');
+      }
+    }
+    const desc=describeReadyScene(selected);
+    if(r.featured) setNodeHidden(r.featured, !selected);
+    if(r.featuredPreview){
+      const cover=getReadySceneVisualUrl(rt, selected);
+      r.featuredPreview.style.backgroundImage = cover ? ('url("' + String(cover).replace(/"/g, '%22') + '")') : 'none';
+      r.featuredPreview.classList.toggle('isEmpty', !cover);
+    }
+    if(r.featuredTitle) r.featuredTitle.textContent = desc.title || 'Готовая сцена';
+    if(r.featuredText) r.featuredText.textContent = desc.text || '';
+    const variantDesc = getReadyVariantDescriptor(rt);
+    const valueBits = getReadySceneValueBits(rt, selected, isUploadFallback);
+    if(r.variantBadge){
+      r.variantBadge.textContent = variantDesc.label;
+      r.variantBadge.classList.remove('isExact','isFallback','isPending');
+      r.variantBadge.classList.add(variantDesc.cls || 'isPending');
+    }
+    if(r.variantText) r.variantText.textContent = variantDesc.text;
+    if(r.featuredHint) r.featuredHint.textContent = getReadySceneFeaturedHint(rt, selected, isUploadFallback);
+    if(r.valueRow) r.valueRow.innerHTML = valueBits.map((bit)=>'<span class="readyScenesShell__valueChip">' + escapeHtml(bit) + '</span>').join('');
+    if(r.featuredMeta){
+      const bits=[];
+      if(desc.meta && desc.meta.length) desc.meta.forEach((bit)=>bits.push('<span class="readyScenesShell__chip">' + escapeHtml(bit) + '</span>'));
+      if(selected && !getReadySceneVisualUrl(rt, selected)) bits.push('<span class="readyScenesShell__chip">превью недоступно</span>');
+      if(rt.active && rt.selectedSceneId) bits.push('<span class="readyScenesShell__chip">сцена открыта</span>');
+      if(rt.variantState === 'exact') bits.push('<span class="readyScenesShell__chip">точный вариант применён</span>');
+      if(rt.variantState === 'fallback') bits.push('<span class="readyScenesShell__chip">используется базовая сцена</span>');
+      if(isUploadFallback) bits.push('<span class="readyScenesShell__chip">режим: своё фото</span>');
+      r.featuredMeta.innerHTML = bits.join('');
+    }
+    const msg = rt.status === 'loading' ? 'Подбираю готовые примеры…' : (rt.status === 'scene_error' ? ('Не удалось открыть выбранный пример. Можно выбрать другой или перейти к своему фото.') : ((rt.status === 'variant_missing' || rt.status === 'variant_ready') ? ('Сейчас показан пример «' + String(rt.lastSceneTitle || rt.selectedSceneId || 'scene') + '». ' + String(getReadyVariantDescriptor(rt).text || '')) : (rt.lastError ? ('Готовые примеры: ' + rt.lastError) : (rt.active && rt.lastSceneTitle ? ('Сейчас открыт пример «' + rt.lastSceneTitle + '». Можно сразу сравнивать покрытие.') : (hasAny ? 'Выберите готовый пример и сразу сравнивайте покрытие. Своё фото можно загрузить позже.' : 'Опубликованные примеры пока не найдены.')))));
+    setReadySceneStatus(msg);
+    if(r.meta){
+      const bits=[];
+      if(hasAny) bits.push('<span class="readyScenesShell__chip">готовых сцен: ' + String(scenes.length) + '</span>');
+      if(rt.invalidSceneCount) bits.push('<span class="readyScenesShell__chip">пропущено проблемных: ' + String(rt.invalidSceneCount) + '</span>');
+      if(rt.assetFailureCount) bits.push('<span class="readyScenesShell__chip">битых ассетов: ' + String(rt.assetFailureCount) + '</span>');
+      if(selected && selected.title) bits.push('<span class="readyScenesShell__chip">выбрано: ' + escapeHtml(selected.title) + '</span>');
+      if(state.ui && state.ui.readySceneMode) bits.push('<span class="readyScenesShell__chip">режим: готовый пример</span>');
+      else bits.push('<span class="readyScenesShell__chip">режим: своё фото</span>');
+      r.meta.innerHTML = bits.join('');
+    }
+    if(r.openBtn){
+      r.openBtn.disabled = !selected;
+      r.openBtn.textContent = rt.active && selected && selected.id===rt.selectedSceneId ? 'Пример уже открыт' : 'Смотреть в визуализаторе';
+    }
+  }
+  async function loadPublishedReadyScenesFoundation(options){
+    const rt=ensurePublicReadyRuntime();
+    if(options && options.force){ rt.lastError=null; rt.brokenSceneIds={}; rt.brokenAssetUrls={}; rt.assetFailureCount=0; rt.preloadDone={}; }
+    if(!isReadyScenePublicEnabled()) return rt;
+    if(rt.loading) return rt;
+    rt.loading = true;
+    rt.status = 'loading';
+    rt.lastError = null;
+    renderReadyScenesShell();
+    try{
+      const manifest=await SCENES.loadManifest({ source:'published', context:'public' });
+      const normalizedScenes=normalizePublishedReadyScenes(manifest && manifest.scenes);
+      rt.scenes = normalizedScenes.valid;
+      rt.validSceneCount = normalizedScenes.valid.length;
+      rt.invalidSceneCount = normalizedScenes.invalid;
+      rt.lastLoadedAt = new Date().toISOString();
+      rt.status = rt.scenes.length ? 'ready' : 'empty';
+      const wantedDefault = manifest && manifest.defaultSceneId && rt.scenes.find((scene)=>scene && scene.id===manifest.defaultSceneId) ? manifest.defaultSceneId : null;
+      if((!rt.selectedSceneId || !rt.scenes.find((scene)=>scene && scene.id===rt.selectedSceneId)) && wantedDefault) rt.selectedSceneId = wantedDefault;
+      if((!rt.selectedSceneId || !rt.scenes.find((scene)=>scene && scene.id===rt.selectedSceneId)) && rt.scenes[0]) rt.selectedSceneId = rt.scenes[0].id;
+      state.ui = state.ui || {};
+      if(!state.assets.photoBitmap && !state.ui.readySceneMode && !state.ui.readySceneUploadFallback && rt.selectedSceneId){ state.ui.readySceneUploadFallback = false; }
+      preloadReadySceneVisuals(rt);
+      renderReadyScenesShell();
+      if(getReadyModeConfig().autoOpenFirstScene && !state.assets.photoBitmap && rt.selectedSceneId && !state.ui.readySceneMode){
+        try{ await openPublishedReadyScene(rt.selectedSceneId, { auto:true, reason:'auto-open-first' }); }catch(_){ }
+      }
+      return rt;
+    }catch(err){
+      rt.status = 'error';
+      rt.lastError = String(err && err.message || err);
+      renderReadyScenesShell();
+      return rt;
+    }finally{ rt.loading = false; }
+  }
+  async function openPublishedReadyScene(sceneId, options){
+    const rt=ensurePublicReadyRuntime();
+    const cfg=getReadyModeConfig();
+    if(!SCENES) throw new Error('Scene presets reader is unavailable');
+    const wanted=String(sceneId || rt.selectedSceneId || '').trim();
+    if(!wanted) throw new Error('Scene is not selected');
+    if(cfg.skipBrokenScenes !== false && rt.brokenSceneIds && rt.brokenSceneIds[wanted] && !(options && options.force)) throw new Error('Scene is temporarily marked as broken');
+    rt.status = 'opening';
+    rt.selectedSceneId = wanted;
+    rt.lastSceneOpenError = null;
+    renderReadyScenesShell();
+    try{
+      const scene=await withTimeout(SCENES.loadSceneResolved(wanted, { context:'public' }), Number(cfg.openSceneTimeoutMs || 9000), 'Published scene open');
+      const photoUrl = scene && scene.urls && scene.urls.photoUrl ? scene.urls.photoUrl : null;
+      if(photoUrl && cfg.loadPhotoOnOpen !== false){
+        try{
+          const photoMeta=await withTimeout(loadReadyScenePhotoAsset(photoUrl), Number(cfg.photoAssetTimeoutMs || 12000), 'Published photo load');
+          rt.lastPhotoAssetUrl = photoMeta && photoMeta.url ? photoMeta.url : absReadyAssetUrl(photoUrl);
+          rt.lastPhotoAssetError = null;
+          if(rt.brokenAssetUrls && rt.lastPhotoAssetUrl && rt.brokenAssetUrls[rt.lastPhotoAssetUrl]) delete rt.brokenAssetUrls[rt.lastPhotoAssetUrl];
+        }catch(photoErr){
+          rt.lastPhotoAssetError = String(photoErr && photoErr.message || photoErr);
+          markBrokenReadyAsset(rt, photoUrl, rt.lastPhotoAssetError || 'photo_error');
+          throw new Error('Фото сцены недоступно: ' + rt.lastPhotoAssetError);
+        }
+      }
+      await withTimeout(openScenePresetRecord(scene, { context:'public' }), Number(cfg.applySceneTimeoutMs || 9000), 'Published scene apply');
+      if(rt.brokenSceneIds) delete rt.brokenSceneIds[wanted];
+      rt.active = true;
+      rt.selectedSceneId = scene.id;
+      rt.lastSceneTitle = scene.title || scene.id;
+      rt.lastSceneOpenAt = new Date().toISOString();
+      rt.status = 'scene_ready';
+      rt.selectedVariantKey = null;
+      rt.variantState = 'pending';
+      rt.variantLabel = 'Ожидает вариант';
+      rt.variantMessage = 'После открытия сцены выберите форму и текстуру. Если опубликован точный вариант — он применится автоматически.';
+      rt.lastWantedVariantKey = null;
+      state.ui = state.ui || {};
+      state.ui.readySceneMode = true;
+      state.ui.readySceneSceneId = scene.id;
+      state.ui.readySceneUploadFallback = false;
+      try{ setActiveStep('tile'); }catch(_){ }
+      try{ maybeScrollReadyViewerIntoView(options || {}); }catch(_){ }
+      renderReadyScenesShell();
+      setTimeout(()=>{ try{ scheduleReadySceneVariantSync('scene-open'); }catch(_){ } }, 0);
+      return scene;
+    }catch(err){
+      rt.active = false;
+      rt.status = 'scene_error';
+      rt.lastSceneOpenError = String(err && err.message || err);
+      if(rt.brokenSceneIds) rt.brokenSceneIds[wanted] = rt.lastSceneOpenError || 'scene_error';
+      renderReadyScenesShell();
+      throw err;
+    }
+  }
+  async function syncPublishedReadyVariant(reason){
+    const rt=ensurePublicReadyRuntime();
+    const cfg=getReadyModeConfig();
+    if(!SCENES || !state.ui || !state.ui.readySceneMode) return null;
+    const sceneId=String(state.ui.readySceneSceneId || rt.selectedSceneId || '').trim();
+    if(!sceneId) return null;
+    const zone = (S && typeof S.getActiveZone === "function") ? S.getActiveZone() : null;
+    const shapeId = String((zone && zone.material && zone.material.shapeId) || (state.catalog && state.catalog.activeShapeId) || '').trim();
+    const textureId = String((zone && zone.material && zone.material.textureId) || '').trim();
+    if(!shapeId || !textureId){
+      rt.selectedVariantKey = null;
+      rt.variantState = 'pending';
+      rt.variantLabel = 'Выберите форму и текстуру';
+      rt.variantMessage = 'После выбора формы и текстуры система попробует применить опубликованный точный вариант для этой сцены.';
+      rt.lastWantedVariantKey = null;
+      renderReadyScenesShell();
+      return null;
+    }
+    const desiredKey = SCENES.buildVariantKey ? SCENES.buildVariantKey(sceneId, shapeId, textureId) : [sceneId, shapeId, textureId].join('__');
+    rt.lastWantedVariantKey = desiredKey;
+    if(state.scenePresets && state.scenePresets.activeVariantKey === desiredKey && rt.selectedVariantKey === desiredKey){
+      rt.variantState = 'exact';
+      rt.variantLabel = 'Точный вариант найден';
+      rt.variantMessage = 'Для выбранной формы и текстуры уже применён опубликованный exact variant.';
+      renderReadyScenesShell();
+      return desiredKey;
+    }
+    if(cfg.cacheMissingVariants !== false && rt.missingVariantKeys && rt.missingVariantKeys[desiredKey]){
+      rt.selectedVariantKey = null;
+      rt.status = 'variant_missing';
+      rt.variantState = 'fallback';
+      rt.variantLabel = 'Показан fallback сцены';
+      rt.variantMessage = 'Для комбинации «' + shapeId + ' / ' + textureId + '» точный published variant ранее не найден. Показана базовая сцена.';
+      renderReadyScenesShell();
+      return null;
+    }
+    try{
+      const variant=await withTimeout(SCENES.loadVariantResolved(sceneId, shapeId, textureId, { context:'public' }), Number(cfg.openVariantTimeoutMs || 7000), 'Published variant load');
+      await withTimeout(openVariantPresetRecord(variant, { context:'public' }), Number(cfg.applyVariantTimeoutMs || 7000), 'Published variant apply');
+      rt.selectedVariantKey = variant.key;
+      rt.status = 'variant_ready';
+      rt.variantState = 'exact';
+      rt.variantLabel = 'Точный вариант найден';
+      rt.variantMessage = 'Для выбранной формы и текстуры применён опубликованный exact variant.';
+      rt.lastVariantAt = new Date().toISOString();
+      rt.lastError = null;
+      if(rt.missingVariantKeys && rt.missingVariantKeys[desiredKey]) delete rt.missingVariantKeys[desiredKey];
+      renderReadyScenesShell();
+      return variant;
+    }catch(err){
+      rt.selectedVariantKey = null;
+      rt.status = 'variant_missing';
+      rt.variantState = 'fallback';
+      rt.variantLabel = 'Показан fallback сцены';
+      rt.variantMessage = isNotFoundLike(err)
+        ? ('Для комбинации «' + shapeId + ' / ' + textureId + '» отдельный published variant не найден. Остаётся базовая сцена.')
+        : ('Точный вариант для «' + shapeId + ' / ' + textureId + '» сейчас недоступен. Показана базовая сцена.');
+      if(rt.missingVariantKeys && (cfg.cacheMissingVariants !== false) && isNotFoundLike(err)) rt.missingVariantKeys[desiredKey] = new Date().toISOString();
+      rt.lastError = isNotFoundLike(err) ? null : String(err && err.message || err);
+      renderReadyScenesShell();
+      return null;
+    }
+  }
+  let _readyVariantSyncTimer = 0;
+  function scheduleReadySceneVariantSync(reason){
+    if(_readyVariantSyncTimer) clearTimeout(_readyVariantSyncTimer);
+    _readyVariantSyncTimer = setTimeout(()=>{ syncPublishedReadyVariant(reason).catch(()=>{}); }, 60);
+  }
 
   function getContourAssistModel(){
     const ui = state.ui || {};
@@ -1034,6 +1510,7 @@ function addZoneAndArmContour(){
         await loadTexturesForActiveShape();
         renderZonesUI();
         ED.render();
+        try{ scheduleReadySceneVariantSync("shape"); }catch(_){ }
       });
       wrap.appendChild(card);
     }
@@ -1416,6 +1893,7 @@ function renderTexturesUI(){
         syncSettingsUI();
         ED.render();
         try{ updateSimpleShell(); }catch(_){ }
+        try{ scheduleReadySceneVariantSync("texture"); }catch(_){ }
       });
       if(!canHover){
         card.addEventListener('pointerdown',()=>{
@@ -1529,6 +2007,7 @@ function renderTexturesUI(){
 async function handlePhotoFile(file, source){
     if(!file) return;
     try{ ANALYTICS && ANALYTICS.track && ANALYTICS.track("photo_upload_started", { source: source || "input", fileName: file.name || null, fileType: file.type || null, fileSize: file.size || 0 }); }catch(_){ }
+    try{ setPublicReadyUploadMode(source || "input"); }catch(_){ }
     API.setStatus("Загрузка фото…");
     const maxSide=3072;
     const prevBitmap = state.assets ? state.assets.photoBitmap : null;
@@ -2139,6 +2618,14 @@ function applyChangeToTiling(change){
       }
       const shellSecondaryBtn = el("simpleShellSecondaryBtn");
       if(shellSecondaryBtn){ shellSecondaryBtn.addEventListener("click", ()=>{ setSecondaryToolsOpen(!(state.ui && state.ui.secondaryToolsOpen)); }); }
+      const readyRefreshBtn = el("readyScenesShellRefreshBtn");
+      if(readyRefreshBtn){ readyRefreshBtn.addEventListener("click", ()=>{ loadPublishedReadyScenesFoundation({ force:true }).catch(()=>{}); }); }
+      const readyUploadBtn = el("readyScenesShellUploadBtn");
+      if(readyUploadBtn){ readyUploadBtn.addEventListener("click", ()=>{ try{ setPublicReadyUploadMode('user_upload'); renderReadyScenesShell(); updateSimpleShell(); el("photoInput").click(); }catch(_){ } }); }
+      const readyOpenBtn = el("readyScenesShellOpenBtn");
+      if(readyOpenBtn){ readyOpenBtn.addEventListener("click", ()=>{ const rt=ensurePublicReadyRuntime(); const selected=getSelectedReadyScene(rt); if(selected) openPublishedReadyScene(selected.id, { auto:false }).catch((err)=>{ rt.lastError=String(err && err.message || err); renderReadyScenesShell(); }); }); }
+      const readyList = el("readyScenesShellSceneList");
+      if(readyList){ readyList.addEventListener("click", (ev)=>{ const btn=ev.target && ev.target.closest ? ev.target.closest('[data-scene-id]') : null; if(!btn) return; const sceneId=btn.getAttribute('data-scene-id'); if(!sceneId) return; const rt=ensurePublicReadyRuntime(); rt.selectedSceneId = sceneId; renderReadyScenesShell(); }); }
     }catch(_){ }
     // Premium-P3: seam nudge step selector
     initSeamStepUI();
@@ -3758,6 +4245,7 @@ el("exportPngBtn").addEventListener("click",()=>{ try{ ANALYTICS && ANALYTICS.tr
       await API.loadShapes();
       renderShapesUI();
       await loadTexturesForActiveShape();
+      try{ await loadPublishedReadyScenesFoundation(); }catch(_){ }
       requestAnimationFrame(fitCanvasWrapForBottomMenu);
       renderZonesUI();
       updateSplitZoneBtnUI();

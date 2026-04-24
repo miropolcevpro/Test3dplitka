@@ -22,7 +22,7 @@
     body.ppAdminPage .simpleShell{ display:none !important; }
   </style>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_195_p22_repo_package" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_208_p34_import_package" />
 </head>
 <body class="ppAdminPage">
   <div class="app">
@@ -198,6 +198,108 @@
       <div class="scenePresetAdminShell__help">
             Local draft сохраняется в браузере и подходит для authoring без backend. Для надёжного backup или переноса используйте экспорт scene.json.
           </div>
+        </div>
+
+        
+          <div class="scenePresetAdminShell__panel scenePresetAdminShell__panel--publishAutofill">
+            <div class="scenePresetAdminShell__panelTitle">Repo structure autofill</div>
+            <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellPublishAutofillState">Настройте base URL и шаблоны имён файлов, затем автозаполните URL сцены и preview URL вариантов.</div>
+            <div class="scenePresetAdminShell__formGrid">
+              <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+                <span>GitHub Pages base URL для preset-scenes/published</span>
+                <input class="ppInput" id="scenePresetAdminShellPublishPagesBase" type="url" placeholder="https://miropolcevpro.github.io/Test3dplitka/preset-scenes/published" />
+              </label>
+              <label class="field scenePresetAdminShell__field">
+                <span>Папка scene assets</span>
+                <input class="ppInput" id="scenePresetAdminShellPublishMediaDir" type="text" placeholder="media" />
+              </label>
+              <label class="field scenePresetAdminShell__field">
+                <span>Папка preview вариантов</span>
+                <input class="ppInput" id="scenePresetAdminShellPublishPreviewsDir" type="text" placeholder="previews" />
+              </label>
+              <label class="field scenePresetAdminShell__field">
+                <span>Имя фото сцены</span>
+                <input class="ppInput" id="scenePresetAdminShellPublishScenePhotoFile" type="text" placeholder="scene-photo.jpg" />
+              </label>
+              <label class="field scenePresetAdminShell__field">
+                <span>Имя thumb сцены</span>
+                <input class="ppInput" id="scenePresetAdminShellPublishSceneThumbFile" type="text" placeholder="scene-thumb.jpg" />
+              </label>
+              <label class="field scenePresetAdminShell__field">
+                <span>Имя cover сцены</span>
+                <input class="ppInput" id="scenePresetAdminShellPublishSceneCoverFile" type="text" placeholder="scene-cover.jpg" />
+              </label>
+              <label class="field scenePresetAdminShell__field">
+                <span>Расширение preview вариантов</span>
+                <input class="ppInput" id="scenePresetAdminShellPublishVariantPreviewExt" type="text" placeholder="jpg" />
+              </label>
+            </div>
+            <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--editor">
+              <button class="btn btn--ghost" id="scenePresetAdminShellAutofillSceneUrlsBtn" type="button">Автозаполнить URL сцены</button>
+              <button class="btn btn--ghost" id="scenePresetAdminShellAutofillVariantPreviewsBtn" type="button">Автозаполнить preview URL вариантов</button>
+              <button class="btn btn--ghost" id="scenePresetAdminShellSaveAutofillPresetBtn" type="button">Сохранить шаблон</button>
+            </div>
+            <div class="scenePresetAdminShell__help">
+              Helper использует единый шаблон GitHub Pages URL и строит publish-ready URL для photo/thumb/cover и preview каждого local variant. Это снижает ручную рутину перед экспортом пакета сцены.
+            </div>
+          </div>
+
+
+          <div class="scenePresetAdminShell__panel scenePresetAdminShell__panel--bulkAssets">
+            <div class="scenePresetAdminShell__panelTitle">Bulk asset import helper</div>
+            <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellBulkAssetState">Вставьте список URL или путей ассетов одной пачкой. Helper попробует автоматически сопоставить scene photo/thumb/cover и preview по вариантам.</div>
+            <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+              <span>Список URL / путей ассетов (по одному на строку)</span>
+              <textarea class="ppInput scenePresetAdminShell__codeBox" id="scenePresetAdminShellBulkAssetInput" rows="8" placeholder="https://.../scene-photo.jpg
+https://.../scene-thumb.jpg
+https://.../old_gorod__gray.jpg"></textarea>
+            </label>
+            <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--editor">
+              <button class="btn btn--ghost" id="scenePresetAdminShellAnalyzeBulkAssetsBtn" type="button">Анализировать список</button>
+              <button class="btn" id="scenePresetAdminShellApplyBulkAssetsBtn" type="button">Применить к сцене и вариантам</button>
+              <button class="btn btn--ghost" id="scenePresetAdminShellClearBulkAssetsBtn" type="button">Очистить список</button>
+            </div>
+            <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellBulkAssetMeta"></div>
+            <div class="scenePresetAdminShell__help">
+              Helper разбирает имена файлов по текущему publish-шаблону и старается автоматически сопоставить scene-photo / scene-thumb / scene-cover и preview URL для local variants выбранной сцены.
+            </div>
+          </div>
+
+        <div class="scenePresetAdminShell__panel scenePresetAdminShell__panel--publishHelper">
+          <div class="scenePresetAdminShell__panelTitle">Публикация в репо (helper)</div>
+          <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellPublishHelperStatus">Подготовьте сцену и варианты, чтобы увидеть готовый helper для публикации.</div>
+          <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--editor">
+            <button class="btn" id="scenePresetAdminShellValidatePublishBtn" type="button">Проверить пакет</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellCopyPathsBtn" type="button">Скопировать пути</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellCopyManifestBtn" type="button">Скопировать manifest entry</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellCopyDeployBtn" type="button">Скопировать deploy-инструкцию</button>
+            <button class="btn btn--ghost" id="scenePresetAdminShellCopyPackageBtn" type="button">Скопировать состав package</button>
+          </div>
+          <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellPublishValidationState">Проверка publish package ещё не выполнялась.</div>
+          <div class="scenePresetAdminShell__geometryChips" id="scenePresetAdminShellPublishValidationChips"></div>
+          <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellPublishValidationMeta"></div>
+          <div class="scenePresetAdminShell__toolbar scenePresetAdminShell__toolbar--editor">
+            <button class="btn btn--ghost" id="scenePresetAdminShellImportPackageBtn" type="button">Импортировать exported package zip</button>
+            <input id="scenePresetAdminShellImportPackageInput" type="file" accept=".zip,application/zip" hidden />
+          </div>
+          <div class="scenePresetAdminShell__editorState" id="scenePresetAdminShellImportPackageState">Можно импортировать ранее экспортированный published package zip обратно в local authoring state.</div>
+          <div class="scenePresetAdminShell__meta" id="scenePresetAdminShellImportPackageMeta"></div>
+          <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+            <span>Какие файлы положить в репозиторий</span>
+            <textarea class="ppInput scenePresetAdminShell__codeBox" id="scenePresetAdminShellPublishHelperPaths" rows="8" readonly></textarea>
+          </label>
+          <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+            <span>Manifest entry для published manifest.json</span>
+            <textarea class="ppInput scenePresetAdminShell__codeBox" id="scenePresetAdminShellPublishHelperManifest" rows="12" readonly></textarea>
+          </label>
+          <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+            <span>Краткая инструкция публикации</span>
+            <textarea class="ppInput scenePresetAdminShell__codeBox" id="scenePresetAdminShellPublishHelperDeploy" rows="8" readonly></textarea>
+          </label>
+          <label class="field scenePresetAdminShell__field scenePresetAdminShell__field--full">
+            <span>Состав export package</span>
+            <textarea class="ppInput scenePresetAdminShell__codeBox" id="scenePresetAdminShellPublishHelperPackage" rows="14" readonly></textarea>
+          </label>
         </div>
       </div>
     </section>
@@ -524,21 +626,21 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/release_config.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/state.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/diagnostics.js?v=iter2_2_182_p12"></script>
-  <script src="js/analytics.js?v=iter2_2_182_p12"></script>
-  <script src="js/updater.js?v=iter2_2_169_p02"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_172_p05"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_171_p04"></script>
-  <script src="js/api.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/scene_presets.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/scene_preset_state.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/scene_preset_admin.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_169_p02"></script>
-  <script src="js/camera_calib.js?v=iter2_2_169_p02"></script>
-  <script src="js/editor.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/app.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/scene_preset_admin_shell.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/release_config.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/state.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/diagnostics.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/analytics.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/updater.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/api.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/scene_presets.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/scene_preset_state.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/scene_preset_admin.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/camera_calib.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/editor.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/app.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/scene_preset_admin_shell.js?v=iter2_2_208_p34_import_package"></script>
 </body>
 </html>

@@ -15,7 +15,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     allowPublishedOpen:true,
     allowDraftOpen:true,
     emptyStateText:"Сцены ещё не опубликованы или не подготовлены в storage.",
-    localDraftStorageKey:"pp_scene_preset_local_drafts_v1"
+    localDraftStorageKey:"pp_scene_preset_local_drafts_v1",
+    bulkAssetImportStorageKey:"pp_scene_preset_bulk_asset_import_v1"
   };
 
   function deepClone(v){ return JSON.parse(JSON.stringify(v)); }
@@ -88,6 +89,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     merged.emptyStateText=String(merged.emptyStateText || DEFAULTS.emptyStateText);
     merged.localDraftStorageKey=String(merged.localDraftStorageKey || DEFAULTS.localDraftStorageKey);
     merged.localVariantStorageKey=String(merged.localVariantStorageKey || DEFAULTS.localVariantStorageKey);
+    merged.publishAutofillStorageKey=String(merged.publishAutofillStorageKey || DEFAULTS.publishAutofillStorageKey);
+    merged.bulkAssetImportStorageKey=String(merged.bulkAssetImportStorageKey || DEFAULTS.bulkAssetImportStorageKey);
     return merged;
   }
 
@@ -163,6 +166,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       sceneMap:{},
       editor:{ draft:createEmptyDraft(), dirty:false, lastSavedAt:null },
       variantEditor:{ draft:null, dirty:false, lastSavedAt:null },
+      publishAutofill:null,
+      bulkAssetImport:{ rawText:"", updatedAt:null, analysis:null },
       config:getConfig(null)
     };
   }
@@ -184,6 +189,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     if(!runtime.editor || typeof runtime.editor !== "object") runtime.editor={ draft:createEmptyDraft(), dirty:false, lastSavedAt:null };
     if(!runtime.editor.draft || typeof runtime.editor.draft !== "object") runtime.editor.draft=createEmptyDraft();
     if(!runtime.variantEditor || typeof runtime.variantEditor !== "object") runtime.variantEditor={ draft:null, dirty:false, lastSavedAt:null };
+    if(!runtime.publishAutofill || typeof runtime.publishAutofill !== "object") runtime.publishAutofill=null;
+    if(!runtime.bulkAssetImport || typeof runtime.bulkAssetImport !== "object") runtime.bulkAssetImport={ rawText:"", updatedAt:null, analysis:null };
     return runtime;
   }
 
@@ -224,6 +231,36 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       btnExportPackage:document.getElementById("scenePresetAdminShellExportPackageBtn"),
       btnImport:document.getElementById("scenePresetAdminShellImportBtn"),
       importInput:document.getElementById("scenePresetAdminShellImportInput"),
+      helperStatus:document.getElementById("scenePresetAdminShellPublishHelperStatus"),
+      helperPaths:document.getElementById("scenePresetAdminShellPublishHelperPaths"),
+      helperManifest:document.getElementById("scenePresetAdminShellPublishHelperManifest"),
+      helperDeploy:document.getElementById("scenePresetAdminShellPublishHelperDeploy"),
+      helperPackage:document.getElementById("scenePresetAdminShellPublishHelperPackage"),
+      helperValidationState:document.getElementById("scenePresetAdminShellPublishValidationState"),
+      helperValidationChips:document.getElementById("scenePresetAdminShellPublishValidationChips"),
+      helperValidationMeta:document.getElementById("scenePresetAdminShellPublishValidationMeta"),
+      btnValidatePublish:document.getElementById("scenePresetAdminShellValidatePublishBtn"),
+      btnCopyManifest:document.getElementById("scenePresetAdminShellCopyManifestBtn"),
+      btnCopyPaths:document.getElementById("scenePresetAdminShellCopyPathsBtn"),
+      btnCopyDeploy:document.getElementById("scenePresetAdminShellCopyDeployBtn"),
+      btnCopyPackage:document.getElementById("scenePresetAdminShellCopyPackageBtn"),
+      helperAutofillState:document.getElementById("scenePresetAdminShellPublishAutofillState"),
+      inputPagesBase:document.getElementById("scenePresetAdminShellPublishPagesBase"),
+      inputMediaDir:document.getElementById("scenePresetAdminShellPublishMediaDir"),
+      inputPreviewsDir:document.getElementById("scenePresetAdminShellPublishPreviewsDir"),
+      inputScenePhotoFile:document.getElementById("scenePresetAdminShellPublishScenePhotoFile"),
+      inputSceneThumbFile:document.getElementById("scenePresetAdminShellPublishSceneThumbFile"),
+      inputSceneCoverFile:document.getElementById("scenePresetAdminShellPublishSceneCoverFile"),
+      inputVariantPreviewExt:document.getElementById("scenePresetAdminShellPublishVariantPreviewExt"),
+      btnAutofillSceneUrls:document.getElementById("scenePresetAdminShellAutofillSceneUrlsBtn"),
+      btnAutofillVariantPreviews:document.getElementById("scenePresetAdminShellAutofillVariantPreviewsBtn"),
+      btnSaveAutofillPreset:document.getElementById("scenePresetAdminShellSaveAutofillPresetBtn"),
+      bulkAssetState:document.getElementById("scenePresetAdminShellBulkAssetState"),
+      bulkAssetInput:document.getElementById("scenePresetAdminShellBulkAssetInput"),
+      bulkAssetMeta:document.getElementById("scenePresetAdminShellBulkAssetMeta"),
+      btnAnalyzeBulkAssets:document.getElementById("scenePresetAdminShellAnalyzeBulkAssetsBtn"),
+      btnApplyBulkAssets:document.getElementById("scenePresetAdminShellApplyBulkAssetsBtn"),
+      btnClearBulkAssets:document.getElementById("scenePresetAdminShellClearBulkAssetsBtn"),
       btnModeContour:document.getElementById("scenePresetAdminShellModeContourBtn"),
       btnModeCutout:document.getElementById("scenePresetAdminShellModeCutoutBtn"),
       btnModeView:document.getElementById("scenePresetAdminShellModeViewBtn"),
@@ -353,6 +390,248 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       if(runtime.localVariants[k] && runtime.localVariants[k].key) out[k]=runtime.localVariants[k];
     });
     return safeStorageSet(runtime.config.localVariantStorageKey, out);
+  }
+
+  function createDefaultPublishAutofill(){
+    return {
+      pagesBase:'https://miropolcevpro.github.io/Test3dplitka/preset-scenes/published',
+      mediaDir:'media',
+      previewsDir:'previews',
+      scenePhotoFile:'scene-photo.jpg',
+      sceneThumbFile:'scene-thumb.jpg',
+      sceneCoverFile:'scene-cover.jpg',
+      variantPreviewExt:'jpg',
+      updatedAt:null
+    };
+  }
+
+  function normalizePublishAutofill(input){
+    const src=input && typeof input === 'object' ? input : {};
+    const base=createDefaultPublishAutofill();
+    const out=Object.assign({}, base, src || {});
+    out.pagesBase=String(out.pagesBase || base.pagesBase).trim().replace(/\/+$/,'');
+    out.mediaDir=String(out.mediaDir || base.mediaDir).trim().replace(/^\/+|\/+$/g,'') || base.mediaDir;
+    out.previewsDir=String(out.previewsDir || base.previewsDir).trim().replace(/^\/+|\/+$/g,'') || base.previewsDir;
+    out.scenePhotoFile=String(out.scenePhotoFile || base.scenePhotoFile).trim() || base.scenePhotoFile;
+    out.sceneThumbFile=String(out.sceneThumbFile || base.sceneThumbFile).trim() || base.sceneThumbFile;
+    out.sceneCoverFile=String(out.sceneCoverFile || base.sceneCoverFile).trim() || base.sceneCoverFile;
+    out.variantPreviewExt=String(out.variantPreviewExt || base.variantPreviewExt).trim().replace(/^\./,'') || base.variantPreviewExt;
+    out.updatedAt=src.updatedAt || out.updatedAt || null;
+    return out;
+  }
+
+  function normalizeBulkAssetImport(input){
+    const src=input && typeof input === 'object' ? input : {};
+    return { rawText:String(src.rawText || ''), updatedAt:src.updatedAt || null, analysis:src.analysis && typeof src.analysis==='object' ? deepClone(src.analysis) : null };
+  }
+
+  function loadBulkAssetImport(runtime){
+    const raw=safeStorageGet(runtime.config.bulkAssetImportStorageKey, null);
+    runtime.bulkAssetImport = normalizeBulkAssetImport(raw);
+    return runtime.bulkAssetImport;
+  }
+
+  function persistBulkAssetImport(runtime){
+    runtime.bulkAssetImport = normalizeBulkAssetImport(runtime.bulkAssetImport);
+    runtime.bulkAssetImport.updatedAt = new Date().toISOString();
+    return safeStorageSet(runtime.config.bulkAssetImportStorageKey, runtime.bulkAssetImport);
+  }
+
+  function readBulkAssetImport(){
+    const runtime=ensureRuntime(state||{});
+    const r=getRefs();
+    runtime.bulkAssetImport = normalizeBulkAssetImport(runtime.bulkAssetImport);
+    runtime.bulkAssetImport.rawText = String((r.bulkAssetInput && r.bulkAssetInput.value) || runtime.bulkAssetImport.rawText || '');
+    return runtime.bulkAssetImport;
+  }
+
+  function cleanBulkAssetLine(line){
+    return String(line || '').replace(/^[-*•]+\s*/, '').trim();
+  }
+
+  function parseBulkAssetEntries(raw){
+    const lines=String(raw || '').split(/\r?\n/).map(cleanBulkAssetLine).filter(Boolean);
+    return lines.map((url)=>{
+      const clean=String(url || '').trim();
+      const noHash=clean.split('#')[0];
+      const noQuery=noHash.split('?')[0];
+      const baseName=(noQuery.split('/').pop() || '').trim();
+      const stem=baseName.replace(/\.[^.]+$/, '');
+      return { url:clean, baseName:baseName, stem:stem };
+    }).filter((entry)=>entry.baseName);
+  }
+
+  function analyzeBulkAssetImport(rawText, scene, variants, cfg){
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    const entries=parseBulkAssetEntries(rawText);
+    const byBase={};
+    const byStem={};
+    entries.forEach((entry)=>{ byBase[entry.baseName]=entry; byStem[entry.stem]=entry; });
+    const sceneMatch={
+      photo: byBase[publishCfg.scenePhotoFile] ? byBase[publishCfg.scenePhotoFile].url : null,
+      thumb: byBase[publishCfg.sceneThumbFile] ? byBase[publishCfg.sceneThumbFile].url : null,
+      cover: byBase[publishCfg.sceneCoverFile] ? byBase[publishCfg.sceneCoverFile].url : null
+    };
+    const variantMatches=[];
+    const unmatched=[];
+    const consumed=new Set();
+    Object.values(sceneMatch).forEach((u)=>{ if(u) consumed.add(u); });
+    (variants || []).forEach((variant)=>{
+      const stem=buildPublishedVariantStem(variant);
+      const hit=byStem[stem] || null;
+      variantMatches.push({ key:variant.key, label:formatVariantLabel(variant), stem:stem, url:hit ? hit.url : null });
+      if(hit) consumed.add(hit.url);
+    });
+    entries.forEach((entry)=>{ if(!consumed.has(entry.url)) unmatched.push(entry.url); });
+    return {
+      totalEntries:entries.length,
+      scene:sceneMatch,
+      variants:variantMatches,
+      matchedVariantCount:variantMatches.filter((v)=>!!v.url).length,
+      unmatched:unmatched,
+      missingSceneKinds:['photo','thumb','cover'].filter((k)=>!sceneMatch[k]),
+      missingVariantCount:variantMatches.filter((v)=>!v.url).length
+    };
+  }
+
+  function loadPublishAutofill(runtime){
+    const raw=safeStorageGet(runtime.config.publishAutofillStorageKey, null);
+    runtime.publishAutofill = normalizePublishAutofill(raw);
+    return runtime.publishAutofill;
+  }
+
+  function persistPublishAutofill(runtime){
+    runtime.publishAutofill = normalizePublishAutofill(runtime.publishAutofill);
+    runtime.publishAutofill.updatedAt = new Date().toISOString();
+    return safeStorageSet(runtime.config.publishAutofillStorageKey, runtime.publishAutofill);
+  }
+
+  function readPublishAutofill(){
+    const runtime=ensureRuntime(state||{});
+    const r=getRefs();
+    const cur=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    cur.pagesBase=String((r.inputPagesBase && r.inputPagesBase.value) || cur.pagesBase || '').trim().replace(/\/+$/,'');
+    cur.mediaDir=String((r.inputMediaDir && r.inputMediaDir.value) || cur.mediaDir || '').trim().replace(/^\/+|\/+$/g,'') || 'media';
+    cur.previewsDir=String((r.inputPreviewsDir && r.inputPreviewsDir.value) || cur.previewsDir || '').trim().replace(/^\/+|\/+$/g,'') || 'previews';
+    cur.scenePhotoFile=String((r.inputScenePhotoFile && r.inputScenePhotoFile.value) || cur.scenePhotoFile || '').trim() || 'scene-photo.jpg';
+    cur.sceneThumbFile=String((r.inputSceneThumbFile && r.inputSceneThumbFile.value) || cur.sceneThumbFile || '').trim() || 'scene-thumb.jpg';
+    cur.sceneCoverFile=String((r.inputSceneCoverFile && r.inputSceneCoverFile.value) || cur.sceneCoverFile || '').trim() || 'scene-cover.jpg';
+    cur.variantPreviewExt=String((r.inputVariantPreviewExt && r.inputVariantPreviewExt.value) || cur.variantPreviewExt || '').trim().replace(/^\./,'') || 'jpg';
+    runtime.publishAutofill = normalizePublishAutofill(cur);
+    return runtime.publishAutofill;
+  }
+
+  function buildPublishedAssetBase(sceneId, cfg){
+    const scene=normalizeSceneId(sceneId || 'scene', 'scene');
+    return [String(cfg.pagesBase || '').replace(/\/+$/,''), scene].filter(Boolean).join('/');
+  }
+
+  function buildPublishedAssetUrl(sceneId, cfg, kind){
+    const base=buildPublishedAssetBase(sceneId, cfg);
+    if(!base) return null;
+    if(kind === 'photo') return [base, cfg.mediaDir, cfg.scenePhotoFile].join('/');
+    if(kind === 'thumb') return [base, cfg.mediaDir, cfg.sceneThumbFile].join('/');
+    if(kind === 'cover') return [base, cfg.mediaDir, cfg.sceneCoverFile].join('/');
+    return null;
+  }
+
+  function buildPublishedVariantStem(variant){
+    const shape=String(variant && variant.shapeId || 'shape').trim() || 'shape';
+    const texture=String(variant && variant.textureId || 'texture').trim() || 'texture';
+    const key=makeVariantKey('scene', shape, texture);
+    const parts=String(key || '').split('__');
+    return parts.length >= 3 ? parts.slice(1).join('__') : (String(shape) + '__' + String(texture));
+  }
+
+  function formatVariantLabel(variant){
+    if(!variant) return 'variant';
+    const shape=String(variant.shapeId || 'shape');
+    const texture=String(variant.textureId || 'texture');
+    return shape + ' / ' + texture;
+  }
+
+  function collectDuplicatePublishedStems(variants){
+    const map={};
+    const dupes=[];
+    (variants || []).forEach((variant)=>{
+      const stem=buildPublishedVariantStem(variant);
+      map[stem] = map[stem] || [];
+      map[stem].push(variant);
+    });
+    Object.keys(map).forEach((stem)=>{
+      if((map[stem] || []).length > 1){
+        dupes.push({ stem:stem, variants:map[stem].map((v)=>formatVariantLabel(v)) });
+      }
+    });
+    return dupes;
+  }
+
+  function computePublishReadiness(scene, variants, cfg){
+    const errors=[];
+    const warnings=[];
+    const checks=[];
+    const normalizedScene=scene && typeof scene === 'object' ? scene : {};
+    const list=Array.isArray(variants) ? variants : [];
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    const sceneId=normalizeSceneId(normalizedScene.sceneId || normalizedScene.id || '', 'scene');
+    const hasSceneId=!!String(normalizedScene.sceneId || normalizedScene.id || '').trim();
+    const hasBase=!!(normalizedScene.baseSnapshot && typeof normalizedScene.baseSnapshot === 'object');
+    const photoUrl=safeGet(normalizedScene,['photo','sourceUrl'],null);
+    const thumbUrl=safeGet(normalizedScene,['photo','thumbUrl'],null);
+    const coverUrl=safeGet(normalizedScene,['photo','coverUrl'],null);
+
+    checks.push({ key:'sceneId', label:'Scene ID задан', ok:hasSceneId, detail:hasSceneId ? sceneId : 'sceneId пустой' });
+    if(!hasSceneId) errors.push('Scene ID не задан');
+
+    checks.push({ key:'base', label:'Base scene захвачена', ok:hasBase, detail:hasBase ? 'baseSnapshot сохранён' : 'baseSnapshot отсутствует' });
+    if(!hasBase) errors.push('Base scene ещё не захвачена');
+
+    checks.push({ key:'variants', label:'Есть хотя бы один variant', ok:list.length > 0, detail:'variants: ' + String(list.length) });
+    if(!list.length) errors.push('Нет ни одного сохранённого local variant');
+
+    checks.push({ key:'photo', label:'Photo URL задан', ok:!!photoUrl, detail:photoUrl || 'photoUrl пустой' });
+    if(!photoUrl) errors.push('Photo URL пустой');
+
+    const duplicates=collectDuplicatePublishedStems(list);
+    checks.push({ key:'dupes', label:'Нет конфликтов publish filenames', ok:duplicates.length === 0, detail:duplicates.length ? ('duplicate stems: ' + String(duplicates.length)) : 'конфликтов нет' });
+    if(duplicates.length){
+      duplicates.forEach((dup)=>errors.push('Конфликт publish filename: ' + dup.stem + ' (' + dup.variants.join(', ') + ')'));
+    }
+
+    const missingPreview=list.filter((variant)=>!String(variant && variant.previewUrl || '').trim());
+    if(missingPreview.length){
+      warnings.push('У ' + String(missingPreview.length) + ' variant(s) не задан preview URL');
+    }
+    if(!thumbUrl) warnings.push('Thumb URL пустой');
+    if(!coverUrl) warnings.push('Cover URL пустой');
+    if(!publishCfg.pagesBase) warnings.push('GitHub Pages base URL пустой');
+
+    return {
+      sceneId,
+      hasSceneId,
+      hasBase,
+      hasVariants:list.length > 0,
+      hasPhotoUrl:!!photoUrl,
+      hasThumbUrl:!!thumbUrl,
+      hasCoverUrl:!!coverUrl,
+      checks,
+      errors,
+      warnings,
+      ok: errors.length === 0,
+      variantsCount:list.length,
+      missingPreviewCount:missingPreview.length,
+      missingPreviewVariants:missingPreview.map((variant)=>({ key:variant.key, label:formatVariantLabel(variant) })),
+      duplicateStems:duplicates,
+      cfg: publishCfg
+    };
+  }
+
+  function buildPublishedVariantPreviewUrl(sceneId, variant, cfg){
+    if(!variant) return null;
+    const base=buildPublishedAssetBase(sceneId, cfg);
+    if(!base) return null;
+    const stem=buildPublishedVariantStem(variant);
+    return [base, cfg.previewsDir, stem + '.' + cfg.variantPreviewExt].join('/');
   }
 
   function getActiveVariantContext(runtime){
@@ -775,6 +1054,266 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     renderEditor();
     renderGeometryPanel();
     renderVariantPanel();
+    renderPublishAutofill();
+    renderPublishHelper();
+    renderBulkAssetImport();
+  }
+
+  function renderBulkAssetImport(){
+    const runtime=ensureRuntime(state||{});
+    const r=getRefs();
+    runtime.bulkAssetImport = normalizeBulkAssetImport(runtime.bulkAssetImport);
+    if(r.bulkAssetInput) setIfDiff(r.bulkAssetInput, runtime.bulkAssetImport.rawText || '');
+    const scene=ensureEditorDraft(runtime);
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const analysis=analyzeBulkAssetImport(runtime.bulkAssetImport.rawText, scene, variants, cfg);
+    runtime.bulkAssetImport.analysis = analysis;
+    if(r.bulkAssetState){
+      const bits=['строк: ' + String(analysis.totalEntries || 0), 'scene matches: ' + String(['photo','thumb','cover'].filter((k)=>analysis.scene && analysis.scene[k]).length) + '/3', 'variant matches: ' + String(analysis.matchedVariantCount || 0) + '/' + String((analysis.variants || []).length)];
+      if(analysis.unmatched && analysis.unmatched.length) bits.push('неразобрано: ' + String(analysis.unmatched.length));
+      r.bulkAssetState.textContent = bits.join(' · ');
+    }
+    if(r.bulkAssetMeta){
+      const rows=[];
+      rows.push('<div class="scenePresetAdminShell__metaCard">');
+      rows.push('<div class="scenePresetAdminShell__metaTitle">Bulk asset import summary</div>');
+      rows.push('<div class="scenePresetAdminShell__metaRow"><span>Scene photo</span><span>' + escapeHtml(analysis.scene && analysis.scene.photo ? analysis.scene.photo : '—') + '</span></div>');
+      rows.push('<div class="scenePresetAdminShell__metaRow"><span>Scene thumb</span><span>' + escapeHtml(analysis.scene && analysis.scene.thumb ? analysis.scene.thumb : '—') + '</span></div>');
+      rows.push('<div class="scenePresetAdminShell__metaRow"><span>Scene cover</span><span>' + escapeHtml(analysis.scene && analysis.scene.cover ? analysis.scene.cover : '—') + '</span></div>');
+      rows.push('<div class="scenePresetAdminShell__metaRow"><span>Matched variants</span><span>' + escapeHtml(String(analysis.matchedVariantCount || 0)) + ' / ' + escapeHtml(String((analysis.variants || []).length)) + '</span></div>');
+      rows.push('<div class="scenePresetAdminShell__metaRow"><span>Unmatched URLs</span><span>' + escapeHtml(String((analysis.unmatched || []).length)) + '</span></div>');
+      rows.push('</div>');
+      if((analysis.variants || []).length){
+        rows.push('<div class="scenePresetAdminShell__metaCard">');
+        rows.push('<div class="scenePresetAdminShell__metaTitle">Variant matches</div>');
+        (analysis.variants || []).slice(0,12).forEach((item)=>{ rows.push('<div class="scenePresetAdminShell__metaRow"><span>' + escapeHtml(item.label) + '</span><span>' + escapeHtml(item.url ? 'matched' : '—') + '</span></div>'); });
+        if((analysis.variants || []).length > 12) rows.push('<div class="scenePresetAdminShell__metaRow"><span>И ещё</span><span>' + escapeHtml(String((analysis.variants || []).length - 12)) + '</span></div>');
+        rows.push('</div>');
+      }
+      if((analysis.unmatched || []).length){
+        rows.push('<div class="scenePresetAdminShell__metaCard">');
+        rows.push('<div class="scenePresetAdminShell__metaTitle">Unmatched URLs</div>');
+        (analysis.unmatched || []).slice(0,8).forEach((url)=>{ rows.push('<div class="scenePresetAdminShell__metaRow"><span>asset</span><span>' + escapeHtml(url) + '</span></div>'); });
+        if((analysis.unmatched || []).length > 8) rows.push('<div class="scenePresetAdminShell__metaRow"><span>И ещё</span><span>' + escapeHtml(String((analysis.unmatched || []).length - 8)) + '</span></div>');
+        rows.push('</div>');
+      }
+      r.bulkAssetMeta.innerHTML = rows.join('');
+    }
+    if(r.btnAnalyzeBulkAssets) r.btnAnalyzeBulkAssets.disabled = !(runtime.bulkAssetImport.rawText || '').trim();
+    if(r.btnApplyBulkAssets) r.btnApplyBulkAssets.disabled = !(analysis.totalEntries > 0);
+    if(r.btnClearBulkAssets) r.btnClearBulkAssets.disabled = !(runtime.bulkAssetImport.rawText || '').trim();
+  }
+
+  function analyzeCurrentBulkAssets(){
+    const runtime=ensureRuntime(state||{});
+    const scene=ensureEditorDraft(runtime);
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const raw=(readBulkAssetImport().rawText || '');
+    runtime.bulkAssetImport.analysis = analyzeBulkAssetImport(raw, scene, variants, cfg);
+    persistBulkAssetImport(runtime);
+    renderBulkAssetImport();
+    const a=runtime.bulkAssetImport.analysis;
+    setStatus('Bulk asset list проанализирован', 'Scene matches: ' + String(['photo','thumb','cover'].filter((k)=>a.scene && a.scene[k]).length) + '/3 · variant matches: ' + String(a.matchedVariantCount || 0) + '/' + String((a.variants || []).length));
+    return a;
+  }
+
+  function applyBulkAssetImport(){
+    const runtime=ensureRuntime(state||{});
+    const scene=ensureEditorDraft(runtime);
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const data=analyzeBulkAssetImport(readBulkAssetImport().rawText || '', scene, variants, cfg);
+    runtime.bulkAssetImport.analysis = data;
+    let sceneApplied=0;
+    let variantApplied=0;
+    const nextScene=deepClone(scene);
+    nextScene.photo = nextScene.photo && typeof nextScene.photo==='object' ? nextScene.photo : {};
+    if(data.scene.photo){ nextScene.photo.sourceUrl = data.scene.photo; sceneApplied += 1; }
+    if(data.scene.thumb){ nextScene.photo.thumbUrl = data.scene.thumb; sceneApplied += 1; }
+    if(data.scene.cover){ nextScene.photo.coverUrl = data.scene.cover; sceneApplied += 1; }
+    nextScene.updatedAt = new Date().toISOString();
+    updateRuntimeLocalSceneIndex(runtime, nextScene);
+    persistLocalDrafts(runtime);
+    setEditorDraft(nextScene, { dirty:false, lastSavedAt:nextScene.updatedAt });
+    const updated={};
+    (data.variants || []).forEach((match)=>{
+      if(!match.url || !runtime.localVariants[match.key]) return;
+      const v=deepClone(runtime.localVariants[match.key]);
+      v.previewUrl = match.url;
+      v.updatedAt = new Date().toISOString();
+      updated[match.key]=v;
+      variantApplied += 1;
+    });
+    Object.keys(updated).forEach((k)=>{ runtime.localVariants[k]=normalizeLocalVariant(updated[k]); });
+    if(variantApplied) persistLocalVariants(runtime);
+    const current=runtime.variantEditor && runtime.variantEditor.draft && runtime.variantEditor.draft.key ? runtime.localVariants[runtime.variantEditor.draft.key] : null;
+    if(current) setVariantDraft(current, { dirty:false, lastSavedAt:current.updatedAt || null });
+    persistBulkAssetImport(runtime);
+    renderPublishAutofill();
+    renderPublishHelper();
+    renderBulkAssetImport();
+    setStatus('Bulk asset import применён', 'Scene URLs: ' + String(sceneApplied) + ' · variant previews: ' + String(variantApplied) + ' · unmatched: ' + String((data.unmatched || []).length));
+    return { sceneApplied, variantApplied, unmatched:(data.unmatched || []).length };
+  }
+
+  function clearBulkAssetImport(){
+    const runtime=ensureRuntime(state||{});
+    runtime.bulkAssetImport = normalizeBulkAssetImport({ rawText:'', analysis:null });
+    persistBulkAssetImport(runtime);
+    renderBulkAssetImport();
+    setStatus('Bulk asset список очищен', 'Можно вставить новый список URL и снова выполнить разбор.');
+  }
+
+  function renderPublishAutofill(){
+    const runtime=ensureRuntime(state||{});
+    const r=getRefs();
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    runtime.publishAutofill = cfg;
+    setIfDiff(r.inputPagesBase, cfg.pagesBase);
+    setIfDiff(r.inputMediaDir, cfg.mediaDir);
+    setIfDiff(r.inputPreviewsDir, cfg.previewsDir);
+    setIfDiff(r.inputScenePhotoFile, cfg.scenePhotoFile);
+    setIfDiff(r.inputSceneThumbFile, cfg.sceneThumbFile);
+    setIfDiff(r.inputSceneCoverFile, cfg.sceneCoverFile);
+    setIfDiff(r.inputVariantPreviewExt, cfg.variantPreviewExt);
+    const scene=ensureEditorDraft(runtime);
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    const photoUrl=buildPublishedAssetUrl(scene.sceneId, cfg, 'photo');
+    const thumbUrl=buildPublishedAssetUrl(scene.sceneId, cfg, 'thumb');
+    const coverUrl=buildPublishedAssetUrl(scene.sceneId, cfg, 'cover');
+    const sampleVariant=variants[0] ? buildPublishedVariantPreviewUrl(scene.sceneId, variants[0], cfg) : null;
+    if(r.helperAutofillState){
+      const bits=[cfg.pagesBase || 'base не задан'];
+      bits.push('scene assets: ' + cfg.mediaDir);
+      bits.push('variant previews: ' + cfg.previewsDir);
+      if(photoUrl) bits.push('photo → ' + photoUrl);
+      if(sampleVariant) bits.push('preview → ' + sampleVariant);
+      r.helperAutofillState.textContent = bits.join(' · ');
+    }
+    if(r.btnAutofillSceneUrls) r.btnAutofillSceneUrls.disabled = !scene.sceneId;
+    if(r.btnAutofillVariantPreviews) r.btnAutofillVariantPreviews.disabled = !scene.sceneId || !variants.length;
+    if(r.btnSaveAutofillPreset) r.btnSaveAutofillPreset.disabled = !cfg.pagesBase;
+  }
+
+  function applyPublishAutofillToScene(){
+    const runtime=ensureRuntime(state||{});
+    const cfg=readPublishAutofill();
+    const scene=readEditorDraft();
+    if(!scene.sceneId) throw new Error('Scene ID не задан');
+    scene.photo = scene.photo && typeof scene.photo === 'object' ? scene.photo : {};
+    scene.photo.sourceUrl = buildPublishedAssetUrl(scene.sceneId, cfg, 'photo');
+    scene.photo.thumbUrl = buildPublishedAssetUrl(scene.sceneId, cfg, 'thumb');
+    scene.photo.coverUrl = buildPublishedAssetUrl(scene.sceneId, cfg, 'cover');
+    scene.updatedAt = new Date().toISOString();
+    runtime.editor.draft = normalizeLocalDraft(scene);
+    updateRuntimeLocalSceneIndex(runtime, runtime.editor.draft);
+    persistLocalDrafts(runtime);
+    runtime.editor.dirty = false;
+    persistPublishAutofill(runtime);
+    renderEditor();
+    renderPublishAutofill();
+    renderPublishHelper();
+    setStatus('URL сцены автозаполнены', 'photo/thumb/cover проставлены по repo-структуре для published сцены.');
+    return scene;
+  }
+
+  function applyPublishAutofillToVariants(){
+    const runtime=ensureRuntime(state||{});
+    const cfg=readPublishAutofill();
+    const scene=ensureEditorDraft(runtime);
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    if(!scene.sceneId) throw new Error('Scene ID не задан');
+    if(!variants.length) throw new Error('Для сцены пока нет local variants');
+    variants.forEach((variant)=>{
+      variant.previewUrl = buildPublishedVariantPreviewUrl(scene.sceneId, variant, cfg);
+      runtime.localVariants[variant.key] = normalizeLocalVariant(variant);
+    });
+    const current=runtime.variantEditor && runtime.variantEditor.draft ? normalizeLocalVariant(runtime.variantEditor.draft) : null;
+    if(current && current.sceneId===scene.sceneId && current.shapeId && current.textureId){
+      current.previewUrl = buildPublishedVariantPreviewUrl(scene.sceneId, current, cfg);
+      runtime.variantEditor.draft = current;
+    }
+    persistLocalVariants(runtime);
+    persistPublishAutofill(runtime);
+    renderVariantPanel();
+    renderPublishAutofill();
+    renderPublishHelper();
+    setStatus('Preview URL вариантов автозаполнены', 'Проставлены previewUrl для всех local variants выбранной сцены.');
+    return variants.length;
+  }
+
+  function renderPublishHelper(){
+    const runtime=ensureRuntime(state||{});
+    const r=getRefs();
+    const scene=ensureEditorDraft(runtime);
+    const variants=getSceneVariants(runtime, scene.sceneId);
+    const manifestEntry=makePublishedManifestEntry(scene, variants.length);
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const readiness=computePublishReadiness(scene, variants, cfg);
+    const paths=listPublishedPackagePaths(scene, variants, cfg);
+    const packageSummary=makePackageSummary(scene, variants, cfg, readiness);
+    const deployLines=[
+      '1. Нажмите «Экспорт repo-пакета сцены».',
+      '2. Распакуйте zip рядом с репозиторием.',
+      '3. Замените или добавьте папку: preset-scenes/published/' + String(scene.sceneId || 'scene') + '/',
+      '4. Откройте published manifest.json и добавьте туда manifest entry ниже.',
+      '4.1. При необходимости нажмите «Автозаполнить URL сцены» и «Автозаполнить preview URL вариантов» перед экспортом пакета.',
+      '5. Сделайте commit / push в GitHub Pages.',
+      '6. Проверьте, что scene.json, variants.json и все variant json попали в репозиторий.'
+    ];
+    if(readiness.warnings.length){
+      readiness.warnings.forEach((warn)=>deployLines.push('WARNING: ' + warn));
+    }
+    if(r.helperStatus){
+      const bits=[scene.sceneId || 'scene'];
+      bits.push(readiness.hasBase ? 'base scene готова' : 'base scene ещё не захвачена');
+      bits.push('variants: ' + String(variants.length));
+      bits.push(readiness.hasPhotoUrl ? 'photo URL задан' : 'photo URL пустой');
+      if(readiness.ok) bits.push('publish ready');
+      else bits.push('publish blocked');
+      if(readiness.missingPreviewCount) bits.push('preview warning: ' + String(readiness.missingPreviewCount));
+      r.helperStatus.textContent = bits.join(' · ');
+    }
+    if(r.helperPaths) r.helperPaths.value = paths.join('\n');
+    if(r.helperManifest) r.helperManifest.value = JSON.stringify(manifestEntry, null, 2);
+    if(r.helperDeploy) r.helperDeploy.value = deployLines.join('\n');
+    if(r.helperPackage) r.helperPackage.value = JSON.stringify(packageSummary, null, 2);
+    if(r.btnCopyManifest) r.btnCopyManifest.disabled = !scene.sceneId;
+    if(r.btnCopyPaths) r.btnCopyPaths.disabled = !scene.sceneId;
+    if(r.btnCopyDeploy) r.btnCopyDeploy.disabled = !scene.sceneId;
+    if(r.btnCopyPackage) r.btnCopyPackage.disabled = !scene.sceneId;
+    if(r.btnExportPackage) r.btnExportPackage.disabled = !readiness.ok;
+  }
+
+  function renderPackageImport(){
+    const runtime=ensureRuntime(state||{});
+    const r=getRefs();
+    const last=runtime.packageImport && runtime.packageImport.lastResult ? runtime.packageImport.lastResult : null;
+    if(r.importPackageState){
+      if(!last) r.importPackageState.textContent = 'Можно импортировать ранее экспортированный published package zip обратно в local authoring state.';
+      else r.importPackageState.textContent = 'Импортирован пакет сцены: ' + String(last.sceneId || 'scene') + ' · variants: ' + String(last.variantsCount || 0) + ' · files: ' + String(last.filesCount || 0) + (last.autofillLoaded ? ' · autofill preset восстановлен' : '');
+    }
+    if(r.importPackageMeta){
+      if(!last){
+        r.importPackageMeta.innerHTML = '<div class="scenePresetAdminShell__empty">Выберите exported package zip из предыдущего экспорта. Helper восстановит scene draft, local variants и publish autofill preset.</div>';
+      }else{
+        const warns=Array.isArray(last.warnings) ? last.warnings : [];
+        r.importPackageMeta.innerHTML = [
+          '<div class="scenePresetAdminShell__metaCard">',
+          '<div class="scenePresetAdminShell__metaTitle">Последний импорт package</div>',
+          '<div class="scenePresetAdminShell__metaRow"><span>Scene ID</span><span>' + escapeHtml(last.sceneId || '—') + '</span></div>',
+          '<div class="scenePresetAdminShell__metaRow"><span>Вариантов восстановлено</span><span>' + escapeHtml(String(last.variantsCount || 0)) + '</span></div>',
+          '<div class="scenePresetAdminShell__metaRow"><span>Файлов в zip</span><span>' + escapeHtml(String(last.filesCount || 0)) + '</span></div>',
+          '<div class="scenePresetAdminShell__metaRow"><span>Autofill preset</span><span>' + escapeHtml(last.autofillLoaded ? 'восстановлен' : 'не найден') + '</span></div>',
+          '<div class="scenePresetAdminShell__metaRow"><span>Импортирован</span><span>' + escapeHtml(formatTime(last.importedAt || null)) + '</span></div>',
+          (warns.length ? '<div class="scenePresetAdminShell__metaRow"><span>Warnings</span><span>' + escapeHtml(String(warns.length)) + '</span></div>' : ''),
+          '</div>'
+        ].join('');
+      }
+    }
+    if(r.btnImportPackage) r.btnImportPackage.disabled = false;
   }
 
   function renderVariantPanel(){
@@ -1144,6 +1683,36 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return new TextEncoder().encode(String(value == null ? '' : value));
   }
 
+  function textFromBytes(bytes){
+    try{ return new TextDecoder('utf-8').decode(bytes || new Uint8Array(0)); }catch(_){ return ''; }
+  }
+
+  function readStoreZipEntries(arrayBuffer){
+    const bytes=arrayBuffer instanceof Uint8Array ? bytesFrom(arrayBuffer) : new Uint8Array(arrayBuffer);
+    const view=new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const entries=[];
+    let offset=0;
+    while(offset + 30 <= bytes.length){
+      const sig=view.getUint32(offset, true);
+      if(sig !== 0x04034b50) break;
+      const compression=view.getUint16(offset + 8, true);
+      if(compression !== 0) throw new Error('ZIP uses unsupported compression method: ' + String(compression));
+      const compressedSize=view.getUint32(offset + 18, true);
+      const uncompressedSize=view.getUint32(offset + 22, true);
+      const nameLen=view.getUint16(offset + 26, true);
+      const extraLen=view.getUint16(offset + 28, true);
+      const nameStart=offset + 30;
+      const dataStart=nameStart + nameLen + extraLen;
+      const dataEnd=dataStart + compressedSize;
+      if(dataEnd > bytes.length) throw new Error('ZIP entry exceeds archive size');
+      const name=textFromBytes(bytes.slice(nameStart, nameStart + nameLen));
+      entries.push({ name:name, data:bytes.slice(dataStart, dataEnd), size:uncompressedSize });
+      offset=dataEnd;
+    }
+    if(!entries.length) throw new Error('ZIP package is empty or unsupported');
+    return entries;
+  }
+
   function makeZipBlob(files){
     const localParts=[];
     const centralParts=[];
@@ -1232,7 +1801,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
         textureId:v.textureId,
         title:v.title || v.key,
         status:'published',
-        url:'variants/' + String(v.shapeId || 'shape') + '__' + String(v.textureId || 'texture') + '.json',
+        url:'variants/' + buildPublishedVariantStem(v) + '.json',
         previewUrl:v.previewUrl || null,
         updatedAt:v.updatedAt || null
       }))
@@ -1256,7 +1825,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return out;
   }
 
-  function makeRepoPackageReadme(scene, variants){
+  function makeRepoPackageReadme(scene, variants, cfg, readiness){
     const lines=[];
     lines.push('Photo Pave scene package');
     lines.push('');
@@ -1278,26 +1847,183 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       lines.push('');
     }
     lines.push('Exported variant files preserve per-texture settings captured in admin local drafts.');
+    lines.push('');
+    lines.push('Package summary and validation files are included in this export for easier repo publication.');
+    if(readiness && readiness.warnings && readiness.warnings.length){
+      lines.push('');
+      lines.push('Warnings at export time:');
+      readiness.warnings.forEach((warn)=>lines.push('- ' + warn));
+    }
     return lines.join('\n');
   }
 
-  function buildScenePackageFiles(scene, variants){
+  function makePackageTreeLines(scene, variants, cfg){
+    const sceneId=normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene');
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    const lines=[];
+    lines.push('preset-scenes/');
+    lines.push('  published/');
+    lines.push('    ' + sceneId + '/');
+    lines.push('      scene.json');
+    lines.push('      variants.json');
+    lines.push('      variants/');
+    (variants||[]).forEach((variant)=>{ lines.push('        ' + buildPublishedVariantStem(variant) + '.json'); });
+    lines.push('      ' + publishCfg.mediaDir + '/');
+    lines.push('        ' + publishCfg.scenePhotoFile);
+    lines.push('        ' + publishCfg.sceneThumbFile);
+    lines.push('        ' + publishCfg.sceneCoverFile);
+    lines.push('      ' + publishCfg.previewsDir + '/');
+    (variants||[]).forEach((variant)=>{ lines.push('        ' + buildPublishedVariantStem(variant) + '.' + publishCfg.variantPreviewExt); });
+    lines.push('    __manifest_entry__' + sceneId + '.json');
+    lines.push('    __manifest_single_scene_example__' + sceneId + '.json');
+    lines.push('    __MANIFEST_MERGE_PATCH__' + sceneId + '.json');
+    lines.push('    __PACKAGE_SUMMARY__' + sceneId + '.json');
+    lines.push('    __VALIDATION_REPORT__' + sceneId + '.json');
+    lines.push('    __ASSET_URLS__' + sceneId + '.json');
+    lines.push('    __PACKAGE_TREE__' + sceneId + '.txt');
+    lines.push('    __README_DEPLOY__' + sceneId + '.txt');
+    lines.push('    __AUTOFILL_PRESET__' + sceneId + '.json');
+    return lines;
+  }
+
+  function makePackageSummary(scene, variants, cfg, readiness){
+    const sceneId=normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene');
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    return {
+      schemaVersion:1,
+      kind:'published-scene-package-summary',
+      generatedAt:new Date().toISOString(),
+      sceneId:sceneId,
+      title:String(scene.title || sceneId),
+      variantsCount:(variants||[]).length,
+      ready:!!(readiness && readiness.ok),
+      errors:readiness && Array.isArray(readiness.errors) ? readiness.errors.slice() : [],
+      warnings:readiness && Array.isArray(readiness.warnings) ? readiness.warnings.slice() : [],
+      pagesBase:publishCfg.pagesBase || null,
+      mediaDir:publishCfg.mediaDir,
+      previewsDir:publishCfg.previewsDir,
+      sceneAssets:{
+        photoFile:publishCfg.scenePhotoFile,
+        thumbFile:publishCfg.sceneThumbFile,
+        coverFile:publishCfg.sceneCoverFile
+      },
+      previewExt:publishCfg.variantPreviewExt,
+      manifestEntry:makePublishedManifestEntry(scene, (variants||[]).length),
+      packagePaths:listPublishedPackagePaths(scene, variants, publishCfg),
+      packageTree:makePackageTreeLines(scene, variants, publishCfg),
+      variants:(variants||[]).map((v)=>({ key:v.key, shapeId:v.shapeId||null, textureId:v.textureId||null, previewUrl:v.previewUrl||null }))
+    };
+  }
+
+  function makeAssetUrlMap(scene, variants, cfg){
+    const sceneId=normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene');
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    const root='preset-scenes/published/' + sceneId + '/';
+    return {
+      schemaVersion:1,
+      kind:'published-scene-asset-map',
+      generatedAt:new Date().toISOString(),
+      sceneId:sceneId,
+      scene:{
+        photo:{ repoPath:root + publishCfg.mediaDir + '/' + publishCfg.scenePhotoFile, sourceUrl:safeGet(scene,['photo','sourceUrl'],null) },
+        thumb:{ repoPath:root + publishCfg.mediaDir + '/' + publishCfg.sceneThumbFile, sourceUrl:safeGet(scene,['photo','thumbUrl'],null) },
+        cover:{ repoPath:root + publishCfg.mediaDir + '/' + publishCfg.sceneCoverFile, sourceUrl:safeGet(scene,['photo','coverUrl'],null) }
+      },
+      variants:(variants||[]).map((v)=>({
+        key:v.key,
+        shapeId:v.shapeId||null,
+        textureId:v.textureId||null,
+        repoPreviewPath:root + publishCfg.previewsDir + '/' + buildPublishedVariantStem(v) + '.' + publishCfg.variantPreviewExt,
+        previewUrl:v.previewUrl || null
+      }))
+    };
+  }
+
+  function makeManifestMergePatch(scene, variants){
+    return {
+      schemaVersion:1,
+      kind:'published-manifest-merge-patch',
+      op:'append_scene_entry',
+      generatedAt:new Date().toISOString(),
+      sceneId:normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene'),
+      targetFile:'preset-scenes/published/manifest.json',
+      entry:makePublishedManifestEntry(scene, (variants||[]).length)
+    };
+  }
+
+  function listPublishedPackagePaths(scene, variants, cfg){
+    const sceneId=normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene');
+    const root='preset-scenes/published/' + sceneId + '/';
+    const lines=[
+      root + 'scene.json',
+      root + 'variants.json'
+    ];
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    lines.push(root + publishCfg.mediaDir + '/' + publishCfg.scenePhotoFile);
+    lines.push(root + publishCfg.mediaDir + '/' + publishCfg.sceneThumbFile);
+    lines.push(root + publishCfg.mediaDir + '/' + publishCfg.sceneCoverFile);
+    (variants || []).forEach((variant)=>{
+      const stem=buildPublishedVariantStem(variant);
+      lines.push(root + 'variants/' + stem + '.json');
+      lines.push(root + publishCfg.previewsDir + '/' + stem + '.' + publishCfg.variantPreviewExt);
+    });
+    lines.push('preset-scenes/published/__manifest_entry__' + sceneId + '.json');
+    lines.push('preset-scenes/published/__manifest_single_scene_example__' + sceneId + '.json');
+    lines.push('preset-scenes/published/__README_DEPLOY__' + sceneId + '.txt');
+    return lines;
+  }
+
+  function copyText(text, okMessage){
+    const value=String(text || '');
+    if(!value) throw new Error('Нет данных для копирования');
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(value).then(()=>{ setStatus(okMessage || 'Скопировано', 'Данные помещены в буфер обмена.'); return true; });
+    }
+    const ta=document.createElement('textarea');
+    ta.value=value;
+    ta.setAttribute('readonly','readonly');
+    ta.style.position='fixed';
+    ta.style.top='-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok=document.execCommand('copy');
+    try{ document.body.removeChild(ta); }catch(_){ }
+    if(!ok) throw new Error('Не удалось скопировать в буфер');
+    setStatus(okMessage || 'Скопировано', 'Данные помещены в буфер обмена.');
+    return Promise.resolve(true);
+  }
+
+  function buildScenePackageFiles(scene, variants, cfg){
     const sceneId=normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene');
     const root='preset-scenes/published/' + sceneId + '/';
     const manifestEntry=makePublishedManifestEntry(scene, variants.length);
     const manifestSingle={ schemaVersion:1, defaultSceneId:sceneId, scenes:[manifestEntry] };
     const sceneJson=makePublishedSceneJson(scene, variants);
     const variantsIndex=makePublishedVariantsIndex(scene, variants);
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    const readiness=computePublishReadiness(scene, variants, publishCfg);
+    const packageSummary=makePackageSummary(scene, variants, publishCfg, readiness);
+    const assetMap=makeAssetUrlMap(scene, variants, publishCfg);
+    const manifestPatch=makeManifestMergePatch(scene, variants);
+    const packageTree=makePackageTreeLines(scene, variants, publishCfg).join('\n') + '\n';
     const files=[
       { name: root + 'scene.json', data: JSON.stringify(sceneJson, null, 2) + '\n', updatedAt: scene.updatedAt },
       { name: root + 'variants.json', data: JSON.stringify(variantsIndex, null, 2) + '\n', updatedAt: new Date().toISOString() },
       { name: 'preset-scenes/published/__manifest_entry__' + sceneId + '.json', data: JSON.stringify(manifestEntry, null, 2) + '\n', updatedAt: new Date().toISOString() },
       { name: 'preset-scenes/published/__manifest_single_scene_example__' + sceneId + '.json', data: JSON.stringify(manifestSingle, null, 2) + '\n', updatedAt: new Date().toISOString() },
-      { name: 'preset-scenes/published/__README_DEPLOY__' + sceneId + '.txt', data: makeRepoPackageReadme(scene, variants) + '\n', updatedAt: new Date().toISOString() }
+      { name: 'preset-scenes/published/__README_DEPLOY__' + sceneId + '.txt', data: makeRepoPackageReadme(scene, variants, publishCfg, readiness) + '\n', updatedAt: new Date().toISOString() },
+      { name: 'preset-scenes/published/__AUTOFILL_PRESET__' + sceneId + '.json', data: JSON.stringify(publishCfg, null, 2) + '\n', updatedAt: new Date().toISOString() },
+      { name: 'preset-scenes/published/__PACKAGE_SUMMARY__' + sceneId + '.json', data: JSON.stringify(packageSummary, null, 2) + '\n', updatedAt: new Date().toISOString() },
+      { name: 'preset-scenes/published/__VALIDATION_REPORT__' + sceneId + '.json', data: JSON.stringify(readiness, null, 2) + '\n', updatedAt: new Date().toISOString() },
+      { name: 'preset-scenes/published/__ASSET_URLS__' + sceneId + '.json', data: JSON.stringify(assetMap, null, 2) + '\n', updatedAt: new Date().toISOString() },
+      { name: 'preset-scenes/published/__PACKAGE_TREE__' + sceneId + '.txt', data: packageTree, updatedAt: new Date().toISOString() },
+      { name: 'preset-scenes/published/__MANIFEST_MERGE_PATCH__' + sceneId + '.json', data: JSON.stringify(manifestPatch, null, 2) + '\n', updatedAt: new Date().toISOString() },
+      { name: root + publishCfg.mediaDir + '/__README_ASSETS__.txt', data: 'Place published scene assets here: ' + publishCfg.scenePhotoFile + ', ' + publishCfg.sceneThumbFile + ', ' + publishCfg.sceneCoverFile + '.\n', updatedAt: new Date().toISOString() },
+      { name: root + publishCfg.previewsDir + '/__README_PREVIEWS__.txt', data: 'Place published variant previews here. Expected extension: .' + publishCfg.variantPreviewExt + '.\n', updatedAt: new Date().toISOString() }
     ];
     variants.forEach((variant)=>{
-      const fileName=String(variant.shapeId || 'shape') + '__' + String(variant.textureId || 'texture') + '.json';
-      files.push({ name: root + 'variants/' + fileName, data: JSON.stringify(variant, null, 2) + '\n', updatedAt: variant.updatedAt || new Date().toISOString() });
+      const stem=buildPublishedVariantStem(variant);
+      files.push({ name: root + 'variants/' + stem + '.json', data: JSON.stringify(variant, null, 2) + '\n', updatedAt: variant.updatedAt || new Date().toISOString() });
     });
     return files;
   }
@@ -1335,14 +2061,69 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     if(!scene || !scene.baseSnapshot) throw new Error("Сначала захватите и сохраните базовую сцену (local draft)");
     const variants=getSceneVariants(runtime, scene.sceneId);
     if(!variants.length) throw new Error("Для сцены ещё нет сохранённых local variants. Сначала сохраните хотя бы один вариант текстуры.");
-    const files=buildScenePackageFiles(scene, variants);
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const readiness=computePublishReadiness(scene, variants, cfg);
+    if(!readiness.ok) throw new Error(readiness.errors.join(' · '));
+    const files=buildScenePackageFiles(scene, variants, cfg).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''), 'en'));
     const blob=makeZipBlob(files);
     const filename=(scene.sceneId || 'scene') + '_published_package.zip';
     downloadBlob(filename, blob);
-    const photoUrl=safeGet(scene,['photo','sourceUrl'],null);
-    if(!photoUrl) setStatus("Repo-ready пакет экспортирован", "Но у сцены пока нет photoUrl. Перед публикацией положите фото в репо/хостинг и обновите scene.json.");
+    if(readiness.warnings.length) setStatus("Repo-ready пакет экспортирован", (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · вариантов: ' + String(variants.length) + ' · warnings: ' + readiness.warnings.join('; '));
     else setStatus("Repo-ready пакет экспортирован", (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · вариантов: ' + String(variants.length));
     return { scene, variants, files:files.map((f)=>f.name) };
+  }
+
+  function escapeRegExp(str){
+    return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async function importScenePackageFile(file){
+    if(!file) return;
+    const runtime=ensureRuntime(state||{});
+    const buf=await file.arrayBuffer();
+    const entries=readStoreZipEntries(buf);
+    const sceneEntry=entries.find((e)=>/preset-scenes\/published\/[^/]+\/scene\.json$/i.test(e.name));
+    if(!sceneEntry) throw new Error('В zip не найден scene.json');
+    const sceneJson=JSON.parse(textFromBytes(sceneEntry.data));
+    const scene=normalizeLocalDraft(sceneJson);
+    if(!scene.sceneId) throw new Error('Импортированный scene.json не содержит sceneId');
+    const sceneIdRe=escapeRegExp(scene.sceneId);
+    const variantEntries=entries.filter((e)=>new RegExp('^preset-scenes/published/' + sceneIdRe + '/variants/[^/]+\.json$','i').test(e.name));
+    const variants=[];
+    const warnings=[];
+    variantEntries.forEach((entry)=>{
+      try{ variants.push(normalizeLocalVariant(JSON.parse(textFromBytes(entry.data)))); }
+      catch(_){ warnings.push('Не удалось импортировать variant: ' + entry.name); }
+    });
+    const autofillEntry=entries.find((e)=>new RegExp('__AUTOFILL_PRESET__' + sceneIdRe + '\.json$','i').test(e.name));
+    updateRuntimeLocalSceneIndex(runtime, scene);
+    runtime.localDrafts[scene.sceneId]=scene;
+    variants.forEach((v)=>{ runtime.localVariants[v.key]=v; });
+    persistLocalDrafts(runtime);
+    persistLocalVariants(runtime);
+    let autofillLoaded=false;
+    if(autofillEntry){
+      try{
+        const cfg=normalizePublishAutofill(JSON.parse(textFromBytes(autofillEntry.data)));
+        runtime.publishAutofill=cfg;
+        persistPublishAutofill(runtime);
+        autofillLoaded=true;
+      }catch(_){ warnings.push('Autofill preset найден, но не прочитан'); }
+    }
+    runtime.packageImport.lastResult={ sceneId:scene.sceneId, variantsCount:variants.length, filesCount:entries.length, autofillLoaded:autofillLoaded, importedAt:new Date().toISOString(), warnings:warnings.slice() };
+    buildMergedScenes(runtime);
+    setEditorDraft(scene, { dirty:false, lastSavedAt:scene.updatedAt || null });
+    if(variants[0]) setVariantDraft(variants[0], { dirty:false, lastSavedAt:variants[0].updatedAt || null });
+    try{ await openLocalDraft(scene); }catch(_){ }
+    renderPublishAutofill();
+    renderBulkAssetImport();
+    renderPublishHelper();
+    renderPackageImport();
+    renderVariantPanel();
+    const msg='Сцена ' + String(scene.title || scene.sceneId) + ' импортирована обратно в admin';
+    const sub='Variants: ' + String(variants.length) + ' · files: ' + String(entries.length) + (autofillLoaded ? ' · autofill preset восстановлен' : '') + (warnings.length ? ' · warnings: ' + warnings.join('; ') : '');
+    setStatus(msg, sub);
+    return { scene:scene, variants:variants, files:entries.map((e)=>e.name), warnings:warnings };
   }
 
   function seedNewScene(){
@@ -1384,6 +2165,8 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     syncShellFrame();
     loadLocalDrafts(runtime);
     loadLocalVariants(runtime);
+    loadPublishAutofill(runtime);
+    loadBulkAssetImport(runtime);
     if(!runtime.visible) return runtime;
     setStatus("Загружаю список сцен…", "Проверяю local drafts, draft и published manifests.");
     runtime.lastError = null;
@@ -1473,6 +2256,10 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     [r.inputVariantShapeId, r.inputVariantTextureId, r.inputVariantTitle, r.inputVariantPreviewUrl, r.inputVariantNote].forEach((node)=>{
       if(node) node.addEventListener("input", ()=>{ readVariantDraft(); markVariantDirty(true); });
     });
+    [r.inputPagesBase, r.inputMediaDir, r.inputPreviewsDir, r.inputScenePhotoFile, r.inputSceneThumbFile, r.inputSceneCoverFile, r.inputVariantPreviewExt].forEach((node)=>{
+      if(node) node.addEventListener("input", ()=>{ readPublishAutofill(); renderPublishAutofill(); renderPublishHelper(); renderBulkAssetImport(); });
+    });
+    if(r.bulkAssetInput) r.bulkAssetInput.addEventListener("input", ()=>{ readBulkAssetImport(); renderBulkAssetImport(); });
     if(r.inputEnabled) r.inputEnabled.addEventListener("change", ()=>{ readEditorDraft(); markEditorDirty(true); });
     if(r.btnNew) r.btnNew.addEventListener("click", ()=>{ seedNewScene(); });
     if(r.btnCapture) r.btnCapture.addEventListener("click", ()=>{ captureCurrentScene().catch((err)=>setStatus("Не удалось захватить сцену", String(err && err.message || err))); });
@@ -1480,6 +2267,11 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     if(r.btnSaveLocal) r.btnSaveLocal.addEventListener("click", ()=>{ saveLocalDraft().catch((err)=>setStatus("Не удалось сохранить local draft", String(err && err.message || err))); });
     if(r.btnExport) r.btnExport.addEventListener("click", ()=>{ exportCurrentDraft().catch((err)=>setStatus("Не удалось выгрузить scene.json", String(err && err.message || err))); });
     if(r.btnExportPackage) r.btnExportPackage.addEventListener("click", ()=>{ exportScenePackage().catch((err)=>setStatus("Не удалось выгрузить пакет сцены", String(err && err.message || err))); });
+    if(r.btnCopyManifest) r.btnCopyManifest.addEventListener("click", ()=>{ const rt=ensureRuntime(state||{}); const scene=ensureEditorDraft(rt); const variants=getSceneVariants(rt, scene.sceneId); copyText(JSON.stringify(makePublishedManifestEntry(scene, variants.length), null, 2), "Manifest entry скопирован").catch((err)=>setStatus("Не удалось скопировать manifest entry", String(err && err.message || err))); });
+    if(r.btnCopyPaths) r.btnCopyPaths.addEventListener("click", ()=>{ const rt=ensureRuntime(state||{}); const scene=ensureEditorDraft(rt); const variants=getSceneVariants(rt, scene.sceneId); const cfg=normalizePublishAutofill(rt.publishAutofill || createDefaultPublishAutofill()); copyText(listPublishedPackagePaths(scene, variants, cfg).join("\n"), "Список путей скопирован").catch((err)=>setStatus("Не удалось скопировать список путей", String(err && err.message || err))); });
+    if(r.btnCopyDeploy) r.btnCopyDeploy.addEventListener("click", ()=>{ const val=(getRefs().helperDeploy && getRefs().helperDeploy.value) || ""; copyText(val, "Deploy инструкция скопирована").catch((err)=>setStatus("Не удалось скопировать deploy инструкцию", String(err && err.message || err))); });
+    if(r.btnValidatePublish) r.btnValidatePublish.addEventListener("click", ()=>{ renderPublishHelper(); const rt=ensureRuntime(state||{}); const scene=ensureEditorDraft(rt); const variants=getSceneVariants(rt, scene.sceneId); const cfg=normalizePublishAutofill(rt.publishAutofill || createDefaultPublishAutofill()); const readiness=computePublishReadiness(scene, variants, cfg); setStatus(readiness.ok ? "Пакет готов к публикации" : "Пакет требует исправлений", readiness.ok ? "Можно экспортировать repo-пакет сцены." : readiness.errors.join(' · ')); });
+    if(r.btnImportPackage) r.btnImportPackage.addEventListener("click", ()=>{ if(r.importPackageInput) r.importPackageInput.click(); });
     if(r.btnImport) r.btnImport.addEventListener("click", ()=>{ if(r.importInput) r.importInput.click(); });
     if(r.btnModeContour) r.btnModeContour.addEventListener("click", ()=>{ runGeometryAction("contour"); });
     if(r.btnModeCutout) r.btnModeCutout.addEventListener("click", ()=>{ runGeometryAction("cutout"); });
@@ -1499,6 +2291,10 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       const file=ev && ev.target && ev.target.files ? ev.target.files[0] : null;
       importVariantFile(file).catch((err)=>setStatus("Не удалось импортировать variant.json", String(err && err.message || err))).finally(()=>{ try{ ev.target.value=""; }catch(_){ } });
     });
+    if(r.importPackageInput) r.importPackageInput.addEventListener("change", (ev)=>{
+      const file=ev && ev.target && ev.target.files ? ev.target.files[0] : null;
+      importScenePackageFile(file).catch((err)=>setStatus("Не удалось импортировать package zip", String(err && err.message || err))).finally(()=>{ try{ ev.target.value=""; }catch(_){ } });
+    });
     runtime.bound = true;
   }
 
@@ -1517,7 +2313,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return runtime;
   }
 
-  const API={ init, refreshCatalog, selectScene, openScene, saveLocalDraft, captureCurrentScene, importSceneFile, runGeometryAction, getGeometrySummary, captureCurrentVariant, saveLocalVariant, openLocalVariant, importVariantFile, exportScenePackage, getRuntime:()=>ensureRuntime(state||{}) };
+  const API={ init, refreshCatalog, selectScene, openScene, saveLocalDraft, captureCurrentScene, importSceneFile, importScenePackageFile, runGeometryAction, getGeometrySummary, captureCurrentVariant, saveLocalVariant, openLocalVariant, importVariantFile, exportScenePackage, getRuntime:()=>ensureRuntime(state||{}) };
 
   if(document.readyState === "loading"){
     document.addEventListener("DOMContentLoaded", ()=>{ try{ if(getConfig(null).autoInit) init(); }catch(_){ } }, { once:true });

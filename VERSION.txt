@@ -1,4 +1,4 @@
-mvp-iter2.2.195-repo-package-export
-Patch: P22
-Base: photo_pave_patch_p21_1_admin_visual_height_hotfix.zip
-Summary: semi-automatic repo-ready scene package export from admin local drafts, including scene.json, variants.json and all variant snapshots by texture.
+mvp-iter2.2.208-exported-package-import-back-to-admin
+Patch: P34
+Base: photo_pave_patch_p33_published_package_export_polish.zip
+Summary: admin can import previously exported published package zip back into local scene draft, local variants and publish autofill preset.

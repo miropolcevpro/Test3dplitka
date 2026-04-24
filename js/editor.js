@@ -903,7 +903,12 @@ function polyPath(points){
   async function render(){
     if(!ctx)return;
     const ov=document.getElementById("uploadOverlay");
-    if(ov){ov.style.display=state.assets.photoBitmap?"none":"flex";}
+    if(ov){
+      const publicReady = !!(state && state.scenePresets && state.scenePresets.publicReady && Array.isArray(state.scenePresets.publicReady.scenes) && state.scenePresets.publicReady.scenes.length);
+      const uploadFallback = !!(state && state.ui && state.ui.readySceneUploadFallback);
+      const hideForReadyScenes = publicReady && !uploadFallback && !state.assets.photoBitmap;
+      ov.style.display = (state.assets.photoBitmap || hideForReadyScenes) ? "none" : "flex";
+    }
     // 1) WebGL base render
     if(compositor && glCanvas && state.assets.photoBitmap){
       try{

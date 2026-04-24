@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Фото‑конструктор мощения — MVP</title>
   <!-- cache-busting query param is required for GitHub Pages + Tilda iframe deployments -->
-  <link rel="stylesheet" href="css/styles.css?v=iter2_2_195_p22_repo_package" />
+  <link rel="stylesheet" href="css/styles.css?v=iter2_2_208_p34_import_package" />
 </head>
 <body>
   <div class="app">
@@ -40,6 +40,37 @@
         <button class="btn" id="simpleShellPrimaryBtn" type="button">Загрузить фото</button>
         <button class="btn btn--ghost" id="simpleShellSecondaryBtn" type="button">Доп. инструменты</button>
       </div>
+    </section>
+
+    <section class="readyScenesShell" id="readyScenesShell" hidden aria-live="polite">
+      <div class="readyScenesShell__head">
+        <div>
+          <div class="readyScenesShell__eyebrow">Готовые сцены</div>
+          <div class="readyScenesShell__title">Выберите готовый пример и сразу сравнивайте плитку</div>
+          <div class="readyScenesShell__text" id="readyScenesShellStatus">Без загрузки фото и ручной калибровки. Если захотите — позже переключитесь на своё фото.</div>
+        </div>
+        <div class="readyScenesShell__actions">
+          <button class="btn" id="readyScenesShellOpenBtn" type="button">Смотреть в визуализаторе</button>
+          <button class="btn btn--ghost" id="readyScenesShellUploadBtn" type="button">Хочу своё фото</button>
+          <button class="btn btn--ghost" id="readyScenesShellRefreshBtn" type="button">Обновить примеры</button>
+        </div>
+      </div>
+      <div class="readyScenesShell__valueRow" id="readyScenesShellValueRow"></div>
+      <div class="readyScenesShell__featured" id="readyScenesShellFeatured">
+        <div class="readyScenesShell__featuredPreview isEmpty" id="readyScenesShellFeaturedPreview"></div>
+        <div class="readyScenesShell__featuredBody">
+          <div class="readyScenesShell__featuredTitleRow">
+            <div class="readyScenesShell__featuredTitle" id="readyScenesShellFeaturedTitle">Готовая сцена</div>
+            <div class="readyScenesShell__variantBadge isPending" id="readyScenesShellVariantBadge">Ожидает вариант</div>
+          </div>
+          <div class="readyScenesShell__featuredText" id="readyScenesShellFeaturedText">Выберите сцену ниже и откройте её одним нажатием.</div>
+          <div class="readyScenesShell__variantText" id="readyScenesShellVariantText">После открытия сцены меняйте форму и плитку. Если для комбинации подготовлен точный вариант — он применится автоматически.</div>
+          <div class="readyScenesShell__featuredHint" id="readyScenesShellFeaturedHint">Готовая сцена уже подготовлена: перспектива и базовая геометрия настроены заранее.</div>
+          <div class="readyScenesShell__featuredMeta" id="readyScenesShellFeaturedMeta"></div>
+        </div>
+      </div>
+      <div class="readyScenesShell__sceneList" id="readyScenesShellSceneList"></div>
+      <div class="readyScenesShell__meta" id="readyScenesShellMeta"></div>
     </section>
 
     <main class="main">
@@ -364,19 +395,19 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-  <script src="js/release_config.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/state.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/diagnostics.js?v=iter2_2_182_p12"></script>
-  <script src="js/analytics.js?v=iter2_2_182_p12"></script>
-  <script src="js/updater.js?v=iter2_2_169_p02"></script>
-  <script src="js/ai_ultra_pipeline.js?v=iter2_2_172_p05"></script>
-  <script src="js/ai_auto_calib.js?v=iter2_2_171_p04"></script>
-  <script src="js/api.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/scene_presets.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/scene_preset_state.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/webgl_compositor.js?v=iter2_2_169_p02"></script>
-  <script src="js/camera_calib.js?v=iter2_2_169_p02"></script>
-  <script src="js/editor.js?v=iter2_2_195_p22_repo_package"></script>
-  <script src="js/app.js?v=iter2_2_195_p22_repo_package"></script>
+  <script src="js/release_config.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/state.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/diagnostics.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/analytics.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/updater.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/ai_ultra_pipeline.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/ai_auto_calib.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/api.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/scene_presets.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/scene_preset_state.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/webgl_compositor.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/camera_calib.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/editor.js?v=iter2_2_208_p34_import_package"></script>
+  <script src="js/app.js?v=iter2_2_208_p34_import_package"></script>
 </body>
 </html>
