@@ -1917,6 +1917,16 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     out.defaults = out.defaults && typeof out.defaults === 'object' ? out.defaults : {};
     if(!out.defaults.shapeId) out.defaults.shapeId = variants[0] && variants[0].shapeId || safeGet(scene,['catalog','activeShapeId'],null) || null;
     if(!out.defaults.textureId) out.defaults.textureId = variants[0] && variants[0].textureId || null;
+    out.photo = out.photo && typeof out.photo === 'object' ? out.photo : {};
+    const photoUrl=safeGet(scene,['photo','sourceUrl'],null) || safeGet(scene,['photoUrl'],null) || null;
+    const thumbUrl=safeGet(scene,['photo','thumbUrl'],null) || safeGet(scene,['thumbUrl'],null) || null;
+    const coverUrl=safeGet(scene,['photo','coverUrl'],null) || safeGet(scene,['coverUrl'],null) || null;
+    out.photo.sourceUrl = photoUrl;
+    out.photo.thumbUrl = thumbUrl;
+    out.photo.coverUrl = coverUrl;
+    out.photoUrl = photoUrl;
+    out.thumbUrl = thumbUrl;
+    out.coverUrl = coverUrl;
     return out;
   }
 
@@ -1950,6 +1960,23 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       thumb: rootPath + normalized.sceneThumbFile,
       cover: rootPath + normalized.sceneCoverFile
     };
+  }
+
+  function applyPackagedMediaUrls(scene, cfg, included){
+    const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
+    const src=scene && typeof scene === 'object' ? deepClone(scene) : {};
+    src.photo = src.photo && typeof src.photo === 'object' ? src.photo : {};
+    const has = included && typeof included === 'object' ? included : {};
+    const relPhoto = publishCfg.mediaDir + '/' + publishCfg.scenePhotoFile;
+    const relThumb = publishCfg.mediaDir + '/' + publishCfg.sceneThumbFile;
+    const relCover = publishCfg.mediaDir + '/' + publishCfg.sceneCoverFile;
+    if(has.photo){ src.photo.sourceUrl = relPhoto; src.photoUrl = relPhoto; }
+    else if(src.photo && src.photo.sourceUrl){ src.photoUrl = src.photo.sourceUrl; }
+    if(has.thumb){ src.photo.thumbUrl = relThumb; src.thumbUrl = relThumb; }
+    else if(src.photo && src.photo.thumbUrl){ src.thumbUrl = src.photo.thumbUrl; }
+    if(has.cover){ src.photo.coverUrl = relCover; src.coverUrl = relCover; }
+    else if(src.photo && src.photo.coverUrl){ src.coverUrl = src.photo.coverUrl; }
+    return src;
   }
 
   function makeRepoPackageReadme(scene, variants, cfg, readiness){
@@ -2123,22 +2150,41 @@ window.PhotoPaveScenePresetAdminShell=(function(){
   async function buildScenePackageFiles(scene, variants, cfg){
     const sceneId=normalizeSceneId(scene.sceneId || scene.id || 'scene', 'scene');
     const root='preset-scenes/published/' + sceneId + '/';
-    const manifestEntry=makePublishedManifestEntry(scene, variants.length);
-    const manifestSingle={ schemaVersion:1, defaultSceneId:sceneId, scenes:[manifestEntry] };
-    const sceneJson=makePublishedSceneJson(scene, variants);
-    const variantsIndex=makePublishedVariantsIndex(scene, variants);
     const publishCfg=normalizePublishAutofill(cfg || createDefaultPublishAutofill());
-    const readiness=computePublishReadiness(scene, variants, publishCfg);
-    const packageSummary=makePackageSummary(scene, variants, publishCfg, readiness);
-    const assetMap=makeAssetUrlMap(scene, variants, publishCfg);
-    const manifestPatch=makeManifestMergePatch(scene, variants);
-    const packageTree=makePackageTreeLines(scene, variants, publishCfg).join('\n') + '\n';
-    const files=[
-      { name: root + 'scene.json', data: JSON.stringify(sceneJson, null, 2) + '\n', updatedAt: scene.updatedAt },
+    const files=[];
+    const includedMedia={ photo:false, thumb:false, cover:false };
+    const photoBitmap=safeGet(state,['assets','photoBitmap'],null);
+    if(photoBitmap){
+      const mediaPaths=buildPublishedMediaPaths(scene.sceneId, publishCfg);
+      try{
+        const photoBytes=await bitmapToJpegBytes(photoBitmap, { quality:0.92 });
+        if(photoBytes){ files.push({ name: mediaPaths.photo, data: photoBytes, updatedAt:new Date().toISOString() }); includedMedia.photo=true; }
+      }catch(_){ }
+      try{
+        const thumbBytes=await bitmapToJpegBytes(photoBitmap, { maxWidth:960, maxHeight:960, quality:0.88 });
+        if(thumbBytes){ files.push({ name: mediaPaths.thumb, data: thumbBytes, updatedAt:new Date().toISOString() }); includedMedia.thumb=true; }
+      }catch(_){ }
+      try{
+        const coverBytes=await bitmapToJpegBytes(photoBitmap, { maxWidth:1600, maxHeight:1600, quality:0.9 });
+        if(coverBytes){ files.push({ name: mediaPaths.cover, data: coverBytes, updatedAt:new Date().toISOString() }); includedMedia.cover=true; }
+      }catch(_){ }
+    }
+    const exportScene=applyPackagedMediaUrls(scene, publishCfg, includedMedia);
+    const manifestEntry=makePublishedManifestEntry(exportScene, variants.length);
+    const manifestSingle={ schemaVersion:1, defaultSceneId:sceneId, scenes:[manifestEntry] };
+    const sceneJson=makePublishedSceneJson(exportScene, variants);
+    const variantsIndex=makePublishedVariantsIndex(exportScene, variants);
+    const readiness=computePublishReadiness(exportScene, variants, publishCfg);
+    const packageSummary=makePackageSummary(exportScene, variants, publishCfg, readiness);
+    const assetMap=makeAssetUrlMap(exportScene, variants, publishCfg);
+    const manifestPatch=makeManifestMergePatch(exportScene, variants);
+    const packageTree=makePackageTreeLines(exportScene, variants, publishCfg).join('\n') + '\n';
+    files.push(
+      { name: root + 'scene.json', data: JSON.stringify(sceneJson, null, 2) + '\n', updatedAt: exportScene.updatedAt || scene.updatedAt },
       { name: root + 'variants.json', data: JSON.stringify(variantsIndex, null, 2) + '\n', updatedAt: new Date().toISOString() },
       { name: 'preset-scenes/published/__manifest_entry__' + sceneId + '.json', data: JSON.stringify(manifestEntry, null, 2) + '\n', updatedAt: new Date().toISOString() },
       { name: 'preset-scenes/published/__manifest_single_scene_example__' + sceneId + '.json', data: JSON.stringify(manifestSingle, null, 2) + '\n', updatedAt: new Date().toISOString() },
-      { name: 'preset-scenes/published/__README_DEPLOY__' + sceneId + '.txt', data: makeRepoPackageReadme(scene, variants, publishCfg, readiness) + '\n', updatedAt: new Date().toISOString() },
+      { name: 'preset-scenes/published/__README_DEPLOY__' + sceneId + '.txt', data: makeRepoPackageReadme(exportScene, variants, publishCfg, readiness) + '\n', updatedAt: new Date().toISOString() },
       { name: 'preset-scenes/published/__AUTOFILL_PRESET__' + sceneId + '.json', data: JSON.stringify(publishCfg, null, 2) + '\n', updatedAt: new Date().toISOString() },
       { name: 'preset-scenes/published/__PACKAGE_SUMMARY__' + sceneId + '.json', data: JSON.stringify(packageSummary, null, 2) + '\n', updatedAt: new Date().toISOString() },
       { name: 'preset-scenes/published/__VALIDATION_REPORT__' + sceneId + '.json', data: JSON.stringify(readiness, null, 2) + '\n', updatedAt: new Date().toISOString() },
@@ -2147,23 +2193,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       { name: 'preset-scenes/published/__MANIFEST_MERGE_PATCH__' + sceneId + '.json', data: JSON.stringify(manifestPatch, null, 2) + '\n', updatedAt: new Date().toISOString() },
       { name: root + publishCfg.mediaDir + '/__README_ASSETS__.txt', data: 'Place published scene assets here: ' + publishCfg.scenePhotoFile + ', ' + publishCfg.sceneThumbFile + ', ' + publishCfg.sceneCoverFile + '.\n', updatedAt: new Date().toISOString() },
       { name: root + publishCfg.previewsDir + '/__README_PREVIEWS__.txt', data: 'Place published variant previews here. Expected extension: .' + publishCfg.variantPreviewExt + '.\n', updatedAt: new Date().toISOString() }
-    ];
-    const photoBitmap=safeGet(state,['assets','photoBitmap'],null);
-    if(photoBitmap){
-      const mediaPaths=buildPublishedMediaPaths(scene.sceneId, publishCfg);
-      try{
-        const photoBytes=await bitmapToJpegBytes(photoBitmap, { quality:0.92 });
-        if(photoBytes) files.push({ name: mediaPaths.photo, data: photoBytes, updatedAt:new Date().toISOString() });
-      }catch(_){ }
-      try{
-        const thumbBytes=await bitmapToJpegBytes(photoBitmap, { maxWidth:960, maxHeight:960, quality:0.88 });
-        if(thumbBytes) files.push({ name: mediaPaths.thumb, data: thumbBytes, updatedAt:new Date().toISOString() });
-      }catch(_){ }
-      try{
-        const coverBytes=await bitmapToJpegBytes(photoBitmap, { maxWidth:1600, maxHeight:1600, quality:0.9 });
-        if(coverBytes) files.push({ name: mediaPaths.cover, data: coverBytes, updatedAt:new Date().toISOString() });
-      }catch(_){ }
-    }
+    );
     variants.forEach((variant)=>{
       const stem=buildPublishedVariantStem(variant);
       files.push({ name: root + 'variants/' + stem + '.json', data: JSON.stringify(variant, null, 2) + '\n', updatedAt: variant.updatedAt || new Date().toISOString() });

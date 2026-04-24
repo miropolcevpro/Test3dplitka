@@ -142,3 +142,8 @@ P20 deployment notes:
 - It becomes available right after the scene is saved.
 - The downloaded archive contains the saved scene and all already saved variants for that scene.
 - Strict repo export remains available in the advanced publish tools.
+
+
+## P36.4 deploy-ready zip hotfix
+- When scene media files are included in exported zip, the package now auto-writes media/scene-photo.jpg, media/scene-thumb.jpg and media/scene-cover.jpg into scene.json, __manifest_entry__*.json and __MANIFEST_MERGE_PATCH__*.json.
+- The archive is intended to be extracted into the repo root and deployed directly to GitHub Pages.

@@ -1,4 +1,4 @@
-mvp-iter2.2.213-p36.3-full-scene-zip-download
-Patch: P36.3
-Base: photo_pave_patch_p36_1_quick_export_fix_scale_hotfix.zip
-Summary: simplified admin quick flow with one-click full scene zip download available immediately after scene save; saved variants are included automatically.
+mvp-iter2.2.214-p36.4-deploy-ready-zip-hotfix
+Patch: P36.4
+Base: photo_pave_patch_p36_3_full_scene_zip_hotfix.zip
+Summary: if scene media are included in exported zip, photoUrl/thumbUrl/coverUrl are auto-written into scene.json, manifest entry and manifest merge patch for deploy-ready archives.
