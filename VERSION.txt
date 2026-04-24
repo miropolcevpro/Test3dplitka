@@ -1,4 +1,4 @@
-mvp-iter2.2.211-p36.1-quick-export-fix-scale-hotfix
-Patch: P36.1
-Base: photo_pave_patch_p36_simple_scene_export_flow.zip
-Summary: fixed quick one-click package export flow (auto-save scene/current variant, include generated scene media assets in zip) and increased tile scale max to 18.0.
+mvp-iter2.2.213-p36.3-full-scene-zip-download
+Patch: P36.3
+Base: photo_pave_patch_p36_1_quick_export_fix_scale_hotfix.zip
+Summary: simplified admin quick flow with one-click full scene zip download available immediately after scene save; saved variants are included automatically.

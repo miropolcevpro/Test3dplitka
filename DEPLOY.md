@@ -135,3 +135,10 @@ P20 deployment notes:
 - Quick export now auto-saves scene/current variant when possible and exports generated scene media assets into package zip.
 - Tile scale upper limit increased to 18.0 in public and admin.
 - Hard refresh admin/public after deploy to avoid stale slider cache.
+
+
+## P36.3 quick admin flow
+- Quick button 4 is now **Скачать полный zip сцены**.
+- It becomes available right after the scene is saved.
+- The downloaded archive contains the saved scene and all already saved variants for that scene.
+- Strict repo export remains available in the advanced publish tools.

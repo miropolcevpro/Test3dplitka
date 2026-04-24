@@ -1181,17 +1181,16 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     const variants=getSceneVariants(runtime, scene.sceneId);
     const geom=getGeometrySummary();
     const ctx=getActiveVariantContext(runtime);
-    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
-    const readiness=computePublishReadiness(scene, variants, cfg);
+    const savedSceneReady=!!(scene.sceneId && scene.baseSnapshot);
     if(r.quickState){
       const steps=[];
       steps.push(scene.sceneId ? 'Сцена: ' + scene.sceneId : 'Сначала создайте сцену');
-      if(!geom.photoLoaded) steps.push('Загрузите фото');
-      else if(!geom.contourClosed) steps.push('Замкните контур');
+      if(!geom.photoLoaded && !savedSceneReady) steps.push('Загрузите фото');
+      else if(!geom.contourClosed && !savedSceneReady) steps.push('Замкните контур');
       else if(!scene.baseSnapshot) steps.push('Сохраните сцену');
-      else if(!variants.length) steps.push('Сохраните хотя бы один вариант');
-      else if(!readiness.ok) steps.push('Заполните обязательные publish-данные');
-      else steps.push('Можно экспортировать готовый архив');
+      else steps.push('Можно скачать полный zip сцены');
+      if(scene.baseSnapshot && !variants.length) steps.push('Варианты можно добавлять по мере настройки');
+      else if(variants.length) steps.push('Сохранённых вариантов: ' + String(variants.length));
       r.quickState.textContent = steps.join(' · ');
     }
     if(r.quickChips){
@@ -1203,12 +1202,12 @@ window.PhotoPaveScenePresetAdminShell=(function(){
       chips.push('<span class="scenePresetAdminShell__chip ' + (variants.length ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">variants: ' + String(variants.length) + '</span>');
       chips.push('<span class="scenePresetAdminShell__chip ' + (ctx.hasShape ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">shape: ' + escapeHtml(ctx.shapeId || '—') + '</span>');
       chips.push('<span class="scenePresetAdminShell__chip ' + (ctx.hasTexture ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">texture: ' + escapeHtml(ctx.textureId || '—') + '</span>');
-      chips.push('<span class="scenePresetAdminShell__chip ' + (readiness.ok ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">' + (readiness.ok?'export готов':'нужны правки') + '</span>');
+      chips.push('<span class="scenePresetAdminShell__chip ' + (savedSceneReady ? 'scenePresetAdminShell__chip--ok':'scenePresetAdminShell__chip--warn') + '">' + (savedSceneReady?'zip готов':'сначала сохраните сцену') + '</span>');
       r.quickChips.innerHTML = chips.join('');
     }
     if(r.btnQuickSaveScene) r.btnQuickSaveScene.disabled = !(geom.photoLoaded && geom.contourClosed);
     if(r.btnQuickSaveVariant) r.btnQuickSaveVariant.disabled = !(scene.baseSnapshot && ctx.hasShape && ctx.hasTexture);
-    if(r.btnQuickFinalizeExport) r.btnQuickFinalizeExport.disabled = !(scene.sceneId && scene.baseSnapshot && variants.length);
+    if(r.btnQuickFinalizeExport) r.btnQuickFinalizeExport.disabled = !(scene.sceneId && scene.baseSnapshot);
   }
 
   async function runQuickNewSceneFlow(){
@@ -1238,27 +1237,17 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     if(geom.photoLoaded && geom.contourClosed && (!scene.baseSnapshot || runtime.editor.dirty)){
       scene = await saveLocalDraft();
     }
+    scene=ensureEditorDraft(runtime);
+    if(!scene || !scene.sceneId || !scene.baseSnapshot) throw new Error('Сначала сохраните сцену');
     const ctx=getActiveVariantContext(runtime);
     const currentVariant=runtime.variantEditor && runtime.variantEditor.draft ? runtime.variantEditor.draft : null;
     const hasVariantContext=ctx.hasShape && ctx.hasTexture;
     const existingKey=hasVariantContext ? makeVariantKey(scene.sceneId, ctx.shapeId, ctx.textureId) : null;
     const hasSavedCurrent=existingKey && runtime.localVariants && runtime.localVariants[existingKey];
-    if(scene.baseSnapshot && hasVariantContext && (runtime.variantEditor.dirty || !hasSavedCurrent || (currentVariant && currentVariant.shapeId===ctx.shapeId && currentVariant.textureId===ctx.textureId))){
-      try{ await saveLocalVariant(); }catch(err){ setStatus('Не удалось сохранить текущую текстуру перед экспортом', String(err && err.message || err)); throw err; }
+    if(scene.baseSnapshot && hasVariantContext && runtime.variantEditor && runtime.variantEditor.dirty && (!hasSavedCurrent || (currentVariant && currentVariant.shapeId===ctx.shapeId && currentVariant.textureId===ctx.textureId))){
+      try{ await saveLocalVariant(); }catch(err){ setStatus('Не удалось сохранить текущую текстуру перед выгрузкой zip', String(err && err.message || err)); throw err; }
     }
-    scene=ensureEditorDraft(runtime);
-    if(scene.sceneId) applyPublishAutofillToScene();
-    const variants=getSceneVariants(runtime, scene.sceneId);
-    if(variants.length) applyPublishAutofillToVariants();
-    renderPublishHelper();
-    renderQuickFlow();
-    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
-    const readiness=computePublishReadiness(ensureEditorDraft(runtime), getSceneVariants(runtime, ensureEditorDraft(runtime).sceneId), cfg);
-    if(!readiness.ok){
-      setStatus('Архив пока не готов', readiness.errors.join(' · '));
-      throw new Error(readiness.errors.join(' · '));
-    }
-    return exportScenePackage();
+    return downloadFullSceneZip();
   }
 
   function toggleAdvancedPublishTools(){
@@ -2207,6 +2196,29 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     setStatus("Scene JSON импортирован", (scene.title || scene.sceneId) + " · local draft готов к открытию и редактированию.");
   }
 
+  async function downloadFullSceneZip(){
+    const runtime=ensureRuntime(state||{});
+    const sceneDraft=ensureEditorDraft(runtime);
+    let scene=sceneDraft && sceneDraft.baseSnapshot ? normalizeLocalDraft(sceneDraft) : null;
+    if((!scene || !scene.baseSnapshot) && sceneDraft && sceneDraft.sceneId && runtime.localDrafts[sceneDraft.sceneId]) scene=normalizeLocalDraft(runtime.localDrafts[sceneDraft.sceneId]);
+    if(!scene || !scene.baseSnapshot) throw new Error('Сначала сохраните сцену');
+    if(scene.sceneId) applyPublishAutofillToScene();
+    scene=ensureEditorDraft(runtime);
+    let variants=getSceneVariants(runtime, scene.sceneId);
+    if(variants.length) applyPublishAutofillToVariants();
+    scene=ensureEditorDraft(runtime);
+    variants=getSceneVariants(runtime, scene.sceneId);
+    renderPublishHelper();
+    renderQuickFlow();
+    const cfg=normalizePublishAutofill(runtime.publishAutofill || createDefaultPublishAutofill());
+    const files=(await buildScenePackageFiles(scene, variants, cfg)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''), 'en'));
+    const blob=makeZipBlob(files);
+    const filename=(scene.sceneId || 'scene') + '_full_scene.zip';
+    downloadBlob(filename, blob);
+    setStatus('Полный zip сцены выгружен', (scene.title || scene.sceneId) + ' · файлов: ' + String(files.length) + ' · вариантов: ' + String(variants.length));
+    return { scene, variants, files:files.map((f)=>f.name) };
+  }
+
   async function exportScenePackage(){
     const runtime=ensureRuntime(state||{});
     const sceneDraft=ensureEditorDraft(runtime);
@@ -2428,7 +2440,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     if(r.btnCopyDeploy) r.btnCopyDeploy.addEventListener("click", ()=>{ const val=(getRefs().helperDeploy && getRefs().helperDeploy.value) || ""; copyText(val, "Deploy инструкция скопирована").catch((err)=>setStatus("Не удалось скопировать deploy инструкцию", String(err && err.message || err))); });
     if(r.btnValidatePublish) r.btnValidatePublish.addEventListener("click", ()=>{ renderPublishHelper(); const rt=ensureRuntime(state||{}); const scene=ensureEditorDraft(rt); const variants=getSceneVariants(rt, scene.sceneId); const cfg=normalizePublishAutofill(rt.publishAutofill || createDefaultPublishAutofill()); const readiness=computePublishReadiness(scene, variants, cfg); setStatus(readiness.ok ? "Пакет готов к публикации" : "Пакет требует исправлений", readiness.ok ? "Можно экспортировать repo-пакет сцены." : readiness.errors.join(' · ')); });
     if(r.btnImportPackage) r.btnImportPackage.addEventListener("click", ()=>{ if(r.importPackageInput) r.importPackageInput.click(); });
-    if(r.btnQuickFinalizeExport) r.btnQuickFinalizeExport.addEventListener("click", ()=>{ runQuickFinalizeExportFlow().catch((err)=>setStatus("Не удалось подготовить и выгрузить архив", String(err && err.message || err))); });
+    if(r.btnQuickFinalizeExport) r.btnQuickFinalizeExport.addEventListener("click", ()=>{ runQuickFinalizeExportFlow().catch((err)=>setStatus("Не удалось скачать полный zip сцены", String(err && err.message || err))); });
     if(r.btnQuickToggleAdvanced) r.btnQuickToggleAdvanced.addEventListener("click", ()=>{ toggleAdvancedPublishTools(); });
     if(r.btnImport) r.btnImport.addEventListener("click", ()=>{ if(r.importInput) r.importInput.click(); });
     if(r.btnModeContour) r.btnModeContour.addEventListener("click", ()=>{ runGeometryAction("contour"); });
@@ -2472,7 +2484,7 @@ window.PhotoPaveScenePresetAdminShell=(function(){
     return runtime;
   }
 
-  const API={ init, refreshCatalog, selectScene, openScene, saveLocalDraft, captureCurrentScene, importSceneFile, importScenePackageFile, runGeometryAction, getGeometrySummary, captureCurrentVariant, saveLocalVariant, openLocalVariant, importVariantFile, exportScenePackage, runQuickNewSceneFlow, runQuickSaveSceneFlow, runQuickSaveVariantFlow, runQuickFinalizeExportFlow, getRuntime:()=>ensureRuntime(state||{}) };
+  const API={ init, refreshCatalog, selectScene, openScene, saveLocalDraft, captureCurrentScene, importSceneFile, importScenePackageFile, runGeometryAction, getGeometrySummary, captureCurrentVariant, saveLocalVariant, openLocalVariant, importVariantFile, exportScenePackage, downloadFullSceneZip, runQuickNewSceneFlow, runQuickSaveSceneFlow, runQuickSaveVariantFlow, runQuickFinalizeExportFlow, getRuntime:()=>ensureRuntime(state||{}) };
 
   if(document.readyState === "loading"){
     document.addEventListener("DOMContentLoaded", ()=>{ try{ if(getConfig(null).autoInit) init(); }catch(_){ } }, { once:true });
